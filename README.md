@@ -188,8 +188,8 @@ for attempt in range(max_retries):
 ### 备用队列（Proxy-pool-standby-queue）
 
 - 有界组，容量 `STANDBY_QUEUE_CAPACITY`（10），永不过期；是 pproxy 的唯一上游来源；
-- **填充（fill）**：队列有缺口时，候选数 = 缺口 × `standby_fill_probe_multiplier`（至少 缺口 + `standby_fill_probe_min_extra`，保证存活命中率），候选**按配置的填充组优先级**（`standby_fill_groups`，trusted 默认最前）从可用集合收集，按 `--type` 过滤类型，去重后并发探测（async）；存活代理 `move_proxy` 入备用队列（单一归属），死代理直接拉黑；
-- **心跳（heartbeat）**：并发探测队列内代理（严格校验证书，async）；存活**保留在队列（不晋级 trusted）**，失败计 1 次：未达阈值（普通组 `MAX_FAILS=2`，trusted `TRUSTED_MAX_FAILS=3`）进入**退避补测**，达到阈值拉黑移出——一次瞬时失败不拉黑；
+- **填充（fill）**：队列有缺口时，候选数 = 缺口 × `standby_fill_probe_multiplier`（至少 缺口 + `standby_fill_probe_min_extra`，保证存活命中率），候选**按配置的填充组优先级**（`standby_fill_groups`，trusted 默认最前）从可用集合收集，按 `--type` 过滤类型，去重后并发探测（async）；**流式入队**——每个代理探测完成即处理（不等全部完成），探测成功立即入队并实时 sync pproxy 上游（`on_change` 回调），探测失败 `record_fail` 累计到 `max_fails` 才拉黑（单次失败不拉黑）；**队列按响应时间（latency）升序维护**，队列满时新代理更快则踢队尾 move trusted、较慢则自身 move trusted（探测成果不浪费）；
+- **心跳（heartbeat）**：并发探测队列内代理（严格校验证书，async）；存活**更新 latency + 清零失败计数、保留在队列（不晋级 trusted）**，队列按新 latency 重排；失败计 1 次：未达阈值（普通组 `MAX_FAILS=2`，trusted `TRUSTED_MAX_FAILS=3`）进入**退避补测**，达到阈值拉黑移出——一次瞬时失败不拉黑；
 - **退避补测（retry_probe）**：心跳失败的代理由主循环启动独立异步复核任务（不占心跳轮次），间隔 1s/2s/4s…指数退避（上限 30s）反复探测：成功清零失败计数恢复，失败继续累计直至阈值拉黑；
 - **主循环**：启动时先 fill → 启动服务器 → 周期性「fill → heartbeat → 为待补测代理启动复核任务 → sync → 保存」，两轮之间如再缺再 fill；轮次**绝不重叠**（以上一轮完成时刻 + interval 为下一轮最早起点，避免刷屏与 sleep 计时误差）；Ctrl+C 优雅退出（取消心跳与复核任务 → 关服务器 → 保存）；
 - **成功复制**：备用队列成员被请求成功（`record_success`）时**只复制进 trusted、保留在队列**（serve 上游不被掏空）；拉黑（`remove`）时清理其在所有组的副本（含 trusted 残留），单次遍历实现；

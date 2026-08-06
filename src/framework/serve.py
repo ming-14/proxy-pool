@@ -38,9 +38,14 @@ async def _run(
         c.save()
 
     async def fill_if_needed() -> None:
-        """缺口补入并同步上游（fill 与 sync 成对出现，心跳轮前后各一次）"""
+        """缺口补入并同步上游（fill 期间实时 sync，结束后统一 sync + save）
+
+        on_change=server.sync 让 fill 流式入队时每个代理入队即同步 pproxy 上游，
+        探测成功的代理立即可用，不必等整批探测完成。
+        """
         if len(standby.standby_proxies()) < capacity:
-            await standby.fill(allowed_types, probe_url, config.HEARTBEAT_TIMEOUT, concurrency, capacity)
+            await standby.fill(allowed_types, probe_url, config.HEARTBEAT_TIMEOUT, concurrency, capacity,
+                               on_change=server.sync)
         sync_and_save()
 
     # 启动：探测补入备用队列并启动服务器

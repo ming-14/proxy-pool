@@ -77,6 +77,10 @@ class _FakeCheck:
                 results[p] = {"success": True, "status_code": 200, "elapsed": 0.1, "error": None}
             else:
                 results[p] = {"success": False, "status_code": None, "elapsed": 1, "error": "Timeout"}
+        on_result = kw.get("on_result")
+        if on_result:
+            for p in proxies:
+                on_result(p, results[p])
         return results
 
 
@@ -92,8 +96,8 @@ class TestServeMainLoop(unittest.TestCase):
 
             pool = make_pool()
             pool.add_to_group("default-http", good)
-            pool.add_to_group("default-http", dead1)
-            pool.add_to_group("default-http", dead2)
+            pool.add_to_group("default-http", dead1, fails=config.MAX_FAILS - 1)  # 探测失败即达阈值拉黑
+            pool.add_to_group("default-http", dead2, fails=config.MAX_FAILS - 1)
 
             record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
             check = _FakeCheck([good])

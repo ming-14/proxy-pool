@@ -50,6 +50,7 @@ config.local.toml
 *.swp
 *.swo
 *~
+.codeartsdoer/
 
 # ---- 操作系统 ----
 .DS_Store

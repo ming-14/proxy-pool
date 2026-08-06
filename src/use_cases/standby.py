@@ -1,15 +1,18 @@
-"""serve 备用队列维护用例：fill（探测补入）+ heartbeat（探活 + 退避补测淘汰）
+"""serve 备用队列维护用例：fill（流式探测补入 + 响应时间排序淘汰）+ heartbeat（探活 + 退避补测）
 
 备用队列（role="standby" 的组）是本地代理服务器的上游集合，本用例维护其成员：
 
 - fill:       队列有缺口时，按配置的填充组优先级收集候选（排除已在队列的代理），
-              并发探测；存活代理入队（单一归属），死候选直接拉黑。
-- heartbeat:  并发探测队列内代理；成功恢复（清零失败计数），失败计 fails，
-              达到所在组阈值（should_blacklist）即拉黑移出队列；
+              并发探测；**流式入队**——每个代理探测完成即处理（不等全部完成）：
+              存活按 latency 插入队列（队列满时与队尾比较，更快则踢尾入新、较慢则
+              move trusted），失败 record_fail 累计到 max_fails 才拉黑。
+              队列始终按 latency 升序维护（最快的在上游 rc 调度时更易命中）。
+- heartbeat:  并发探测队列内代理；成功更新 latency + 清零失败计数，失败计 fails，
+              达到所在组阈值（should_blacklist）即拉黑移出；
               未达阈值进入退避补测（retry_probe 独立异步任务负责复核，
               成功恢复、失败继续累计直至拉黑）——避免一次瞬时失败就拉黑。
 - retry_probe: 对单个待补测代理退避复核：间隔 1s/2s/4s...（上限 30s），
-              成功清零恢复；失败累计到阈值拉黑。
+              成功更新 latency + 清零恢复；失败累计到阈值拉黑。
 
 fill/heartbeat/retry_probe 均为 async（探测走 CheckProxiesUseCase.execute，
 网络请求在 asyncio.to_thread 中执行），serve 事件循环不被同步阻塞。
@@ -17,6 +20,7 @@ fill/heartbeat/retry_probe 均为 async（探测走 CheckProxiesUseCase.execute�
 
 import asyncio
 import logging
+from typing import Callable
 
 from src.domain.proxy_pool import ProxyPool
 from src.use_cases.record_proxy import RecordProxyUseCase
@@ -35,7 +39,7 @@ def _proxy_type(proxy: str) -> str:
 
 
 class StandbyQueueUseCase:
-    """备用队列维护：fill 补入 + heartbeat 探活淘汰（含退避补测）"""
+    """备用队列维护：fill 流式补入 + 响应时间排序淘汰 + heartbeat 探活（含退避补测）"""
 
     def __init__(
         self,
@@ -68,19 +72,28 @@ class StandbyQueueUseCase:
         self._retrying: set[str] = set()  # 退避补测中的代理（heartbeat 轮跳过）
 
     def standby_proxies(self) -> list[str]:
-        """备用队列当前代理"""
-        return self._pool.get_group_proxies(self._standby_group)
+        """备用队列当前代理（按 latency 升序，未探测的排最后）"""
+        proxies = self._pool.get_group_proxies(self._standby_group)
+        return sorted(proxies, key=lambda p: float("inf") if (l := self._pool.get_latency(p)) is None else l)
 
     def pending_retries(self) -> list[str]:
         """当前待退避补测的代理"""
         return list(self._retrying)
 
     async def fill(self, allowed_types: set[str], probe_url: str, timeout: float,
-                   concurrency: int, capacity: int) -> int:
-        """探测补入备用队列至容量上限，返回新增数量
+                   concurrency: int, capacity: int,
+                   *, on_change: Callable[[], None] | None = None) -> int:
+        """流式探测补入备用队列，返回新增数量
 
-        候选按配置的填充组顺序从可用集合收集（排除已在队列的代理，避免
-        重复探测与瞬时失败误拉黑队列内代理）：存活入队、死候选拉黑。
+        候选按配置的填充组顺序从可用集合收集（排除已在队列的代理，避免重复探测）。
+        每个代理探测完成即处理（on_result 回调，不等全部完成）：
+          - 存活 + 队列未满：move 入 standby（记 latency），调 on_change（实时 sync 上游）
+          - 存活 + 队列满 + latency < 队尾：踢队尾 move trusted，新代理入 standby，调 on_change
+          - 存活 + 队列满 + latency >= 队尾：新代理 move trusted（响应太快没进队列不浪费探测成果）
+          - 失败：record_fail，should_blacklist 才 remove 拉黑，否则留原组（下次 fill 仍可被选）
+
+        Args:
+            on_change: 每次队列成员变更（入队/踢尾）后调（serve 传 server.sync 实时同步 pproxy 上游）
         """
         remaining = capacity - len(self.standby_proxies())
         if remaining <= 0:
@@ -111,29 +124,59 @@ class StandbyQueueUseCase:
             return 0
 
         logger.info("备用队列探测 %d 个候选 -> %s", len(candidates), probe_url)
-        results = await self._check_proxies.execute(
-            candidates, probe_url, max_concurrent=concurrency, timeout=timeout,
-        )
-
         added = 0
-        for proxy in candidates:
-            if len(self.standby_proxies()) >= capacity:
-                break
-            info = results.get(proxy)
-            if info is not None and info.get("success"):
-                # 移入备用队列（单一归属，remove/晋级不会误删原组残留）
-                self._pool.move_proxy(proxy, self._standby_group, fails=0)
-                added += 1
-                logger.info("备用队列补入 %s", proxy)
+
+        def on_result(proxy: str, result: dict) -> None:
+            """流式入队回调：探测完成即处理，不等全部完成"""
+            nonlocal added
+            latency = result.get("elapsed")
+            if result.get("success"):
+                current = self.standby_proxies()  # 已按 latency 升序
+                if len(current) < capacity:
+                    # 队列未满：入队
+                    self._pool.move_proxy(proxy, self._standby_group, fails=0, latency=latency)
+                    added += 1
+                    if on_change:
+                        on_change()
+                    logger.info("备用队列补入 %s (latency=%.2fs)", proxy, latency or 0)
+                else:
+                    # 队列满：与队尾（最慢）比较，更快则替换
+                    tail = current[-1]
+                    tail_latency = self._pool.get_latency(tail)
+                    if tail_latency is None or latency < tail_latency:
+                        # 踢队尾：直接 move 到 trusted（不用 record_success——它对 standby 成员是
+                        # 复制不删除，会残留队列导致超容）
+                        self._pool.move_proxy(tail, self._pool.trusted_group, fails=0)
+                        self._pool.move_proxy(proxy, self._standby_group, fails=0, latency=latency)
+                        added += 1
+                        if on_change:
+                            on_change()
+                        logger.info("备用队列替换: 踢出 %s (%.2fs), 补入 %s (%.2fs)",
+                                    tail, tail_latency or 0, proxy, latency or 0)
+                    else:
+                        # 新代理较慢，move trusted（探测成果不浪费，下次 fill 优先入队）
+                        self._record.record_success(proxy)
+                        logger.info("代理 %s 探测存活但较慢 (%.2fs >= %.2fs), move trusted",
+                                    proxy, latency or 0, tail_latency or 0)
             else:
-                self._record.remove(proxy)
+                # 失败：record_fail 累计，达到 max_fails 才拉黑
+                self._record.record_fail(proxy)
+                if self._record.should_blacklist(proxy):
+                    self._record.remove(proxy)
+                    logger.warning("候选 %s 探测失败, 达到阈值已拉黑", proxy)
+                else:
+                    logger.info("候选 %s 探测失败, fails=%d", proxy, self._record.get_fail_count(proxy))
+
+        await self._check_proxies.execute(
+            candidates, probe_url, max_concurrent=concurrency, timeout=timeout, on_result=on_result,
+        )
         logger.info("备用队列补充完成: +%d (队列 %d/%d)", added, len(self.standby_proxies()), capacity)
         return added
 
     async def heartbeat(self, probe_url: str, timeout: float, concurrency: int) -> list[str]:
         """并发探测队列内代理，返回本轮确认存活的代理
 
-        成功：清零失败计数，保留在队列（不晋级 trusted）；
+        成功：更新 latency + 清零失败计数，保留在队列（不晋级 trusted）；
         失败：失败计数 +1，达到所在组阈值（should_blacklist）即拉黑移出，
               未达阈值进入退避补测（由 retry_probe 复核，heartbeat 轮跳过）。
         """
@@ -152,6 +195,7 @@ class StandbyQueueUseCase:
             info = results.get(proxy)
             if info is not None and info.get("success"):
                 self._pool.reset_fails(proxy)
+                self._pool.update_latency(proxy, info.get("elapsed", 0))
                 alive.append(proxy)
                 logger.info("代理 %s 心跳成功 (状态码 %s, 耗时 %.2fs)",
                             proxy, info.get("status_code"), info.get("elapsed", 0))
@@ -170,7 +214,7 @@ class StandbyQueueUseCase:
         return alive
 
     async def retry_probe(self, proxy: str, probe_url: str, timeout: float) -> None:
-        """对单个失败代理退避补测：成功恢复（清 fails），失败累计到阈值拉黑
+        """对单个失败代理退避补测：成功恢复（更新 latency + 清 fails），失败累计到阈值拉黑
 
         独立异步任务（serve 主循环为每个待补测代理启动）；
         结束（成功/拉黑/取消/代理已不在队列）时从待补测集合移除。
@@ -188,6 +232,7 @@ class StandbyQueueUseCase:
                 info = results.get(proxy)
                 if info is not None and info.get("success"):
                     self._pool.reset_fails(proxy)
+                    self._pool.update_latency(proxy, info.get("elapsed", 0))
                     logger.info("代理 %s 补测成功, 恢复使用", proxy)
                     return
                 self._record.record_fail(proxy)

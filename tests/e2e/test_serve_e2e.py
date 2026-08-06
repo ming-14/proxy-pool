@@ -107,9 +107,14 @@ def make_check(success_map):
 
 
 def _probe_side_effect(success_map):
-    """探测 side_effect：success_map 内成功，其余失败"""
+    """探测 side_effect：success_map 内成功，其余失败；调 on_result 模拟流式回调"""
     async def execute(proxies, url, **kw):
-        return _probe_result({p: success_map.get(p, False) for p in proxies})
+        results = _probe_result({p: success_map.get(p, False) for p in proxies})
+        on_result = kw.get("on_result")
+        if on_result:
+            for p in proxies:
+                on_result(p, results[p])
+        return results
     return execute
 
 
@@ -243,7 +248,7 @@ class TestHeartbeatE2E(ServeE2EBase):
             bad = "http://127.0.0.1:1"  # 无效代理
 
             self.pool.add_to_group("default-http", good)
-            self.pool.add_to_group("default-http", bad)
+            self.pool.add_to_group("default-http", bad, fails=MAX_FAILS - 1)  # 探测失败即达阈值拉黑
 
             check = make_check({good: True, bad: False})
             c = make_standby(self.pool, self.record, check)
@@ -274,7 +279,7 @@ class TestHeartbeatE2E(ServeE2EBase):
 
             self.pool.add_to_group("default-http", good1)
             self.pool.add_to_group("default-http", good2)
-            self.pool.add_to_group("default-http", bad)
+            self.pool.add_to_group("default-http", bad, fails=MAX_FAILS - 1)  # 探测失败即达阈值拉黑
 
             check = make_check({good1: True, good2: True, bad: False})
             c = make_standby(self.pool, self.record, check)

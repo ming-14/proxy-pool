@@ -87,30 +87,50 @@ class ProxyPool:
             return None, None
         return None, None
 
-    def add_to_group(self, group_name: str, proxy: str, fails: int = 0) -> None:
-        """将代理加入指定组（覆盖旧记录）"""
+    def add_to_group(self, group_name: str, proxy: str, fails: int = 0,
+                     latency: float | None = None) -> None:
+        """将代理加入指定组（覆盖旧记录）
+
+        Args:
+            latency: 探测响应时间（秒），standby 队列按此排序；None 表示未探测
+        """
         if group_name not in self.proxy_groups:
             return
         proxy = normalize_proxy(proxy)
         self.proxy_groups[group_name]["proxies"][proxy] = {
             "joined_at": int(time.time()),
             "fails": fails,
+            "latency": latency,
         }
 
-    def move_proxy(self, proxy: str, to_group: str, fails: int | None = None) -> None:
+    def move_proxy(self, proxy: str, to_group: str, fails: int | None = None,
+                   latency: float | None = None) -> None:
         """将代理从当前组移到目标组
 
         Args:
             proxy:    代理地址
             to_group: 目标组名
             fails:    失败次数，None 则保留原值
+            latency:  响应时间，None 则保留原值
         """
         proxy = normalize_proxy(proxy)
         src_group, info = self.find_proxy(proxy)
         if src_group is not None:
             del self.proxy_groups[src_group]["proxies"][proxy]
         actual_fails = fails if fails is not None else (info["fails"] if info else 0)
-        self.add_to_group(to_group, proxy, fails=actual_fails)
+        actual_latency = latency if latency is not None else (info.get("latency") if info else None)
+        self.add_to_group(to_group, proxy, fails=actual_fails, latency=actual_latency)
+
+    def update_latency(self, proxy: str, latency: float) -> None:
+        """更新代理响应时间（heartbeat 探测成功后更新，不改 joined_at/fails/组归属）"""
+        _, info = self.find_proxy(proxy)
+        if info is not None:
+            info["latency"] = latency
+
+    def get_latency(self, proxy: str) -> float | None:
+        """获取代理响应时间（不存在或未探测返回 None）"""
+        _, info = self.find_proxy(proxy)
+        return info.get("latency") if info else None
 
     def remove_all_copies(self, proxy: str, to_group: str) -> None:
         """将代理从所有组移除（清理多组副本）后加入目标组
@@ -241,21 +261,26 @@ class ProxyPool:
         return self.source_pause_remaining(source) is not None
 
     def export_state(self) -> dict:
-        """导出可持久化状态（先清理过期条目），与旧 .cache 文件格式一致"""
+        """导出可持久化状态（先清理过期条目），与旧 .cache 文件格式一致
+
+        latency 仅在非 None 时导出（兼容旧读取方）。
+        """
         self._cleanup_all_expired()
         data: dict[str, Any] = {"proxy_groups": {}, "source_paused": dict(self.source_paused)}
         for name, group in self.proxy_groups.items():
-            proxies = [
-                {"proxy": proxy, "joined_at": info["joined_at"], "fails": info["fails"]}
-                for proxy, info in group["proxies"].items()
-            ]
+            proxies = []
+            for proxy, info in group["proxies"].items():
+                entry = {"proxy": proxy, "joined_at": info["joined_at"], "fails": info["fails"]}
+                if info.get("latency") is not None:
+                    entry["latency"] = info["latency"]
+                proxies.append(entry)
             data["proxy_groups"][name] = {"ttl": group["ttl"], "proxies": proxies}
         return data
 
     def restore_state(self, data: dict) -> None:
         """从 store.load() 结果恢复状态：组 ttl 以配置为准、过期条目过滤、源暂停过期过滤
 
-        兼容旧 .cache 文件格式（proxy_groups 为 dict，组内 proxies 为 list）。
+        兼容旧 .cache 文件格式（proxy_groups 为 dict，组内 proxies 为 list，无 latency 字段）。
         文件里保存的 ttl 不覆盖配置（TTL 是运行时配置，改配置即生效）。
         """
         now = time.time()
@@ -271,6 +296,7 @@ class ProxyPool:
                 self.proxy_groups[name]["proxies"][proxy] = {
                     "joined_at": joined_at,
                     "fails": p.get("fails", 0),
+                    "latency": p.get("latency"),
                 }
         self.source_paused = {}
         for src, val in data.get("source_paused", {}).items():

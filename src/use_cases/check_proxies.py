@@ -44,12 +44,17 @@ class CheckProxiesUseCase:
         max_concurrent: int = 8,
         timeout: float = 10,
         headers: dict | None = None,
+        on_result: Callable[[str, dict], None] | None = None,
     ) -> dict[str, dict]:
         """并发测试代理是否可访问 url
 
         返回 {proxy: {"success", "status_code", "elapsed", "error"}}。
         http/socks5 代理严格校验证书（verify=True），筛掉伪造证书的中间人代理；
         https 代理不校验（TLS 直连代理本身，自签证书校验会误杀，见 do_test）。
+
+        Args:
+            on_result: 每个代理探测完成即调（proxy, result），用于流式入队等实时处理；
+                       None 则仅返回最终 results dict（批量语义）。
         """
         results: dict[str, dict] = {}
 
@@ -80,7 +85,12 @@ class CheckProxiesUseCase:
             proxies, max_concurrent=max_concurrent, max_fails=0, task_interval=0.1, request_timeout=timeout
         )
 
-        await scheduler.run(tasks, "TestProxies", do_test, on_success=lambda p, t, r: results.update({p: r}))
+        def _on_success(p, t, r):
+            results[p] = r
+            if on_result is not None:
+                on_result(p, r)
+
+        await scheduler.run(tasks, "TestProxies", do_test, on_success=_on_success)
 
         for proxy in proxies:
             if proxy not in results:
