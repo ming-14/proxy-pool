@@ -1,2 +1,4 @@
 requests
+PySocks
 fake-useragent
+pproxy
