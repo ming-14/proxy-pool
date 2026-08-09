@@ -1,0 +1,113 @@
+.sidebar {
+  width: var(--sidebar-width);
+  background-color: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  flex-shrink: 0;
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 40;
+}
+
+.sidebar-text {
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 0.2s ease;
+}
+
+.sidebar.collapsed {
+  width: var(--sidebar-collapsed);
+}
+
+.sidebar.collapsed .sidebar-text {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.nav-item:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.nav-item.active {
+  background-color: var(--primary-50);
+  color: var(--primary-600);
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+}
+
+/* 主内容区 */
+#main-content {
+  background-color: var(--bg-body);
+  overflow-anchor: none;  /* 禁用浏览器 scroll anchoring，虚拟滚动手动控制 scrollTop */
+}
+
+.page-section {
+  animation: fadeIn 0.25s ease;
+}
+
+.page-section.hidden {
+  display: none;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 顶部栏 */
+header {
+  background-color: var(--bg-header);
+  border-bottom: 1px solid var(--border-color);
+}
+
+footer {
+  background-color: var(--bg-footer);
+  border-top: 1px solid var(--border-color);
+}
+
+/* 移动端响应式 */
+@media (max-width: 1023px) {
+  .sidebar {
+    transform: translateX(-100%);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  #sidebar-overlay.open {
+    display: block;
+  }
+}
+
+@media (min-width: 1024px) {
+  .sidebar {
+    position: relative;
+  }
+
+  #sidebar-overlay {
+    display: none !important;
+  }
+}

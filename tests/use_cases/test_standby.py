@@ -4,12 +4,13 @@
 """
 
 import asyncio
+import time
 import unittest
 from unittest.mock import MagicMock
 
-from src.domain.proxy_pool import ProxyPool
+from src.domain.proxy_pool import ProxyPool, LOCKED_GROUP
 from src.framework.config import (
-    PROXY_GROUPS, MAX_FAILS, TRUSTED_MAX_FAILS, SOURCE_PAUSE_TTL,
+    PROXY_GROUPS, MAX_CONSECUTIVE_FAILS, TRUSTED_MAX_CONSECUTIVE_FAILS, SOURCE_PAUSE_TTL,
     TRUSTED_GROUP, BLACKLIST_GROUP, STANDBY_GROUP,
 )
 from src.use_cases.record_proxy import RecordProxyUseCase
@@ -19,8 +20,8 @@ from src.use_cases.standby import StandbyQueueUseCase
 def make_pool():
     return ProxyPool(
         PROXY_GROUPS,
-        max_fails=MAX_FAILS,
-        trusted_max_fails=TRUSTED_MAX_FAILS,
+        max_consecutive_fails=MAX_CONSECUTIVE_FAILS,
+        trusted_max_consecutive_fails=TRUSTED_MAX_CONSECUTIVE_FAILS,
         default_pause_ttl=SOURCE_PAUSE_TTL,
         requestable_groups=("default-http", "default-https", "default-socks5",
                             "freeproxy-world-http", "freeproxy-world-https",
@@ -81,15 +82,30 @@ def _async_result(success_map):
     }
 
 
-def make_standby(pool, check, fill_groups=("default-http",), multiplier=2, min_extra=1):
+def make_gate(ok: bool = True):
+    """LocalNetworkGate mock：check 总是返回 ok（不依赖网络）"""
+    gate = MagicMock()
+    gate.is_ok = ok
+
+    async def check(timeout):
+        return ok
+
+    gate.check.side_effect = check
+    return gate
+
+
+def make_standby(pool, check, fill_groups=("default-http",), multiplier=2, min_extra=1,
+                 metrics_window=1800, gate=None):
     return StandbyQueueUseCase(
         pool=pool,
         record=RecordProxyUseCase(pool=pool, standby_group=STANDBY_GROUP),
         check_proxies=check,
+        network_gate=gate or make_gate(True),
         standby_group=STANDBY_GROUP,
         fill_groups=fill_groups,
         fill_probe_multiplier=multiplier,
         fill_probe_min_extra=min_extra,
+        metrics_window=metrics_window,
     )
 
 
@@ -99,28 +115,28 @@ class TestStandbyFill(unittest.TestCase):
 
     def test_fill_moves_alive_proxies_blacklists_dead(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        # 预设 fails=1，探测失败后 fails=2=MAX_FAILS -> 拉黑（fill 用 max_fails 机制，非单次拉黑）
-        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", fails=1)
+        # 预设 consecutive_fails=1，探测失败后 consecutive_fails=2=MAX_CONSECUTIVE_FAILS -> 拉黑（fill 用 max_consecutive_fails 机制，非单次拉黑）
+        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", consecutive_fails=1)
         c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
         added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
         self.assertEqual(added, 1)
         self.assertEqual(c.standby_proxies(), ["http://1.2.3.4:8080"])
         self.assertTrue(self.pool.is_blacklisted("http://5.6.7.8:3128"))
-        # 入队失败计数清零
-        self.assertEqual(self.pool.get_fail_count("http://1.2.3.4:8080"), 0)
+        # 入队连续失败计数清零
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
 
-    def test_fill_failure_records_fails_not_blacklist(self):
-        """探测失败只 record_fail，未达 max_fails 不拉黑，留原组下次可再被选"""
+    def test_fill_failure_records_consecutive_fails_not_blacklist(self):
+        """探测失败只 record_fail，未达 max_consecutive_fails 不拉黑，留原组下次可再被选"""
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
         c = make_standby(self.pool, make_check(set()))
         asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
-        self.assertEqual(self.pool.get_fail_count("http://1.2.3.4:8080"), 1)
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 1)
         self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
         self.assertIn("http://1.2.3.4:8080", self.pool.get_group_proxies("default-http"))
 
     def test_fill_skips_existing_standby_members(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, fails=0)
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
         calls = []
         check = MagicMock()
 
@@ -174,7 +190,7 @@ class TestStandbyFill(unittest.TestCase):
 
     def test_fill_no_candidates_when_queue_full(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, fails=0)
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
         c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
         added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=1))
         self.assertEqual(added, 0)
@@ -219,7 +235,7 @@ class TestStandbyFill(unittest.TestCase):
     def test_fill_replaces_slower_tail(self):
         """队列有缺口时探测，填满后后续更快代理踢队尾 move trusted"""
         # 预填队列 1 个慢代理 latency=2.0s（留 1 个缺口）
-        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.0:8080", fails=0, latency=2.0)
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.0:8080", consecutive_fails=0, latency=2.0)
         # 候选 2 个：0.5s（填缺口）和 1.5s（更快踢尾）
         self.pool.add_to_group("default-http", "http://10.0.0.1:8080")
         self.pool.add_to_group("default-http", "http://10.0.0.2:8080")
@@ -238,7 +254,7 @@ class TestStandbyFill(unittest.TestCase):
     def test_fill_slower_new_goes_to_trusted(self):
         """队列填满后后续更慢代理不替换，move trusted"""
         # 预填队列 1 个快代理 latency=0.5s（留 1 个缺口）
-        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.0:8080", fails=0, latency=0.5)
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.0:8080", consecutive_fails=0, latency=0.5)
         # 候选 2 个：1.0s（填缺口）和 1.5s（更慢不替换）
         self.pool.add_to_group("default-http", "http://10.0.0.1:8080")
         self.pool.add_to_group("default-http", "http://10.0.0.2:8080")
@@ -268,7 +284,7 @@ class TestStandbyFill(unittest.TestCase):
         check.execute.side_effect = execute
         c = make_standby(self.pool, check, fill_groups=("default-http",), multiplier=2, min_extra=0)
         added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=4, capacity=2))
-        # 缺口 2 × 倍率 2 = 4 候选全探测；前 2 个入备用队列
+        # 缺口 2 × 倍率 2 = 4 候选全探测；前 2 个入代理服务队列
         self.assertEqual(added, 2)
         self.assertEqual(len(c.standby_proxies()), 2)
         # 后 2 个 move 进 trusted（不在原组、不在 standby）
@@ -294,19 +310,19 @@ class TestStandbyHeartbeat(unittest.TestCase):
     def setUp(self):
         self.pool = make_pool()
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, fails=0)
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
 
-    def test_heartbeat_success_resets_fails_keeps_in_queue(self):
-        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]["fails"] = 1
+    def test_heartbeat_success_resets_consecutive_fails_keeps_in_queue(self):
+        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"] = 1
         c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
         alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
         self.assertEqual(alive, ["http://1.2.3.4:8080"])
-        self.assertEqual(self.pool.get_fail_count("http://1.2.3.4:8080"), 0)
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
         self.assertEqual(c.pending_retries(), [])
 
     def test_heartbeat_updates_latency_and_reorders(self):
         """heartbeat 探测成功更新 latency，standby_proxies 按新 latency 重排"""
-        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:3128", fails=0, latency=0.1)
+        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:3128", consecutive_fails=0, latency=0.1)
         # 探测后 1.2.3.4 变慢（0.5s），5.6.7.8 变快（0.2s）
         spec = {
             "http://1.2.3.4:8080": {"success": True, "elapsed": 0.5},
@@ -321,8 +337,8 @@ class TestStandbyHeartbeat(unittest.TestCase):
         c = make_standby(self.pool, make_check(set()))
         alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
         self.assertEqual(alive, [])
-        # 一次失败：计 1 次，未达阈值（MAX_FAILS=2），进入退避补测，仍在队列
-        self.assertEqual(self.pool.get_fail_count("http://1.2.3.4:8080"), 1)
+        # 一次失败：计 1 次，未达阈值（MAX_CONSECUTIVE_FAILS=2），进入退避补测，仍在队列
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 1)
         self.assertEqual(c.pending_retries(), ["http://1.2.3.4:8080"])
         self.assertIn("http://1.2.3.4:8080", c.standby_proxies())
         self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
@@ -343,11 +359,66 @@ class TestStandbyHeartbeat(unittest.TestCase):
         check.execute.assert_not_called()
 
 
+class TestStandbyMetrics(unittest.TestCase):
+    """heartbeat 采样历史：每轮采一次，按时间窗口过期清理"""
+
+    def setUp(self):
+        self.pool = make_pool()
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0, latency=0.1)
+
+    def test_heartbeat_samples_metrics(self):
+        """heartbeat 后 history 含一个采样点，指标值正确"""
+        c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        hist = c.history()
+        self.assertEqual(len(hist), 1)
+        s = hist[0]
+        self.assertEqual(s.avg, 0.1)
+        self.assertEqual(s.min, 0.1)
+        self.assertEqual(s.max, 0.1)
+        self.assertEqual(s.health_rate, 100)
+        self.assertEqual(s.queue_length, 1)
+
+    def test_heartbeat_skipped_no_sample(self):
+        """空队列/全在补测时 heartbeat 不采样（无可观测指标）"""
+        self.pool.move_proxy("http://1.2.3.4:8080", self.pool.blacklist_group)
+        c = make_standby(self.pool, MagicMock())
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(c.history(), [])
+
+    def test_metrics_expire_by_window(self):
+        """超出 metrics_window 的旧采样点被清理，窗口内保留"""
+        c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}), metrics_window=0.05)
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        time.sleep(0.06)
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        hist = c.history()
+        self.assertEqual(len(hist), 1)  # 第一次的已过期，只留第二次
+
+    def test_metrics_multiple_proxies(self):
+        """多代理采样：avg/min/max/health_rate 聚合正确"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:3128", consecutive_fails=1, latency=0.3)
+        spec = {
+            "http://1.2.3.4:8080": {"success": True, "elapsed": 0.1},
+            "http://5.6.7.8:3128": {"success": True, "elapsed": 0.3},
+        }
+        c = make_standby(self.pool, make_check_results(spec))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        s = c.history()[0]
+        self.assertAlmostEqual(s.avg, 0.2)
+        self.assertEqual(s.min, 0.1)
+        self.assertEqual(s.max, 0.3)
+        self.assertEqual(s.queue_length, 2)
+        # 5.6.7.8 探测前 consecutive_fails=1，探测成功清零 -> 两个都健康
+        self.assertEqual(s.health_rate, 100)
+
+
 class TestStandbyRetryProbe(unittest.TestCase):
     def setUp(self):
         self.pool = make_pool()
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, fails=0)
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
 
     def test_retry_success_recovers(self):
         check = make_check(set())
@@ -362,7 +433,7 @@ class TestStandbyRetryProbe(unittest.TestCase):
 
         check.execute.side_effect = execute
         asyncio.run(c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3))
-        self.assertEqual(self.pool.get_fail_count("http://1.2.3.4:8080"), 0)
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
         self.assertIn("http://1.2.3.4:8080", c.standby_proxies())
         self.assertEqual(c.pending_retries(), [])
 
@@ -370,7 +441,7 @@ class TestStandbyRetryProbe(unittest.TestCase):
         c = make_standby(self.pool, make_check(set()))
         asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
         asyncio.run(c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3))
-        # 心跳 1 次 + 补测 1 次 = 2 = MAX_FAILS -> 拉黑移出
+        # 心跳 1 次 + 补测 1 次 = 2 = MAX_CONSECUTIVE_FAILS -> 拉黑移出
         self.assertTrue(self.pool.is_blacklisted("http://1.2.3.4:8080"))
         self.assertNotIn("http://1.2.3.4:8080", c.standby_proxies())
         self.assertEqual(c.pending_retries(), [])
@@ -378,10 +449,316 @@ class TestStandbyRetryProbe(unittest.TestCase):
     def test_retry_stops_when_proxy_leaves_queue(self):
         c = make_standby(self.pool, make_check(set()))
         asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
-        self.pool.move_proxy("http://1.2.3.4:8080", "default-http", fails=0)
+        self.pool.move_proxy("http://1.2.3.4:8080", "default-http", consecutive_fails=0)
         asyncio.run(c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3))
         self.assertEqual(c.pending_retries(), [])
         self.assertNotIn("http://1.2.3.4:8080", c.standby_proxies())
+
+
+class TestStandbyPinned(unittest.TestCase):
+    """固定代理（pin/unpin）队列保护测试"""
+
+    def setUp(self):
+        self.pool = make_pool()
+
+    def test_pinned_sort_first(self):
+        """固定代理排最前（按 pinned_at 升序），非固定按 latency 升序排后"""
+        c = make_standby(self.pool, MagicMock())
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.1:8080", consecutive_fails=0, latency=0.1)
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.2:8080", consecutive_fails=0, latency=0.2)
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.3:8080", consecutive_fails=0, latency=0.3)
+        self.pool.pin("http://10.0.0.3:8080")  # 最慢但固定，应排第一
+        self.assertEqual(c.standby_proxies(), [
+            "http://10.0.0.3:8080",
+            "http://10.0.0.1:8080",
+            "http://10.0.0.2:8080",
+        ])
+
+    def test_pinned_order_by_pinned_at(self):
+        """多个固定代理按 pinned_at 升序（先固定的排前）"""
+        c = make_standby(self.pool, MagicMock())
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.1:8080", consecutive_fails=0, latency=0.1)
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.2:8080", consecutive_fails=0, latency=0.2)
+        self.pool.pin("http://10.0.0.2:8080")
+        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://10.0.0.2:8080"]["pinned_at"] = 100
+        self.pool.pin("http://10.0.0.1:8080")
+        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://10.0.0.1:8080"]["pinned_at"] = 200
+        self.assertEqual(c.standby_proxies(), [
+            "http://10.0.0.2:8080",
+            "http://10.0.0.1:8080",
+        ])
+
+    def test_pinned_beyond_capacity_ignored(self):
+        """超出 capacity 的固定代理忽略（保留在组内但不参与队列）"""
+        c = make_standby(self.pool, MagicMock())
+        c.set_capacity(2)
+        for i in range(3):
+            self.pool.add_to_group(STANDBY_GROUP, f"http://10.0.0.{i}:8080", consecutive_fails=0, latency=0.1 * i)
+            self.pool.pin(f"http://10.0.0.{i}:8080")
+        result = c.standby_proxies()
+        self.assertEqual(len(result), 2)
+        # 第 3 个仍在组内但被忽略
+        self.assertIn("http://10.0.0.2:8080", self.pool.get_group_proxies(STANDBY_GROUP))
+
+    def test_fill_does_not_kick_pinned(self):
+        """fill 填满队列后后续更快候选踢非固定队尾，不踢固定"""
+        # 队列：1 个固定（慢 latency=3.0），留 1 个缺口
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.1:8080", consecutive_fails=0, latency=3.0)
+        self.pool.pin("http://10.0.0.1:8080")
+        # 候选 2 个：0.5s 填缺口，0.4s 更快踢非固定队尾
+        self.pool.add_to_group("default-http", "http://10.0.0.8:8080")
+        self.pool.add_to_group("default-http", "http://10.0.0.9:8080")
+        spec = {
+            "http://10.0.0.8:8080": {"success": True, "elapsed": 0.5},
+            "http://10.0.0.9:8080": {"success": True, "elapsed": 0.4},
+        }
+        c = make_standby(self.pool, make_check_results(spec), fill_groups=("default-http",), multiplier=2, min_extra=0)
+        c.set_capacity(2)
+        asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=2))
+        # 固定代理仍在队列
+        self.assertIn("http://10.0.0.1:8080", c.standby_proxies())
+        # 0.5s 填缺口入队后被 0.4s 踢到 trusted，0.4s 入队
+        self.assertIn("http://10.0.0.9:8080", c.standby_proxies())
+        self.assertIn("http://10.0.0.8:8080", self.pool.get_group_proxies(TRUSTED_GROUP))
+
+    def test_fill_skips_ignored_pinned_as_candidate(self):
+        """被 capacity 忽略的固定代理不被 fill 当候选重新探测"""
+        c = make_standby(self.pool, make_check_results({}), fill_groups=("default-http",), multiplier=1, min_extra=0)
+        c.set_capacity(1)
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.1:8080", consecutive_fails=0, latency=0.1)
+        self.pool.pin("http://10.0.0.1:8080")
+        self.pool.add_to_group(STANDBY_GROUP, "http://10.0.0.2:8080", consecutive_fails=0, latency=0.2)
+        self.pool.pin("http://10.0.0.2:8080")
+        self.assertEqual(len(c.standby_proxies()), 1)
+        added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=1, capacity=1))
+        self.assertEqual(added, 0)
+
+    def test_heartbeat_pinned_failure_only_counts(self):
+        """固定代理心跳失败只计数，不拉黑、不补测、不移出"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.pool.pin("http://1.2.3.4:8080")
+        c = make_standby(self.pool, make_check(set()))
+        alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(alive, [])
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 1)
+        self.assertEqual(c.pending_retries(), [])
+        self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
+        self.assertIn("http://1.2.3.4:8080", c.standby_proxies())
+
+    def test_heartbeat_pinned_failure_repeated_never_blacklisted(self):
+        """固定代理反复心跳失败达阈值也不拉黑不移出"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.pool.pin("http://1.2.3.4:8080")
+        c = make_standby(self.pool, make_check(set()))
+        for _ in range(5):
+            asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
+        self.assertIn("http://1.2.3.4:8080", c.standby_proxies())
+        self.assertEqual(c.pending_retries(), [])
+
+
+class TestStandbyNetworkGate(unittest.TestCase):
+    """本地网络门控：异常时跳过 heartbeat/fill/retry_probe，不计数/不拉黑/不补测"""
+
+    def setUp(self):
+        self.pool = make_pool()
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
+
+    def test_heartbeat_skipped_when_network_down(self):
+        """网络异常时跳过心跳：不探测、不计数、不拉黑、不进补测"""
+        check = MagicMock()
+        c = make_standby(self.pool, check, gate=make_gate(False))
+        alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(alive, [])
+        check.execute.assert_not_called()  # 未发起探测
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
+        self.assertEqual(c.pending_retries(), [])
+        self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
+        self.assertIn("http://1.2.3.4:8080", c.standby_proxies())
+
+    def test_heartbeat_network_down_preserves_existing_fail_count(self):
+        """网络异常时不清零已有失败计数（代理可能真有问题，网络恢复后继续累计）"""
+        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"] = 1
+        check = MagicMock()
+        c = make_standby(self.pool, check, gate=make_gate(False))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        # 计数保持 1（未探测、未清零、未增加）
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 1)
+
+    def test_fill_skipped_when_network_down(self):
+        """网络异常时跳过填充：不探测、返回 0、候选代理失败计数不变"""
+        self.pool.add_to_group("default-http", "http://5.6.7.8:3128")
+        check = MagicMock()
+        c = make_standby(self.pool, check, gate=make_gate(False))
+        added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
+        self.assertEqual(added, 0)
+        check.execute.assert_not_called()
+        # 候选代理失败计数未被污染
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://5.6.7.8:3128"), 0)
+
+    def test_retry_probe_network_down_no_count_no_blacklist(self):
+        """网络异常时补测不计数、不拉黑，代理保留在队列
+
+        retry_probe 在 gate 异常时重置退避到初始值快速轮询 gate 缓存，
+        不调 check_proxies、不 record_fail。用 wait_for 超时取出（gate 一直异常，
+        循环不退出），验证超时期间代理状态不变。
+        """
+        check = MagicMock()
+        gate = make_gate(False)
+        c = make_standby(self.pool, check, gate=gate)
+        c._retrying.add("http://1.2.3.4:8080")  # 模拟 heartbeat 已放入补测
+        with self.assertRaises(asyncio.TimeoutError):
+            asyncio.run(asyncio.wait_for(
+                c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3),
+                timeout=2.5,
+            ))
+        check.execute.assert_not_called()  # 网络异常期间未探测
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
+        self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
+        self.assertIn("http://1.2.3.4:8080", self.pool.get_group_proxies(STANDBY_GROUP))
+
+
+class TestStandbyLock(unittest.TestCase):
+    """锁定单一上游（lock/unlock）：lock 后 upstream_proxies 只返回锁定代理，standby_proxies 仍返回完整队列，fill/heartbeat 跳过"""
+
+    def setUp(self):
+        self.pool = make_pool()
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
+        self.pool.add_to_group("default-http", "http://5.6.7.8:3128")
+        self.pool.move_proxy("http://5.6.7.8:3128", STANDBY_GROUP, consecutive_fails=0)
+
+    def test_lock_returns_only_locked_proxy(self):
+        """lock 后 upstream_proxies 只返回锁定代理，standby_proxies 返回剩余队列"""
+        c = make_standby(self.pool, MagicMock())
+        c.lock("http://1.2.3.4:8080")
+        self.assertTrue(c.is_locked())
+        self.assertEqual(c.upstream_proxies(), ["http://1.2.3.4:8080"])
+        self.assertEqual(c.standby_proxies(), ["http://5.6.7.8:3128"])
+
+    def test_unlock_restores_queue(self):
+        """unlock 后代理 move 回队列，恢复原 standby_proxies"""
+        c = make_standby(self.pool, MagicMock())
+        c.lock("http://1.2.3.4:8080")
+        self.assertEqual(c.upstream_proxies(), ["http://1.2.3.4:8080"])
+        c.unlock()
+        self.assertFalse(c.is_locked())
+        self.assertEqual(set(c.standby_proxies()), {"http://1.2.3.4:8080", "http://5.6.7.8:3128"})
+
+    def test_fill_skipped_when_locked(self):
+        """lock 后 fill 跳过（不探测，返回 0）"""
+        check = MagicMock()
+        c = make_standby(self.pool, check)
+        c.lock("http://1.2.3.4:8080")
+        added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
+        self.assertEqual(added, 0)
+        check.execute.assert_not_called()
+
+    def test_heartbeat_locked_probes_locked_proxy(self):
+        """lock 后 heartbeat 仍探测锁定代理测速，成功更新 latency 并采样到趋势图"""
+        c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
+        c.lock("http://1.2.3.4:8080")
+        alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(alive, ["http://1.2.3.4:8080"])
+        # latency 已更新（测速数据供趋势图）
+        self.assertAlmostEqual(self.pool.get_latency("http://1.2.3.4:8080"), 0.1)
+        # 采样加到 history（趋势图数据点）
+        hist = c.history()
+        self.assertEqual(len(hist), 1)
+        self.assertTrue(hist[0].locked)  # 锁定期间采集
+        self.assertAlmostEqual(hist[0].avg, 0.1)
+        self.assertEqual(hist[0].queue_length, 1)
+        self.assertEqual(hist[0].health_rate, 100)
+
+    def test_heartbeat_locked_fail_only_counts(self):
+        """lock 后心跳失败只计数，不拉黑不移出不补测（锁定语义：无论成败都用它）"""
+        c = make_standby(self.pool, make_check(set()))  # 全失败
+        c.lock("http://1.2.3.4:8080")
+        alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(alive, [])
+        # 失败计数 +1 但代理仍在 LOCKED_GROUP（未拉黑未移出）
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 1)
+        self.assertIn("http://1.2.3.4:8080", self.pool.get_group_proxies(LOCKED_GROUP))
+        # 未进入退避补测（锁定代理不补测）
+        self.assertEqual(c.pending_retries(), [])
+
+    def test_lock_preserves_other_proxies_in_queue(self):
+        """lock 后其他代理保留在队列组（不动），unlock 后恢复"""
+        c = make_standby(self.pool, MagicMock())
+        c.lock("http://1.2.3.4:8080")
+        # 5.6.7.8 仍在 standby 组
+        self.assertIn("http://5.6.7.8:3128", self.pool.get_group_proxies(STANDBY_GROUP))
+        # 仍在 standby_proxies（完整队列），但不在 upstream_proxies（锁定时只返回锁定代理）
+        self.assertIn("http://5.6.7.8:3128", c.standby_proxies())
+        self.assertNotIn("http://5.6.7.8:3128", c.upstream_proxies())
+
+
+class TestPerProxyLatencyHistory(unittest.TestCase):
+    """单代理延时历史采样测试"""
+
+    def setUp(self):
+        self.pool = make_pool()
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
+
+    def test_heartbeat_success_records_latency(self):
+        """heartbeat 成功记一笔延时历史，key 为 bind（不含 scheme）"""
+        spec = {"http://1.2.3.4:8080": {"success": True, "elapsed": 0.5}}
+        c = make_standby(self.pool, make_check_results(spec))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        h = c.per_proxy_latency_history("1.2.3.4:8080")
+        self.assertEqual(len(h), 1)
+        self.assertAlmostEqual(h[0].latency, 0.5)
+
+    def test_key_is_bind_not_full_proxy(self):
+        """key 是 bind（不含 scheme），与 per-proxy 流量统一"""
+        spec = {"http://1.2.3.4:8080": {"success": True, "elapsed": 0.3}}
+        c = make_standby(self.pool, make_check_results(spec))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        # bind 格式有数据，完整 proxy 格式无数据
+        self.assertEqual(len(c.per_proxy_latency_history("1.2.3.4:8080")), 1)
+        self.assertEqual(len(c.per_proxy_latency_history("http://1.2.3.4:8080")), 0)
+
+    def test_heartbeat_failure_not_recorded(self):
+        """heartbeat 失败不记延时历史"""
+        c = make_standby(self.pool, make_check(set()))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(c.per_proxy_latency_history("1.2.3.4:8080"), [])
+
+    def test_multiple_heartbeats_accumulate(self):
+        """多轮 heartbeat 各记一笔"""
+        spec = {"http://1.2.3.4:8080": {"success": True, "elapsed": 0.4}}
+        c = make_standby(self.pool, make_check_results(spec))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        h = c.per_proxy_latency_history("1.2.3.4:8080")
+        self.assertEqual(len(h), 2)
+
+    def test_retry_probe_success_records_latency(self):
+        """retry_probe 补测成功也记一笔延时历史"""
+        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"] = 1
+        spec = {"http://1.2.3.4:8080": {"success": True, "elapsed": 0.6}}
+        c = make_standby(self.pool, make_check_results(spec))
+        asyncio.run(c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3))
+        h = c.per_proxy_latency_history("1.2.3.4:8080")
+        self.assertEqual(len(h), 1)
+        self.assertAlmostEqual(h[0].latency, 0.6)
+
+    def test_window_cleanup(self):
+        """超出 metrics_window 的采样点自动清理"""
+        spec = {"http://1.2.3.4:8080": {"success": True, "elapsed": 0.4}}
+        c = make_standby(self.pool, make_check_results(spec), metrics_window=0.1)
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        time.sleep(0.15)
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        h = c.per_proxy_latency_history("1.2.3.4:8080")
+        self.assertEqual(len(h), 1)
+
+    def test_unknown_bind_returns_empty(self):
+        """未探测过的 bind 返回空列表"""
+        c = make_standby(self.pool, MagicMock())
+        self.assertEqual(c.per_proxy_latency_history("9.9.9.9:9999"), [])
 
 
 if __name__ == "__main__":

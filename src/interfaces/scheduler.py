@@ -2,6 +2,9 @@
 
 实现 domain.ports.TaskScheduler 的结构签名（TestProxiesUseCase 只依赖 run）。
 do_task 为 async 协程（网络请求自行 await asyncio.to_thread 等避免阻塞循环）。
+
+max_consecutive_fails 为单次 run 内连续异常丢弃代理的阈值（调度器内部临时计数，
+非持久化；任务异常 +1，成功不重置——单次 run 内连续异常才丢弃）。
 """
 
 import asyncio
@@ -14,16 +17,16 @@ logger = logging.getLogger(__name__)
 class ProxyScheduler:
     """通用代理调度器：asyncio 并发执行任务，自动重试失败代理，超限则丢弃"""
 
-    def __init__(self, proxies, max_concurrent=8, max_fails=2, task_interval=1.0, request_timeout=10):
+    def __init__(self, proxies, max_concurrent=8, max_consecutive_fails=2, task_interval=1.0, request_timeout=10):
         self._max_concurrent = max_concurrent
-        self._max_fails = max_fails
+        self._max_consecutive_fails = max_consecutive_fails
         self._task_interval = task_interval
         self._request_timeout = request_timeout
         self._alive = set(proxies)
         self._failed = set()
         self._unused = list(proxies)
         self._next_time = {p: 0.0 for p in proxies}
-        self._fails = {p: 0 for p in proxies}
+        self._consecutive_fails = {p: 0 for p in proxies}
 
     @property
     def alive(self):
@@ -38,30 +41,20 @@ class ProxyScheduler:
         return list(self._unused)
 
     def assign_round_robin(self, items):
+        """轮询分配：第 i 个任务分给第 i % n 个未使用代理，每代理可分多任务
+
+        按未使用代理的输入顺序轮询（确定性，不依赖 set 迭代序）；
+        无未使用代理时全部任务未分配。
+        """
+        if not self._unused:
+            return {}, list(items)
         assignments = {}
-        available = list(self._alive)
         for i, item in enumerate(items):
-            if not available:
-                break
-            proxy = available[i % len(available)]
+            proxy = self._unused[i % len(self._unused)]
             assignments.setdefault(proxy, []).append(item)
         assigned = set(assignments.keys())
         self._unused = [p for p in self._unused if p not in assigned]
-        unassigned = [item for item in items if not any(item in v for v in assignments.values())] if available else list(items)
-        return assignments, unassigned
-
-    def assign_sequential(self, items):
-        assignments = {}
-        unassigned = []
-        for i, item in enumerate(items):
-            if i < len(self._unused):
-                proxy = self._unused[i]
-                assignments.setdefault(proxy, []).append(item)
-            else:
-                unassigned.append(item)
-        assigned = set(assignments.keys())
-        self._unused = [p for p in self._unused if p not in assigned]
-        return assignments, unassigned
+        return assignments, []
 
     async def run(self, tasks, phase_name, do_task, on_success=None):
         """异步执行任务列表
@@ -126,9 +119,9 @@ class ProxyScheduler:
                         else:
                             logger.info("[%s] %s 任务%s: 失败", phase_name, proxy, task_data)
                     except Exception as e:
-                        self._fails[proxy] = self._fails.get(proxy, 0) + 1
+                        self._consecutive_fails[proxy] = self._consecutive_fails.get(proxy, 0) + 1
                         reason = type(e).__name__
-                        if self._fails[proxy] > self._max_fails:
+                        if self._consecutive_fails[proxy] > self._max_consecutive_fails:
                             self._alive.discard(proxy)
                             self._failed.add(proxy)
                             if proxy in results:

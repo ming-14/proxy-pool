@@ -16,10 +16,32 @@ class ProxySource(Protocol):
 
 
 class ProxyStore(Protocol):
-    """代理池状态存储端口：纯读写，不含领域规则（过期过滤在 ProxyPool）"""
+    """代理池状态存储端口：支持增量与全量两种持久化模式
 
-    def load(self) -> dict: ...
-    def save(self, state: dict) -> None: ...
+    增量（save_group/save_source_paused）只写 dirty 组，心跳高频场景 ~0.3ms；
+    全量（save_full）替换整库，CLI/serve 退出时确保一致性。
+    领域规则（过期过滤）在 ProxyPool，store 只做读写。
+    """
+
+    def load(self) -> dict:
+        """加载全量状态（启动时调用，返回 export_state 兼容格式）"""
+        ...
+
+    def save_full(self, state: dict) -> None:
+        """全量替换（CLI 命令退出 / serve 退出，确保一致性）"""
+        ...
+
+    def save_group(self, group_name: str, group_data: dict) -> None:
+        """增量保存单个组（事务内 DELETE 该组旧行 + INSERT 新行）
+
+        Args:
+            group_data: {"ttl": ..., "proxies": [{"proxy", "joined_at", ...}]}
+        """
+        ...
+
+    def save_source_paused(self, source_paused: dict) -> None:
+        """增量保存源暂停状态（全量替换 source_paused 表）"""
+        ...
 
 
 class HttpGetter(Protocol):

@@ -10,13 +10,14 @@ from dataclasses import dataclass
 from src.domain.models import SourceSpec
 from src.domain.ports import ProxySource
 from src.domain.proxy_pool import ProxyPool
-from src.interfaces.http_client import HttpGetter
-from src.interfaces.json_store import JsonProxyStore
+from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
+from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.proxy_server import PproxyServer
 from src.interfaces.scheduler import ProxyScheduler
 from src.use_cases.check_proxies import CheckProxiesUseCase
 from src.use_cases.fetch_proxies import FetchProxiesUseCase
 from src.use_cases.get_proxies import GetProxiesUseCase
+from src.use_cases.network_gate import LocalNetworkGate
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.request_with_retry import RequestWithRetryUseCase
 from src.use_cases.standby import StandbyQueueUseCase
@@ -27,7 +28,7 @@ class Container:
     """已组装依赖的容器，CLI 命令从中取用各组件"""
 
     pool: ProxyPool
-    store: JsonProxyStore
+    store: SqliteProxyStore
     fetch: FetchProxiesUseCase
     get_proxies: GetProxiesUseCase
     record: RecordProxyUseCase
@@ -35,10 +36,25 @@ class Container:
     check_proxies: CheckProxiesUseCase
     proxy_server: PproxyServer
     standby: StandbyQueueUseCase
+    async_getter: AsyncHttpGetter
 
     def save(self) -> None:
-        """将池状态持久化（CLI 命令 finally 中调用）"""
-        self.store.save(self.pool.export_state())
+        """增量保存：只写 dirty 组（serve 主循环 / Web 控制动作高频调用）
+
+        无 dirty 时零 IO；心跳场景 ~0.3ms（vs 旧 JSON 全量 0.3s）。
+        """
+        dirty = self.pool.dirty_groups()
+        if dirty:
+            for g in dirty:
+                self.store.save_group(g, self.pool.export_group(g))
+        if self.pool.source_paused_dirty():
+            self.store.save_source_paused(self.pool.export_source_paused())
+        self.pool.clear_dirty()
+
+    def save_full(self) -> None:
+        """全量保存（CLI 退出 / serve 退出，确保一致性）"""
+        self.store.save_full(self.pool.export_state())
+        self.pool.clear_dirty()
 
 
 def _source_loader(name: str) -> ProxySource:
@@ -46,24 +62,25 @@ def _source_loader(name: str) -> ProxySource:
     return importlib.import_module(name).create_source()
 
 
-def build_container(cache_file: str | None = None) -> Container:
-    """构建完整依赖树。cache_file 缺省时使用 config.CACHE_FILE"""
+def build_container(cache_db: str | None = None) -> Container:
+    """构建完整依赖树。cache_db 缺省时使用 config.CACHE_DB"""
     from src.framework import config
 
     pool = ProxyPool(
         config.PROXY_GROUPS,
-        max_fails=config.MAX_FAILS,
-        trusted_max_fails=config.TRUSTED_MAX_FAILS,
+        max_consecutive_fails=config.MAX_CONSECUTIVE_FAILS,
+        trusted_max_consecutive_fails=config.TRUSTED_MAX_CONSECUTIVE_FAILS,
         default_pause_ttl=config.SOURCE_PAUSE_TTL,
         requestable_groups=config.REQUESTABLE_GROUPS,
         trusted_group=config.TRUSTED_GROUP,
         blacklist_group=config.BLACKLIST_GROUP,
     )
-    store = JsonProxyStore(cache_file or config.CACHE_FILE)
+    store = SqliteProxyStore(cache_db or config.CACHE_DB)
     pool.restore_state(store.load())
 
     sources = [SourceSpec(**s) for s in config.SOURCES]
     http_getter = HttpGetter()
+    async_getter = AsyncHttpGetter()
 
     fetch = FetchProxiesUseCase(
         pool=pool,
@@ -82,18 +99,30 @@ def build_container(cache_file: str | None = None) -> Container:
     check_proxies = CheckProxiesUseCase(
         scheduler_factory=lambda proxies, **kw: ProxyScheduler(proxies, **kw),
         http_getter=http_getter,
+        async_getter=async_getter,
     )
     proxy_server = PproxyServer(
         listen_uri=f"http+socks4+socks5://{config.SERVER_HOST}:{config.SERVER_PORT}",
+        metrics_window=config.METRICS_WINDOW,
+    )
+    network_gate = LocalNetworkGate(
+        http_getter=http_getter,
+        probe_urls=config.NETWORK_PROBE_URLS,
+        cache_ok=config.NETWORK_CHECK_CACHE_OK,
+        backoff_initial=config.NETWORK_CHECK_BACKOFF_INITIAL,
+        backoff_max=config.NETWORK_CHECK_BACKOFF_MAX,
+        async_getter=async_getter,
     )
     standby = StandbyQueueUseCase(
         pool=pool,
         record=record,
         check_proxies=check_proxies,
+        network_gate=network_gate,
         standby_group=config.STANDBY_GROUP,
         fill_groups=config.STANDBY_FILL_GROUPS,
         fill_probe_multiplier=config.STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
+        metrics_window=config.METRICS_WINDOW,
     )
     return Container(
         pool=pool,
@@ -105,4 +134,5 @@ def build_container(cache_file: str | None = None) -> Container:
         check_proxies=check_proxies,
         proxy_server=proxy_server,
         standby=standby,
+        async_getter=async_getter,
     )

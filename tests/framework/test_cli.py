@@ -21,11 +21,11 @@ logging.disable(logging.WARNING)
 from src.framework import cli
 from src.framework.container import Container
 from src.domain.proxy_pool import ProxyPool
-from src.interfaces.json_store import JsonProxyStore
+from src.interfaces.sqlite_store import SqliteProxyStore
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.framework.config import (
-    MAX_FAILS,
-    TRUSTED_MAX_FAILS,
+    MAX_CONSECUTIVE_FAILS,
+    TRUSTED_MAX_CONSECUTIVE_FAILS,
     SOURCE_PAUSE_TTL,
     PROXY_GROUPS,
     TRUSTED_GROUP,
@@ -34,24 +34,37 @@ from src.framework.config import (
 )
 
 
-def make_pool(cache_file):
+def make_pool(db_path):
     pool = ProxyPool(
         PROXY_GROUPS,
-        max_fails=MAX_FAILS,
-        trusted_max_fails=TRUSTED_MAX_FAILS,
+        max_consecutive_fails=MAX_CONSECUTIVE_FAILS,
+        trusted_max_consecutive_fails=TRUSTED_MAX_CONSECUTIVE_FAILS,
         default_pause_ttl=SOURCE_PAUSE_TTL,
         requestable_groups=("default-http", "freeproxy-world-http", "freeproxy-world-https", "freeproxy-world-socks5", "trusted"),
         trusted_group=TRUSTED_GROUP,
         blacklist_group=BLACKLIST_GROUP,
     )
-    pool.restore_state(JsonProxyStore(cache_file).load())
+    store = SqliteProxyStore(db_path)
+    pool.restore_state(store.load())
+    store.close()
     return pool
 
 
-def make_container(cache_file):
+def _incremental_save(store, pool):
+    """模拟 Container.save 增量逻辑（只写 dirty 组）"""
+    dirty = pool.dirty_groups()
+    if dirty:
+        for g in dirty:
+            store.save_group(g, pool.export_group(g))
+    if pool.source_paused_dirty():
+        store.save_source_paused(pool.export_source_paused())
+    pool.clear_dirty()
+
+
+def make_container(db_path):
     """构造 fake container：真实 pool/store/record，其余组件 mock"""
-    pool = make_pool(cache_file)
-    store = JsonProxyStore(cache_file)
+    pool = make_pool(db_path)
+    store = SqliteProxyStore(db_path)
     c = MagicMock(spec=Container)
     c.pool = pool
     c.store = store
@@ -60,7 +73,8 @@ def make_container(cache_file):
     c.record = RecordProxyUseCase(pool=pool, standby_group=STANDBY_GROUP)
     c.request_with_retry = MagicMock()
     c.check_proxies = MagicMock()
-    c.save = MagicMock(wraps=lambda: store.save(pool.export_state()))
+    c.save = MagicMock(wraps=lambda: _incremental_save(store, pool))
+    c.save_full = MagicMock(wraps=lambda: store.save_full(pool.export_state()))
     return c
 
 
@@ -75,15 +89,21 @@ class ContainerTestCase(unittest.TestCase):
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
-        self.cache_file = os.path.join(self.tmp_dir, ".cache")
-        self.container = make_container(self.cache_file)
+        self.db_path = os.path.join(self.tmp_dir, ".cache.db")
+        self.container = make_container(self.db_path)
         self._patcher = patch.object(cli, "_get_container", return_value=self.container)
         self._patcher.start()
 
     def tearDown(self):
         self._patcher.stop()
-        if os.path.exists(self.cache_file):
-            os.remove(self.cache_file)
+        try:
+            self.container.store.close()
+        except Exception:
+            pass
+        for ext in ("", "-wal", "-shm"):
+            p = self.db_path + ext
+            if os.path.exists(p):
+                os.remove(p)
         os.rmdir(self.tmp_dir)
 
 
@@ -123,17 +143,17 @@ class TestPrintProxies(unittest.TestCase):
 class TestCmdFetch(ContainerTestCase):
     def test_fetch_plain(self):
         args = _Args(json=False)
-        self.container.pool.get_available_proxies = MagicMock(return_value={"http://1.2.3.4:8080": {"group": "default-http", "fails": 0}})
+        self.container.pool.get_available_proxies = MagicMock(return_value={"http://1.2.3.4:8080": {"group": "default-http", "consecutive_fails": 0}})
         buf = io.StringIO()
         with redirect_stdout(buf):
             cli.cmd_fetch(args)
         self.assertIn("http://1.2.3.4:8080", buf.getvalue())
         self.container.fetch.execute.assert_called_once()
-        self.container.save.assert_called_once()
+        self.container.save_full.assert_called_once()
 
     def test_fetch_json(self):
         args = _Args(json=True)
-        self.container.pool.get_available_proxies = MagicMock(return_value={"http://1.2.3.4:8080": {"group": "default-http", "fails": 0}})
+        self.container.pool.get_available_proxies = MagicMock(return_value={"http://1.2.3.4:8080": {"group": "default-http", "consecutive_fails": 0}})
         buf = io.StringIO()
         with redirect_stdout(buf):
             cli.cmd_fetch(args)
@@ -153,7 +173,7 @@ class TestCmdFetch(ContainerTestCase):
         self.container.fetch.execute.side_effect = RuntimeError("boom")
         with self.assertRaises(RuntimeError):
             cli.cmd_fetch(args)
-        self.container.save.assert_called_once()
+        self.container.save_full.assert_called_once()
 
 
 class TestCmdList(ContainerTestCase):
@@ -248,7 +268,7 @@ class TestCmdGet(ContainerTestCase):
         self.container.get_proxies.execute.return_value = ["http://1.2.3.4:8080"]
         args = _Args(n=1, json=False)
         cli.cmd_get(args)
-        self.container.save.assert_called_once()
+        self.container.save_full.assert_called_once()
 
 
 class TestCmdStatus(ContainerTestCase):
@@ -319,7 +339,7 @@ class TestCmdBlacklist(ContainerTestCase):
     def test_blacklist_saves(self):
         args = _Args(proxies=["http://1.2.3.4:8080"])
         cli.cmd_blacklist(args)
-        pool2 = make_pool(self.cache_file)
+        pool2 = make_pool(self.db_path)
         self.assertTrue(pool2.is_blacklisted("http://1.2.3.4:8080"))
 
 
@@ -343,7 +363,7 @@ class TestCmdTrust(ContainerTestCase):
     def test_trust_saves(self):
         args = _Args(proxies=["http://1.2.3.4:8080"])
         cli.cmd_trust(args)
-        pool2 = make_pool(self.cache_file)
+        pool2 = make_pool(self.db_path)
         self.assertIn("http://1.2.3.4:8080", pool2.proxy_groups["trusted"]["proxies"])
 
 
@@ -417,14 +437,14 @@ class TestCmdRequest(ContainerTestCase):
         self.container.request_with_retry.execute.return_value = ("http://1.2.3.4:8080", mock_resp)
         args = _Args(url="http://example.com", timeout=10, retries=5, max_length=None, headers=False)
         cli.cmd_request(args)
-        self.container.save.assert_called_once()
+        self.container.save_full.assert_called_once()
 
     def test_request_saves_cache_on_failure(self):
         self.container.request_with_retry.execute.side_effect = Exception("fail")
         args = _Args(url="http://example.com", timeout=10, retries=5, max_length=None, headers=False)
         with self.assertRaises(SystemExit):
             cli.cmd_request(args)
-        self.container.save.assert_called_once()
+        self.container.save_full.assert_called_once()
 
     def test_request_passes_retries(self):
         mock_resp = MagicMock()
@@ -476,8 +496,8 @@ class TestCmdTest(ContainerTestCase):
 
     def test_test_concurrent_mode(self):
         self.container.pool.get_available_proxies = MagicMock(return_value={
-            "http://1.1.1.1:8080": {"group": "default-http", "fails": 0},
-            "http://2.2.2.2:3128": {"group": "default-http", "fails": 0},
+            "http://1.1.1.1:8080": {"group": "default-http", "consecutive_fails": 0},
+            "http://2.2.2.2:3128": {"group": "default-http", "consecutive_fails": 0},
         })
         mock_results = {
             "http://1.1.1.1:8080": {"success": True, "status_code": 200, "elapsed": 0.5, "error": None},

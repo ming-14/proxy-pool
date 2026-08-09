@@ -5,7 +5,6 @@
   无显示环境（TclError）时自动跳过
 """
 
-import json
 import logging
 import os
 import sys
@@ -20,8 +19,20 @@ import view
 from view import (
     CacheViewer, build_group_summary, build_proxy_rows, build_source_rows,
     format_duration, format_remaining, format_ttl,
-    load_cache, max_fails_of, resolve_group_ttl,
+    load_cache, max_consecutive_fails_of, resolve_group_ttl,
 )
+from src.interfaces.sqlite_store import SqliteProxyStore
+
+
+def _cleanup_db(path: str) -> None:
+    """删除 SQLite 数据库及其 WAL/SHM 侧车文件"""
+    for ext in ("", "-wal", "-shm"):
+        p = path + ext
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
 
 NOW = 1_800_000_000
@@ -38,18 +49,18 @@ def make_sample(now):
             "default-http": {
                 "ttl": DEFAULT_TTL,
                 "proxies": [
-                    {"proxy": "http://1.1.1.1:8080", "joined_at": now - 300, "fails": 0},   # 已过期
-                    {"proxy": "http://2.2.2.2:8080", "joined_at": now - 100, "fails": 2},   # 超限（fails>=2）
-                    {"proxy": "http://3.3.3.3:8080", "joined_at": now - 200, "fails": 0},   # 即将过期（剩 40s）
-                    {"proxy": "http://4.4.4.4:8080", "joined_at": now - 10, "fails": 0},    # 存活
+                    {"proxy": "http://1.1.1.1:8080", "joined_at": now - 300, "consecutive_fails": 0},   # 已过期
+                    {"proxy": "http://2.2.2.2:8080", "joined_at": now - 100, "consecutive_fails": 2},   # 超限（consecutive_fails>=2）
+                    {"proxy": "http://3.3.3.3:8080", "joined_at": now - 200, "consecutive_fails": 0},   # 即将过期（剩 40s）
+                    {"proxy": "http://4.4.4.4:8080", "joined_at": now - 10, "consecutive_fails": 0},    # 存活
                     {"proxy": "http://5.5.5.5:8080", "joined_at": now - 10, "extra": True}, # 缺字段容错
                 ],
             },
             "trusted": {
                 "ttl": None,
                 "proxies": [
-                    {"proxy": "http://9.9.9.9:80", "joined_at": 0, "fails": 3},             # trusted 超限（>=3）
-                    {"proxy": "http://8.8.8.8:80", "joined_at": 0, "fails": 2},             # trusted 存活（<3）
+                    {"proxy": "http://9.9.9.9:80", "joined_at": 0, "consecutive_fails": 3},             # trusted 超限（>=3）
+                    {"proxy": "http://8.8.8.8:80", "joined_at": 0, "consecutive_fails": 2},             # trusted 存活（<3）
                 ],
             },
         },
@@ -66,28 +77,49 @@ SAMPLE = make_sample(NOW)
 
 class TestLoadCache(unittest.TestCase):
     def test_valid_file(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".cache", delete=False, encoding="utf-8") as f:
-            json.dump(SAMPLE, f)
-            path = f.name
+        tmp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(tmp_dir, ".cache.db")
+        # 构造 SqliteProxyStore 能完整往返的 state（只含 schema 字段，不含 extra 等非持久化字段）
+        state = {
+            "proxy_groups": {
+                "default-http": {"ttl": 240, "proxies": [
+                    {"proxy": "http://1.1.1.1:8080", "joined_at": NOW - 300, "consecutive_fails": 0},
+                    {"proxy": "http://2.2.2.2:8080", "joined_at": NOW - 100, "consecutive_fails": 2},
+                ]},
+                "trusted": {"ttl": None, "proxies": [
+                    {"proxy": "http://9.9.9.9:80", "joined_at": 0, "consecutive_fails": 3},
+                ]},
+            },
+            "source_paused": {"src.interfaces.sources.ip89": {"paused_at": NOW - 100, "ttl": 300}},
+        }
         try:
-            self.assertEqual(load_cache(path), SAMPLE)
+            store = SqliteProxyStore(db_path)
+            store.save_full(state)
+            store.close()
+            self.assertEqual(load_cache(db_path), state)
         finally:
-            os.remove(path)
+            _cleanup_db(db_path)
+            os.rmdir(tmp_dir)
 
     def test_missing_file(self):
         self.assertEqual(load_cache(os.path.join(tempfile.gettempdir(), "no_such_cache_xxx")), {})
 
     def test_corrupt_file(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".cache", delete=False) as f:
-            f.write("{not json!")
-            path = f.name
+        """非 SQLite 格式文件 load_cache 返回空 dict（容错）"""
+        tmp_dir = tempfile.mkdtemp()
+        db_path = os.path.join(tmp_dir, ".cache.db")
         try:
-            self.assertEqual(load_cache(path), {})
+            with open(db_path, "wb") as f:
+                f.write(b"not a sqlite database")
+            self.assertEqual(load_cache(db_path), {})
         finally:
-            os.remove(path)
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def test_default_path_is_project_root(self):
-        self.assertTrue(view.default_cache_path().endswith(os.path.join("proxy-pool", ".cache")))
+        # 与 view.default_cache_path() 实现同源（view.py 所在目录的 .cache.db）
+        expected = os.path.join(os.path.dirname(os.path.abspath(view.__file__)), ".cache.db")
+        self.assertEqual(view.default_cache_path(), expected)
 
 
 class TestBuildProxyRows(unittest.TestCase):
@@ -99,7 +131,7 @@ class TestBuildProxyRows(unittest.TestCase):
         self.assertEqual(self.by_proxy["http://1.1.1.1:8080"]["status"], "expired")
         self.assertEqual(self.by_proxy["http://2.2.2.2:8080"]["status"], "invalid")
         self.assertEqual(self.by_proxy["http://4.4.4.4:8080"]["status"], "alive")
-        # trusted 阈值更高：fails=3 超限 / fails=2 存活
+        # trusted 阈值更高：consecutive_fails=3 超限 / consecutive_fails=2 存活
         self.assertEqual(self.by_proxy["http://9.9.9.9:80"]["status"], "invalid")
         self.assertEqual(self.by_proxy["http://8.8.8.8:80"]["status"], "alive")
 
@@ -109,7 +141,7 @@ class TestBuildProxyRows(unittest.TestCase):
 
     def test_missing_fields_tolerated(self):
         self.assertIn("http://5.5.5.5:8080", self.by_proxy)
-        self.assertEqual(self.by_proxy["http://5.5.5.5:8080"]["fails"], 0)
+        self.assertEqual(self.by_proxy["http://5.5.5.5:8080"]["consecutive_fails"], 0)
 
     def test_sort_order(self):
         # 排序：已过期在前，其余按剩余时间升序（永不过期最后）
@@ -128,10 +160,10 @@ class TestBuildProxyRows(unittest.TestCase):
 
 
 class TestThresholds(unittest.TestCase):
-    def test_max_fails_of(self):
-        self.assertEqual(max_fails_of("trusted"), 3)
-        self.assertEqual(max_fails_of("default-http"), 2)
-        self.assertEqual(max_fails_of("freeproxy-world-http"), 2)
+    def test_max_consecutive_fails_of(self):
+        self.assertEqual(max_consecutive_fails_of("trusted"), 3)
+        self.assertEqual(max_consecutive_fails_of("default-http"), 2)
+        self.assertEqual(max_consecutive_fails_of("freeproxy-world-http"), 2)
 
     def test_group_ttl_prefers_cache(self):
         cache = {"proxy_groups": {"default-http": {"ttl": 123, "proxies": []}}}
@@ -190,13 +222,14 @@ class TestGuiSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp_dir = tempfile.mkdtemp()
-        cls.cache_path = os.path.join(cls.tmp_dir, ".cache")
-        with open(cls.cache_path, "w", encoding="utf-8") as f:
-            json.dump(make_sample(time.time()), f)
+        cls.cache_path = os.path.join(cls.tmp_dir, ".cache.db")
+        store = SqliteProxyStore(cls.cache_path)
+        store.save_full(make_sample(time.time()))
+        store.close()
 
     @classmethod
     def tearDownClass(cls):
-        os.remove(cls.cache_path)
+        _cleanup_db(cls.cache_path)
         os.rmdir(cls.tmp_dir)
 
     def _rows_with_tag(self, tree, tag):

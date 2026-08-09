@@ -1,7 +1,7 @@
 """代理服务器 e2e 测试：真实 pproxy + 本地 mock 上游 + 完整业务流
 
 覆盖：
-1. serve 启动：备用队列补入 + pproxy 监听
+1. serve 启动：代理服务队列补入 + pproxy 监听
 2. HTTP 客户端经本地代理实际访问目标（mock 上游转发）
 3. 动态同步：rserver 增删代理后仍可用
 4. 心跳驱动：失败代理计次 + 退避补测，达到阈值拉黑移出；成功代理保留在队列（不晋级）
@@ -26,8 +26,8 @@ from src.interfaces.proxy_server import PproxyServer
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.framework.config import (
     PROXY_GROUPS,
-    MAX_FAILS,
-    TRUSTED_MAX_FAILS,
+    MAX_CONSECUTIVE_FAILS,
+    TRUSTED_MAX_CONSECUTIVE_FAILS,
     SOURCE_PAUSE_TTL,
     TRUSTED_GROUP,
     BLACKLIST_GROUP,
@@ -35,6 +35,7 @@ from src.framework.config import (
     STANDBY_FILL_GROUPS,
     STANDBY_FILL_PROBE_MULTIPLIER,
     STANDBY_FILL_PROBE_MIN_EXTRA,
+    METRICS_WINDOW,
 )
 from src.use_cases.standby import StandbyQueueUseCase
 
@@ -50,8 +51,8 @@ async def close_server(srv):
 def make_pool():
     return ProxyPool(
         PROXY_GROUPS,
-        max_fails=MAX_FAILS,
-        trusted_max_fails=TRUSTED_MAX_FAILS,
+        max_consecutive_fails=MAX_CONSECUTIVE_FAILS,
+        trusted_max_consecutive_fails=TRUSTED_MAX_CONSECUTIVE_FAILS,
         default_pause_ttl=SOURCE_PAUSE_TTL,
         requestable_groups=("default-http", "default-https", "default-socks5",
                             "freeproxy-world-http", "freeproxy-world-https",
@@ -62,20 +63,32 @@ def make_pool():
 
 
 def standby_list(pool):
-    """备用队列组当前代理"""
+    """代理服务队列组当前代理"""
     return list(pool.proxy_groups[STANDBY_GROUP]["proxies"].keys())
 
 
 def make_standby(pool, record, check):
-    """构造备用队列用例（容器壳：pool/record/check_proxies/save）"""
+    """构造代理服务队列用例（容器壳：pool/record/check_proxies/save）
+
+    e2e 用 mock 上游不走真实网络，network_gate 注入总是 True 的 mock（本地网络恒正常）。
+    """
+    gate = MagicMock()
+    gate.is_ok = True
+
+    async def _gate_ok(timeout):
+        return True
+
+    gate.check.side_effect = _gate_ok
     return StandbyQueueUseCase(
         pool=pool,
         record=record,
         check_proxies=check,
+        network_gate=gate,
         standby_group=STANDBY_GROUP,
         fill_groups=STANDBY_FILL_GROUPS,
         fill_probe_multiplier=STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=STANDBY_FILL_PROBE_MIN_EXTRA,
+        metrics_window=METRICS_WINDOW,
     )
 
 
@@ -132,13 +145,10 @@ class ServeE2EBase(unittest.TestCase):
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
-        self.cache_file = os.path.join(self.tmp_dir, ".cache")
         self.pool = make_pool()
         self.record = RecordProxyUseCase(pool=self.pool, standby_group=STANDBY_GROUP)
 
     def tearDown(self):
-        if os.path.exists(self.cache_file):
-            os.remove(self.cache_file)
         os.rmdir(self.tmp_dir)
 
 
@@ -163,6 +173,107 @@ class TestServeE2E(ServeE2EBase):
             self.assertIn(MOCK_BODY, resp)
 
             await server.close()
+            await close_server(upstream)
+
+        asyncio.run(run())
+
+    def test_traffic_counted(self):
+        """经代理转发请求后流量计数器累加（验证 modstat 钩子生效）"""
+        async def run():
+            upstream, mock_port = await start_mock_upstream()
+            proxy_uri = f"http://127.0.0.1:{mock_port}"
+            self.pool.add_to_group("default-http", proxy_uri)
+            check = make_check({proxy_uri: True})
+            c = make_standby(self.pool, self.record, check)
+            await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
+            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            await server.start(standby_list(self.pool))
+            listen_port = server._handler.sockets[0].getsockname()[1]
+
+            await http_request_via_proxy(listen_port)
+            await asyncio.sleep(0.3)  # 等转发 task 完成计数
+
+            up, down = server.traffic_total()
+            # pproxy modstat 只统计 channel 转发的 body：GET 请求头在 connected 回调里
+            # 直接写不经 stat_bytes，故上行可能为 0；响应 body 经 channel 转发必计数
+            self.assertGreater(down, 0)
+            self.assertGreater(up + down, 0)
+
+            await server.close()
+            await close_server(upstream)
+
+        asyncio.run(run())
+
+    def test_per_proxy_traffic_counted(self):
+        """经代理转发后 per_proxy_traffic 按上游代理地址（bind）计数"""
+        async def run():
+            upstream, mock_port = await start_mock_upstream()
+            proxy_uri = f"http://127.0.0.1:{mock_port}"
+            self.pool.add_to_group("default-http", proxy_uri)
+            check = make_check({proxy_uri: True})
+            c = make_standby(self.pool, self.record, check)
+            await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
+            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            await server.start(standby_list(self.pool))
+            listen_port = server._handler.sockets[0].getsockname()[1]
+
+            await http_request_via_proxy(listen_port)
+            await asyncio.sleep(0.3)
+
+            bind = f"127.0.0.1:{mock_port}"
+            ppt = server.per_proxy_traffic()
+            self.assertIn(bind, ppt)
+            self.assertGreater(ppt[bind]["download"], 0)
+
+            await server.close()
+            await close_server(upstream)
+
+        asyncio.run(run())
+
+    def test_per_proxy_traffic_history_sampled(self):
+        """sample_traffic 后 per_proxy_traffic_history 返回该 bind 的流量采样序列"""
+        async def run():
+            upstream, mock_port = await start_mock_upstream()
+            proxy_uri = f"http://127.0.0.1:{mock_port}"
+            self.pool.add_to_group("default-http", proxy_uri)
+            check = make_check({proxy_uri: True})
+            c = make_standby(self.pool, self.record, check)
+            await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
+            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            await server.start(standby_list(self.pool))
+            listen_port = server._handler.sockets[0].getsockname()[1]
+
+            await http_request_via_proxy(listen_port)
+            await asyncio.sleep(0.3)
+            server.sample_traffic()
+
+            bind = f"127.0.0.1:{mock_port}"
+            hist = server.per_proxy_traffic_history(bind)
+            self.assertGreater(len(hist), 0)
+            self.assertGreater(hist[-1].total_download, 0)
+
+            await server.close()
+            await close_server(upstream)
+
+        asyncio.run(run())
+
+    def test_per_proxy_latency_history_recorded(self):
+        """heartbeat 探测成功后 per_proxy_latency_history 记录该 bind 的延时采样"""
+        async def run():
+            upstream, mock_port = await start_mock_upstream()
+            proxy_uri = f"http://127.0.0.1:{mock_port}"
+            self.pool.add_to_group("default-http", proxy_uri)
+            check = make_check({proxy_uri: True})
+            c = make_standby(self.pool, self.record, check)
+            await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
+
+            await c.heartbeat("http://probe.local", timeout=3, concurrency=2)
+
+            bind = f"127.0.0.1:{mock_port}"
+            hist = c.per_proxy_latency_history(bind)
+            self.assertGreater(len(hist), 0)
+            self.assertGreaterEqual(hist[-1].latency, 0)
+
             await close_server(upstream)
 
         asyncio.run(run())
@@ -248,7 +359,7 @@ class TestHeartbeatE2E(ServeE2EBase):
             bad = "http://127.0.0.1:1"  # 无效代理
 
             self.pool.add_to_group("default-http", good)
-            self.pool.add_to_group("default-http", bad, fails=MAX_FAILS - 1)  # 探测失败即达阈值拉黑
+            self.pool.add_to_group("default-http", bad, consecutive_fails=MAX_CONSECUTIVE_FAILS - 1)  # 探测失败即达阈值拉黑
 
             check = make_check({good: True, bad: False})
             c = make_standby(self.pool, self.record, check)
@@ -279,7 +390,7 @@ class TestHeartbeatE2E(ServeE2EBase):
 
             self.pool.add_to_group("default-http", good1)
             self.pool.add_to_group("default-http", good2)
-            self.pool.add_to_group("default-http", bad, fails=MAX_FAILS - 1)  # 探测失败即达阈值拉黑
+            self.pool.add_to_group("default-http", bad, consecutive_fails=MAX_CONSECUTIVE_FAILS - 1)  # 探测失败即达阈值拉黑
 
             check = make_check({good1: True, good2: True, bad: False})
             c = make_standby(self.pool, self.record, check)
@@ -295,7 +406,7 @@ class TestHeartbeatE2E(ServeE2EBase):
             self.assertEqual(c.pending_retries(), [good1])
             self.assertFalse(self.pool.is_blacklisted(good1))
 
-            # 退避补测再失败 -> 达到阈值（MAX_FAILS=2）拉黑移出
+            # 退避补测再失败 -> 达到阈值（MAX_CONSECUTIVE_FAILS=2）拉黑移出
             await c.retry_probe(good1, "http://probe.local", timeout=3)
             self.assertNotIn(good1, standby_list(self.pool))
             self.assertIn(good2, standby_list(self.pool))
@@ -308,7 +419,7 @@ class TestHeartbeatE2E(ServeE2EBase):
         asyncio.run(run())
 
     def test_heartbeat_retry_recovery(self):
-        """退避补测成功：清零失败计数，代理保留在队列"""
+        """退避补测成功：清零连续失败计数，代理保留在队列"""
         async def run():
             upstream, mock_port = await start_mock_upstream()
             good = f"http://127.0.0.1:{mock_port}"
@@ -326,10 +437,10 @@ class TestHeartbeatE2E(ServeE2EBase):
             await c.heartbeat("http://probe.local", timeout=3, concurrency=2)
             self.assertEqual(c.pending_retries(), [good])
 
-            # 补测成功 -> 恢复，失败计数清零，仍在队列
+            # 补测成功 -> 恢复，连续失败计数清零，仍在队列
             check.execute.side_effect = orig_execute
             await c.retry_probe(good, "http://probe.local", timeout=3)
-            self.assertEqual(self.pool.get_fail_count(good), 0)
+            self.assertEqual(self.pool.get_consecutive_fail_count(good), 0)
             self.assertIn(good, standby_list(self.pool))
             self.assertEqual(c.pending_retries(), [])
 

@@ -22,25 +22,6 @@ class TestProxyScheduler(unittest.TestCase):
         self.assertEqual(sched.failed, set())
         self.assertEqual(sched.unused, [])
 
-    def test_assign_sequential(self):
-        sched = ProxyScheduler(self._make_proxies(3))
-        assignments, unassigned = sched.assign_sequential([2, 3, 4, 5])
-        self.assertEqual(len(assignments), 3)
-        self.assertEqual(len(unassigned), 1)
-        self.assertEqual(unassigned, [5])
-
-    def test_assign_sequential_more_pages_than_proxies(self):
-        sched = ProxyScheduler(["1.1.1.1:8080"])
-        assignments, unassigned = sched.assign_sequential([2, 3, 4])
-        self.assertEqual(len(assignments), 1)
-        self.assertEqual(len(unassigned), 2)
-
-    def test_assign_sequential_empty_proxies(self):
-        sched = ProxyScheduler([])
-        assignments, unassigned = sched.assign_sequential([2, 3, 4])
-        self.assertEqual(assignments, {})
-        self.assertEqual(unassigned, [2, 3, 4])
-
     def test_assign_round_robin(self):
         sched = ProxyScheduler(self._make_proxies(3))
         assignments, _ = sched.assign_round_robin([2, 3, 4, 5, 6])
@@ -62,18 +43,13 @@ class TestProxyScheduler(unittest.TestCase):
         self.assertEqual(assignments, {})
         self.assertEqual(unassigned, [2, 3, 4])
 
-    def test_assign_sequential_updates_unused(self):
-        sched = ProxyScheduler(self._make_proxies(3))
-        sched.assign_sequential([2, 3])
-        self.assertEqual(len(sched.unused), 1)
-
     def test_assign_round_robin_updates_unused(self):
         sched = ProxyScheduler(self._make_proxies(3))
         sched.assign_round_robin([2, 3])
         self.assertEqual(len(sched.unused), 1)
 
     def test_run_success(self):
-        sched = ProxyScheduler(["1.1.1.1:8080", "2.2.2.2:3128"], max_concurrent=2, max_fails=1, task_interval=0)
+        sched = ProxyScheduler(["1.1.1.1:8080", "2.2.2.2:3128"], max_concurrent=2, max_consecutive_fails=1, task_interval=0)
         tasks = [("1.1.1.1:8080", 2), ("2.2.2.2:3128", 3)]
 
         async def do_task(proxy, task_data):
@@ -83,7 +59,7 @@ class TestProxyScheduler(unittest.TestCase):
         self.assertTrue(any(r["success"] for r in results.values()))
 
     def test_run_failure_removes_proxy(self):
-        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_fails=0, task_interval=0)
+        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_consecutive_fails=0, task_interval=0)
         tasks = [("1.1.1.1:8080", 2)]
 
         async def do_task(proxy, task_data):
@@ -94,7 +70,7 @@ class TestProxyScheduler(unittest.TestCase):
         self.assertNotIn("1.1.1.1:8080", sched.alive)
 
     def test_run_on_success_callback(self):
-        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_fails=1, task_interval=0)
+        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_consecutive_fails=1, task_interval=0)
         tasks = [("1.1.1.1:8080", 2)]
         collected = []
 
@@ -108,7 +84,7 @@ class TestProxyScheduler(unittest.TestCase):
         self.assertEqual(len(collected), 1)
 
     def test_run_empty_tasks(self):
-        sched = ProxyScheduler(self._make_proxies(3), max_concurrent=1, max_fails=1, task_interval=0)
+        sched = ProxyScheduler(self._make_proxies(3), max_concurrent=1, max_consecutive_fails=1, task_interval=0)
 
         async def do_task(proxy, task_data):
             return "ok"
@@ -117,7 +93,7 @@ class TestProxyScheduler(unittest.TestCase):
         self.assertEqual(results, {p: {"success": False, "failed_items": []} for p in sched.alive})
 
     def test_run_retry_on_fail(self):
-        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_fails=2, task_interval=0)
+        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_consecutive_fails=2, task_interval=0)
         tasks = [("1.1.1.1:8080", 2)]
         call_count = 0
 
@@ -131,8 +107,8 @@ class TestProxyScheduler(unittest.TestCase):
         results = asyncio.run(sched.run(tasks, "Test", do_task))
         self.assertTrue(results["1.1.1.1:8080"]["success"])
 
-    def test_run_multiple_fails_removes_proxy(self):
-        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_fails=1, task_interval=0)
+    def test_run_multiple_consecutive_fails_removes_proxy(self):
+        sched = ProxyScheduler(["1.1.1.1:8080"], max_concurrent=1, max_consecutive_fails=1, task_interval=0)
         tasks = [("1.1.1.1:8080", 2)]
 
         async def do_task(proxy, task_data):

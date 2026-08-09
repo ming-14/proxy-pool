@@ -107,19 +107,35 @@ class TestUAGenerator(unittest.TestCase):
                 self.assertIn("Chromium", ua["Sec-Ch-Ua"])
                 self.assertIn("Google Chrome", ua["Sec-Ch-Ua"])
 
-    def test_chrome_mobile_is_question_zero(self):
+    def test_chrome_mobile_matches_ua(self):
+        """Sec-Ch-Ua-Mobile 与 UA 是否移动设备一致（?1=mobile / ?0=desktop）"""
         gen = UAGenerator()
-        for seed in ["a", "b", "c"]:
+        for seed in ["a", "b", "c", "d", "e", "f", "g", "h"]:
             ua = gen.get(seed)
             if ua["Sec-Ch-Ua"]:
-                self.assertEqual(ua["Sec-Ch-Ua-Mobile"], "?0")
+                ua_str = ua["User-Agent"]
+                expected = "?1" if any(k in ua_str for k in ("iPhone", "iPad", "Android")) else "?0"
+                self.assertEqual(ua["Sec-Ch-Ua-Mobile"], expected)
 
-    def test_chrome_platform_is_windows(self):
+    def test_chrome_platform_matches_ua(self):
+        """Sec-Ch-Ua-Platform 与 UA 实际平台一致（不再写死 Windows）"""
         gen = UAGenerator()
-        for seed in ["a", "b", "c"]:
+        for seed in ["a", "b", "c", "d", "e", "f", "g", "h"]:
             ua = gen.get(seed)
             if ua["Sec-Ch-Ua"]:
-                self.assertEqual(ua["Sec-Ch-Ua-Platform"], '"Windows"')
+                ua_str = ua["User-Agent"]
+                if "Windows NT" in ua_str:
+                    self.assertEqual(ua["Sec-Ch-Ua-Platform"], '"Windows"')
+                elif "iPhone" in ua_str or "iPad" in ua_str:
+                    self.assertEqual(ua["Sec-Ch-Ua-Platform"], '"iOS"')
+                elif "Android" in ua_str:
+                    self.assertEqual(ua["Sec-Ch-Ua-Platform"], '"Android"')
+                elif "CrOS" in ua_str:
+                    self.assertEqual(ua["Sec-Ch-Ua-Platform"], '"Chrome OS"')
+                elif "Mac OS X" in ua_str or "Macintosh" in ua_str:
+                    self.assertEqual(ua["Sec-Ch-Ua-Platform"], '"macOS"')
+                elif "Linux" in ua_str:
+                    self.assertEqual(ua["Sec-Ch-Ua-Platform"], '"Linux"')
 
 
 if __name__ == "__main__":

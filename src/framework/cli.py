@@ -37,7 +37,7 @@ def cmd_fetch(args):
         available = c.pool.get_available_proxies()
         _print_proxies(list(available.keys()), args.json)
     finally:
-        c.save()
+        c.save_full()
 
 
 def cmd_list(args):
@@ -57,7 +57,7 @@ def cmd_get(args):
         proxies = c.get_proxies.execute(args.n)
         _print_proxies(proxies, args.json)
     finally:
-        c.save()
+        c.save_full()
 
 
 def cmd_status(args):
@@ -95,7 +95,7 @@ def cmd_blacklist(args):
             c.record.remove(proxy)
             print(f"已加入黑名单: {proxy}")
     finally:
-        c.save()
+        c.save_full()
 
 
 def cmd_trust(args):
@@ -106,7 +106,7 @@ def cmd_trust(args):
             c.record.trust(proxy)
             print(f"已加入信任池: {proxy}")
     finally:
-        c.save()
+        c.save_full()
 
 
 def cmd_request(args):
@@ -130,7 +130,7 @@ def cmd_request(args):
             print(f"请求失败: {type(e).__name__}: {e}", file=sys.stderr)
             sys.exit(1)
     finally:
-        c.save()
+        c.save_full()
 
 
 def cmd_test(args):
@@ -191,7 +191,7 @@ def _print_proxies(proxies, as_json=False):
 
 
 def cmd_serve(args):
-    """启动本地代理服务器：pproxy 监听 + 备用队列心跳"""
+    """启动本地代理服务器：pproxy 监听 + 代理服务队列心跳"""
     from src.framework.serve import run
 
     # serve 用 CLI 的 host/port 重建组合根（proxy_server 按监听地址构造）
@@ -207,6 +207,8 @@ def cmd_serve(args):
         probe_url=args.probe_url,
         allowed_types=allowed,
         concurrency=config.HEARTBEAT_CONCURRENCY,
+        web_host=args.web_host,
+        web_port=args.web_port,
     )
 
 
@@ -263,11 +265,13 @@ def main():
     p_serve = sub.add_parser("serve", help="启动本地代理服务器 (HTTP/SOCKS4/SOCKS5)")
     p_serve.add_argument("--host", default=config.SERVER_HOST, help=f"监听地址 (默认{config.SERVER_HOST})")
     p_serve.add_argument("--port", type=int, default=config.SERVER_PORT, help=f"监听端口 (默认{config.SERVER_PORT})")
-    p_serve.add_argument("--queue-size", type=int, default=config.STANDBY_QUEUE_CAPACITY, help=f"备用队列容量 (默认{config.STANDBY_QUEUE_CAPACITY})")
+    p_serve.add_argument("--queue-size", type=int, default=config.STANDBY_QUEUE_CAPACITY, help=f"代理服务队列容量 (默认{config.STANDBY_QUEUE_CAPACITY})")
     p_serve.add_argument("--interval", type=int, default=config.HEARTBEAT_INTERVAL, help=f"心跳间隔秒 (默认{config.HEARTBEAT_INTERVAL})")
     p_serve.add_argument("--probe-url", default=config.HEARTBEAT_PROBE_URL, help="心跳探测URL")
     p_serve.add_argument("--type", action="append", choices=["http", "https", "socks5"],
                          help="允许的代理类型 (可多次指定)，默认全部")
+    p_serve.add_argument("--web-host", default=config.WEB_HOST, help=f"Web 面板监听地址 (默认{config.WEB_HOST})")
+    p_serve.add_argument("--web-port", type=int, default=config.WEB_PORT, help=f"Web 面板监听端口 (默认{config.WEB_PORT})")
 
     args = parser.parse_args()
 

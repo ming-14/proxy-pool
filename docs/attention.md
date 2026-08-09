@@ -1,0 +1,2 @@
+- Windows 默认 ProactorEventLoop(IOCP) 在大量 to_thread + SSL 时会静默退出导致进程硬死（无 traceback、无 av、finally 不执行）
+- `http://httpbin.org/ip`不稳定，建议使用cf204，gs204，`http://example.com`

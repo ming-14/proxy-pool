@@ -1,17 +1,16 @@
-"""代理池缓存 (.cache) 只读查看器
+"""代理池缓存 (.cache.db) 只读查看器
 
-独立于主工程业务逻辑的纯查看工具：直接读取缓存 JSON 并展示
+独立于主工程业务逻辑的纯查看工具：直接读取 SQLite 缓存并展示
 各组代理明细（加入时间、失败次数、过期倒计时）与源暂停状态。
 
-- 数据来源：默认项目根 .cache，支持命令行参数覆盖路径
+- 数据来源：默认项目根 .cache.db，支持命令行参数覆盖路径
 - 技术栈：tkinter + ttk（标准库，零额外依赖）
 - 失效判定与领域模型保持一致：
     - ttl=None 永不过期；否则 now - joined_at >= ttl 视为已过期
-    - fails >= max_fails（trusted 组用 trusted_max_fails）视为超限失效
-  （阈值来自 src.framework.config，避免硬编码）
+    - consecutive_fails >= max_consecutive_fails（trusted 组用 trusted_max_consecutive_fails）视为超限失效
+   （阈值来自 src.framework.config，避免硬编码；consecutive_fails 为连续失败计数，任何成功清零）
 """
 
-import json
 import logging
 import os
 import sys
@@ -20,12 +19,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from src.framework.config import (
-    MAX_FAILS,
+    MAX_CONSECUTIVE_FAILS,
     PROXY_GROUPS,
     SOURCE_PAUSE_TTL,
     TRUSTED_GROUP,
-    TRUSTED_MAX_FAILS,
+    TRUSTED_MAX_CONSECUTIVE_FAILS,
 )
+from src.interfaces.sqlite_store import SqliteProxyStore
 
 logger = logging.getLogger("proxy_pool.view")
 
@@ -42,18 +42,20 @@ _STATUS_RANK = {"expired": 0, "invalid": 1, "alive": 2}
 
 
 def default_cache_path() -> str:
-    """默认缓存路径：项目根（本文件所在目录）下的 .cache"""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
+    """默认缓存路径：项目根（本文件所在目录）下的 .cache.db"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache.db")
 
 
 def load_cache(path: str) -> dict:
-    """读取缓存 JSON；文件缺失或损坏返回空 dict（与 JsonProxyStore 语义一致）"""
+    """读取 SQLite 缓存；文件缺失或损坏返回空 dict（与 SqliteProxyStore 语义一致）"""
     if not os.path.exists(path):
         logger.warning("缓存文件不存在: %s", path)
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        store = SqliteProxyStore(path)
+        data = store.load()
+        store.close()
+        return data
     except Exception as exc:
         logger.error("缓存文件解析失败 %s: %s", path, exc)
         return {}
@@ -68,15 +70,15 @@ def resolve_group_ttl(cache: dict, group_name: str) -> int | None:
     return PROXY_GROUPS.get(group_name)
 
 
-def max_fails_of(group_name: str) -> int:
-    """组的失败上限：信任池组容错更高"""
-    return TRUSTED_MAX_FAILS if group_name == TRUSTED_GROUP else MAX_FAILS
+def max_consecutive_fails_of(group_name: str) -> int:
+    """组的连续失败上限：信任池组容错更高"""
+    return TRUSTED_MAX_CONSECUTIVE_FAILS if group_name == TRUSTED_GROUP else MAX_CONSECUTIVE_FAILS
 
 
 def build_proxy_rows(cache: dict, now: float | None = None) -> list[dict]:
     """从缓存构建代理明细行并按（状态优先级, 剩余时间）排序
 
-    Row 字段: proxy/group/fails/joined_at/ttl/remaining/status/near
+    Row 字段: proxy/group/consecutive_fails/joined_at/ttl/remaining/status/near
     remaining: 剩余秒数；ttl=None 时为 None；负数表示已过期
     status:    "expired" | "invalid" | "alive"
     near:      存活且剩余不足 NEAR_EXPIRY_SECONDS（仅用于着色）
@@ -87,7 +89,7 @@ def build_proxy_rows(cache: dict, now: float | None = None) -> list[dict]:
         if not isinstance(group, dict):
             continue
         ttl = resolve_group_ttl(cache, group_name)
-        max_fails = max_fails_of(group_name)
+        max_consecutive_fails = max_consecutive_fails_of(group_name)
         for item in group.get("proxies", []):
             if not isinstance(item, dict):
                 continue
@@ -95,16 +97,16 @@ def build_proxy_rows(cache: dict, now: float | None = None) -> list[dict]:
             if not proxy:
                 continue
             joined_at = item.get("joined_at", 0)
-            fails = item.get("fails", 0)
+            consecutive_fails = item.get("consecutive_fails", 0)
             remaining = None if ttl is None else int(ttl - (now - joined_at))
             expired = remaining is not None and remaining <= 0
-            invalid = fails >= max_fails
+            invalid = consecutive_fails >= max_consecutive_fails
             status = "expired" if expired else ("invalid" if invalid else "alive")
             near = status == "alive" and remaining is not None and 0 < remaining <= NEAR_EXPIRY_SECONDS
             rows.append({
                 "proxy": proxy,
                 "group": group_name,
-                "fails": fails,
+                "consecutive_fails": consecutive_fails,
                 "joined_at": joined_at,
                 "ttl": ttl,
                 "remaining": remaining,
@@ -270,11 +272,11 @@ class CacheViewer:
         }, widths={"group": 200, "ttl": 110, "total": 70, "alive": 70, "invalid": 70, "expired": 80})
 
     def _build_proxy_tree(self, parent: ttk.Frame) -> ttk.Treeview:
-        columns = ("proxy", "group", "fails", "joined", "remaining")
+        columns = ("proxy", "group", "consecutive_fails", "joined", "remaining")
         tree = self._make_tree(parent, columns, {
-            "proxy": "代理", "group": "组", "fails": "失败次数",
+            "proxy": "代理", "group": "组",             "consecutive_fails": "连续失败",
             "joined": "加入时间", "remaining": "剩余",
-        }, widths={"proxy": 300, "group": 200, "fails": 80, "joined": 150, "remaining": 120})
+        }, widths={"proxy": 300, "group": 200, "consecutive_fails": 80, "joined": 150, "remaining": 120})
         tree.tag_configure("expired", foreground="#9e9e9e")
         tree.tag_configure("invalid", foreground="#c62828")
         tree.tag_configure("near", foreground="#ef6c00")
@@ -324,7 +326,7 @@ class CacheViewer:
         for row in self._filtered_rows(rows):
             tag = "expired" if row["status"] == "expired" else ("invalid" if row["status"] == "invalid" else ("near" if row["near"] else ""))
             tree.insert("", tk.END, values=(
-                row["proxy"], row["group"], row["fails"],
+                row["proxy"], row["group"], row["consecutive_fails"],
                 format_ts(row["joined_at"]), format_remaining(row),
             ), tags=(tag,) if tag else ())
 
@@ -392,7 +394,7 @@ class CacheViewer:
     def _choose_file(self) -> None:
         """文件选择对话框换缓存文件"""
         path = filedialog.askopenfilename(
-            title="选择缓存文件", filetypes=[("JSON 文件", "*.cache *.json"), ("所有文件", "*.*")]
+            title="选择缓存文件", filetypes=[("SQLite 数据库", "*.db *.cache.db"), ("所有文件", "*.*")]
         )
         if path:
             self.cache_path = path

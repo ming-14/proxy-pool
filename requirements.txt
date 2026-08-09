@@ -2,3 +2,4 @@ requests
 PySocks
 fake-useragent
 pproxy
+aiohttp

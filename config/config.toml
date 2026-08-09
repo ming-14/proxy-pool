@@ -6,38 +6,58 @@
 
 # ---------------------------------------------------------------- 缓存与日志路径
 [paths]
-cache_file = ".cache"        # 代理池状态持久化文件（相对项目根）
+cache_db = ".cache.db"        # 代理池状态持久化 SQLite 数据库（相对项目根，WAL 模式）
 log_dir = "logs"             # 日志目录（相对项目根）
 
 # ---------------------------------------------------------------- 代理池
 [pool]
-max_fails = 2                # 普通组代理失败次数 >= 该值后不再参与可用集合
-trusted_max_fails = 3        # 信任池组代理的失败上限（容错更高）
+max_consecutive_fails = 2        # 普通组代理连续失败次数 >= 该值后不再参与可用集合
+trusted_max_consecutive_fails = 3  # 信任池组代理的连续失败上限（容错更高）
+# 特殊语义组（显式指定组名，组须在 [groups] 定义）：
+#   trusted_group:    信任池：请求成功代理的晋级目标，永不过期
+#   blacklist_group:  黑名单：失败淘汰代理的归属，不可请求
+trusted_group = "trusted"
+blacklist_group = "blacklist"
+# 可请求组（参与可用集合，request/get 命令与 standby fill 从中取代理）。
+# 显式列表声明，未列出的组（如 blacklist）不参与可用集合。
+requestable_groups = [
+    "default-http",
+    "default-https",
+    "default-socks5",
+    "freeproxy-world-http",
+    "freeproxy-world-https",
+    "freeproxy-world-socks5",
+    "Proxy-pool-standby-queue",
+    "trusted",
+]
 
 # ---------------------------------------------------------------- 代理分组（组全部在此定义）
-# 组名 -> { ttl, role?, requestable? }
-# - ttl:          整数秒数，超过自动清除（见 ProxyPool._cleanup_all_expired）；"never" 永不过期
-# - role:         特殊语义组，每个角色必须恰好一个：
-#                 "trusted"   信任池：请求成功代理的晋级目标，永不过期
-#                 "blacklist" 黑名单：失败淘汰代理的归属，不可请求
-#                 "standby"   serve 备用队列：pproxy 上游，由心跳探测维护
-# - requestable:  是否参与可用集合（request/get 命令可从中取代理，默认 false）
+# 组名 -> { ttl }
+# - ttl: 整数秒数，超过自动清除（见 ProxyPool._cleanup_all_expired）；"never" 永不过期
 [groups]
-"default-http" = { ttl = 3600, requestable = true }              # API 源的 HTTP 代理，1 小时
-"default-https" = { ttl = 3600, requestable = true }             # API 源的 HTTPS 代理
-"default-socks5" = { ttl = 3600, requestable = true }            # API 源的 SOCKS5 代理
-"freeproxy-world-http" = { ttl = 18000, requestable = true }     # FreeProxy.World 的 HTTP 代理，5 小时（与该源暂停时长一致）
-"freeproxy-world-https" = { ttl = 18000, requestable = true }    # FreeProxy.World 的 HTTPS 代理
-"freeproxy-world-socks5" = { ttl = 18000, requestable = true }   # FreeProxy.World 的 SOCKS5 代理
-"Proxy-pool-standby-queue" = { ttl = "never", role = "standby", requestable = true }   # serve 备用队列（pproxy 上游），由心跳探测维护
-"trusted" = { ttl = "never", role = "trusted", requestable = true }   # 成功使用过的代理，永不过期
-"blacklist" = { ttl = 10800, role = "blacklist" }                # 失败过多的代理，3 小时后过期可重新入池
+"default-http" = { ttl = 3600 }              # API 源的 HTTP 代理
+"default-https" = { ttl = 3600 }             # API 源的 HTTPS 代理
+"default-socks5" = { ttl = 3600 }            # API 源的 SOCKS5 代理
+"freeproxy-world-http" = { ttl = 1800000 }     # FreeProxy.World 的 HTTP 代理
+"freeproxy-world-https" = { ttl = 1800000 }    # FreeProxy.World 的 HTTPS 代理
+"freeproxy-world-socks5" = { ttl = 1800000 }   # FreeProxy.World 的 SOCKS5 代理
+"Proxy-pool-standby-queue" = { ttl = "never" }   # serve 代理服务队列（pproxy 上游），由心跳探测维护
+"trusted" = { ttl = "never" }   # 成功使用过的代理，永不过期
+"blacklist" = { ttl = 10800 }                # 失败过多的代理，3 小时后过期可重新入池
 
 # ---------------------------------------------------------------- 拉取调度
 [fetch]
 source_pause_ttl = 1200        # 源暂停默认时长（去重率过高时使用），秒
 source_dedup_threshold = 0.92  # 源去重率阈值，超过则暂停该源
 fetch_proxy_retries = 3        # 每个代理源拉取时的最大重试次数
+
+# FreeProxy.World 源专属参数（多阶段爬取的并发/限流/超时/请求头）
+[fetch.freeproxy_world]
+max_concurrent = 16            # 并发爬取页面的最大并发数
+proxy_retry = 1                # 单代理连续失败上限（超过丢弃）
+task_interval = 2              # 任务间隔秒（限流，避免触发反爬）
+request_timeout = 15           # 单页面请求超时秒
+accept_language = "en-US,en;q=0.9"  # Accept-Language 头（中性值，不暴露地理线索）
 
 # ---------------------------------------------------------------- 代理源
 # name:            源模块导入路径（同时是源暂停记录 key）
@@ -74,19 +94,21 @@ group_by_protocol = true
 name = "src.interfaces.sources.freeproxy_world"
 group = "freeproxy-world"
 enabled = true
-pause_ttl = 18000             # 多阶段爬取较重，拉完统一暂停 5 小时
+pause_ttl = 1800000             # 多阶段爬取较重
 group_by_protocol = true
 
 # ---------------------------------------------------------------- 本地代理服务器（serve 命令）
 [server]
 host = "127.0.0.1"                # 监听地址
 port = 8080                       # 监听端口
-standby_queue_capacity = 10       # 备用队列组容量上限（serve 探测补入）
-# 备用队列填充候选数公式：缺口 × standby_fill_probe_multiplier，且至少 缺口 + standby_fill_probe_min_extra。
-# 倍率越高，一次探测补进缺口量的成功率越高（存活率 ~12% 时 8 倍可覆盖），探测开销也越大。
-standby_fill_probe_multiplier = 8
-standby_fill_probe_min_extra = 10
-# 备用队列填充候选组（按优先级顺序，靠前优先；应从可请求组中选择）。
+standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
+standby_queue_capacity = 15       # 代理服务队列组容量上限（serve 探测补入）
+
+# 代理服务队列填充候选数公式：缺口 × standby_fill_probe_multiplier，且至少 缺口 + standby_fill_probe_min_extra。
+standby_fill_probe_multiplier = 4
+standby_fill_probe_min_extra = 5
+
+# 代理服务队列填充候选组（按优先级顺序，靠前优先；应从可请求组中选择）。
 # trusted 排最前保证已验证代理优先入队，不足再按序从其它组补。
 standby_fill_groups = [
     "trusted",
@@ -97,11 +119,28 @@ standby_fill_groups = [
     "default-https",
     "default-socks5",
 ]
-heartbeat_interval = 2            # 心跳间隔秒：定时探测备用队列内代理
-heartbeat_probe_url = "https://httpbin.org/ip"  # 心跳探测目标 URL
+heartbeat_interval = 2            # 心跳间隔秒：定时探测代理服务队列内代理
+heartbeat_probe_url = "https://cp.cloudflare.com/generate_204"  # 心跳探测目标 URL（204 端点，Cloudflare 高可用）
 heartbeat_concurrency = 16        # 心跳探测并发数
 heartbeat_timeout = 3             # 心跳探测单个代理超时秒数
+
+metrics_window = 1800 # 队列指标采样存储时长秒
+
 # 允许的代理类型。不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），
 # 浏览器访问 https 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；
 # http/socks5 均为透传，无此问题。
 serve_proxy_types = ["http", "socks5"]
+
+network_probe_urls = [ # 本地网络门控，直连探测目标判定本地网络是否可用
+    "https://cp.cloudflare.com/generate_204",
+    "https://httpbin.org/ip",
+    "https://www.gstatic.com/generate_204",
+]
+network_check_cache_ok = 5          # 网络正常时缓存秒数（期内复用结果，不重复直连）
+network_check_backoff_initial = 2   # 网络异常时退避重检起始间隔秒
+network_check_backoff_max = 30      # 退避间隔上限秒（异常越久探测越稀疏）
+
+# ---------------------------------------------------------------- Web 控制面板（serve 模式）
+[web]
+host = "127.0.0.1"                # 面板监听地址（默认仅本机）
+port = 8081                       # 面板监听端口

@@ -13,7 +13,7 @@
 异步爬取。FreeProxyWorldFetcher.fetch_proxies 返回去重后的 HTTP/HTTPS/SOCKS5
 代理列表（带 scheme 前缀），由拉取用例按 scheme 分拣入 freeproxy-world-{scheme} 组。
 
-FPW_* 并发参数仅本源使用，置于本模块。
+FPW_* 并发/限流/超时/请求头参数由 src.framework.config 注入（配置数据源 config/config.toml）。
 """
 
 import asyncio
@@ -27,17 +27,19 @@ import urllib3
 import requests as py_requests
 
 from src.domain.ports import ProxySource
+from src.framework.config import (
+    FPW_ACCEPT_LANGUAGE,
+    FPW_MAX_CONCURRENT,
+    FPW_PROXY_RETRY,
+    FPW_REQUEST_TIMEOUT,
+    FPW_TASK_INTERVAL,
+)
 from src.interfaces import http_client
 from src.interfaces.scheduler import ProxyScheduler
 from src.interfaces.sources.base import HttpSourceFetcher
 from src.interfaces.ua_generator import UAGenerator
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-FPW_MAX_CONCURRENT = 16
-FPW_PROXY_RETRY = 1
-FPW_TASK_INTERVAL = 2
-FPW_REQUEST_TIMEOUT = 15
 
 BASE_URL = "https://www.freeproxy.world/"
 
@@ -49,7 +51,7 @@ def _build_headers(ua_gen, seed):
     headers = ua_gen.get_headers(seed)
     headers.update({
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+        "Accept-Language": FPW_ACCEPT_LANGUAGE,
         "Accept-Encoding": "gzip, deflate",
         "Sec-Fetch-Dest": "document",
         "Sec-Fetch-Mode": "navigate",
@@ -93,12 +95,15 @@ async def _fetch_page(url, headers, proxies_dict=None, timeout=FPW_REQUEST_TIMEO
         )
     else:
         resp = await asyncio.to_thread(http_client.get, url, headers=headers, timeout=timeout)
-    elapsed = time.time() - t0
-    resp.raise_for_status()
-    html = resp.text
-    if not _validate_response(html):
-        raise ValueError("响应无有效数据(CF墙或空页)")
-    return html, elapsed
+    try:
+        elapsed = time.time() - t0
+        resp.raise_for_status()
+        html = resp.text
+        if not _validate_response(html):
+            raise ValueError("响应无有效数据(CF墙或空页)")
+        return html, elapsed
+    finally:
+        resp.close()
 
 
 async def _try_first_page(url, ua_gen, proxies_dict, seed, retries, timeout, phase):
@@ -146,8 +151,8 @@ async def _crawl_pages(proxies, pages, do_fetch, *, phase_name, on_page=None, re
     logger.info("[%s] 需要爬取 %d 页, 可用代理 %d 个", phase_name, len(pages), len(proxies))
 
     scheduler = ProxyScheduler(proxies, max_concurrent=FPW_MAX_CONCURRENT,
-                               max_fails=FPW_PROXY_RETRY, task_interval=FPW_TASK_INTERVAL)
-    assignments, unassigned = scheduler.assign_sequential(pages)
+                               max_consecutive_fails=FPW_PROXY_RETRY, task_interval=FPW_TASK_INTERVAL)
+    assignments, unassigned = scheduler.assign_round_robin(pages)
     tasks = [(p, pg) for p, pgs in assignments.items() for pg in pgs]
     logger.info("[%s] 第一轮: 分配 %d 个代理, 未使用 %d 个, 无代理分配 %d 页",
                 phase_name, len(assignments), len(scheduler.unused), len(unassigned))
@@ -160,8 +165,8 @@ async def _crawl_pages(proxies, pages, do_fetch, *, phase_name, on_page=None, re
     if retry_unused and failed_pages and scheduler.unused:
         # 第二轮：用未使用代理重爬失败页面（互斥的代理集合，结果直接并入）
         retry_scheduler = ProxyScheduler(scheduler.unused, max_concurrent=FPW_MAX_CONCURRENT,
-                                         max_fails=FPW_PROXY_RETRY, task_interval=FPW_TASK_INTERVAL)
-        retry_assignments, _ = retry_scheduler.assign_sequential(failed_pages)
+                                         max_consecutive_fails=FPW_PROXY_RETRY, task_interval=FPW_TASK_INTERVAL)
+        retry_assignments, _ = retry_scheduler.assign_round_robin(failed_pages)
         retry_tasks = [(p, pg) for p, pgs in retry_assignments.items() for pg in pgs]
         retry_results = await retry_scheduler.run(retry_tasks, f"{phase_name}重试", do_fetch, on_success=on_page)
         for p, r in retry_results.items():
@@ -229,7 +234,18 @@ class FreeProxyWorldFetcher:
 
         retries:  各页面请求的重试次数（默认 2）
         timeout:  各页面请求的超时秒数（默认 FPW_REQUEST_TIMEOUT）
+
+        Windows 上用 SelectorEventLoop 而非默认 ProactorEventLoop：本源大量
+        asyncio.to_thread + SSL 请求，ProactorEventLoop(IOCP) 在此场景下可能
+        静默退出导致进程终止；SelectorEventLoop 基于 select，更稳定。本源只用
+        to_thread（网络请求），不需要 IOCP 的 subprocess 等能力。
         """
+        if sys.platform == "win32":
+            loop = asyncio.SelectorEventLoop()
+            try:
+                return loop.run_until_complete(self._fetch_proxies_async(retries, timeout))
+            finally:
+                loop.close()
         return asyncio.run(self._fetch_proxies_async(retries, timeout))
 
     async def _fetch_proxies_async(self, retries, timeout) -> list[str]:

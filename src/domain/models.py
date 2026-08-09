@@ -8,6 +8,16 @@ def normalize_proxy(proxy: str) -> str:
     return proxy if "://" in proxy else f"http://{proxy}"
 
 
+def bind_of(proxy: str) -> str:
+    """提取代理地址部分（不含 scheme 前缀），与 pproxy.Connection.bind 一致
+
+    "http://1.2.3.4:8080" → "1.2.3.4:8080"，"DIRECT" → "DIRECT"。
+    per-proxy 流量统计的 key 是 roption.bind（不含 scheme），延时历史用此函数
+    对齐，使两种历史按同一 key（bind）索引。
+    """
+    return proxy.split("://", 1)[1] if "://" in proxy else proxy
+
+
 def to_proxy_dict(proxy: str) -> dict[str, str]:
     """构造 HTTP 客户端代理字典 {http, https}
 

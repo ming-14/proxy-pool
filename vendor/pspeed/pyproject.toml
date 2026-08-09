@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pspeed"
+version = "1.0.0"
+description = "命令行代理测速工具，支持 http(s)/socks4/socks5，内置多测速节点，JSON 输出"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "pspeed" }]
+dependencies = [
+    "requests>=2.28",
+    "PySocks>=1.7",
+]
+
+[project.scripts]
+pspeed = "pspeed.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pspeed = ["data/*.mmdb"]

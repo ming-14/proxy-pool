@@ -1,8 +1,8 @@
 """并发测试代理用例（原 scheduler.check_proxies_concurrent）
 
 用并发调度器同时测试多个代理能否访问目标 URL，返回每个代理的结果。
-async 实现：网络请求经 asyncio.to_thread 投递，serve 心跳等事件循环场景
-不再被同步阻塞。
+async 实现：网络请求经 aiohttp 原生 async 发送（不经 asyncio.to_thread 线程池，
+避免 ssl 模块 C 层内存泄漏），serve 心跳等事件循环场景不被同步阻塞。
 """
 
 import asyncio
@@ -27,14 +27,17 @@ class CheckProxiesUseCase:
         *,
         scheduler_factory: Callable[..., TaskScheduler],
         http_getter: HttpGetter,
+        async_getter=None,
     ) -> None:
         """
         Args:
             scheduler_factory: 并发调度器工厂（组合根注入 ProxyScheduler）
-            http_getter:       HTTP 请求端口实现
+            http_getter:       HTTP 请求端口实现（同步，供 fetch 等非 async 场景）
+            async_getter:      async HTTP 请求器（aiohttp，避免线程池 C 层泄漏）
         """
         self._scheduler_factory = scheduler_factory
         self._http_getter = http_getter
+        self._async_getter = async_getter
 
     async def execute(
         self,
@@ -59,7 +62,6 @@ class CheckProxiesUseCase:
         results: dict[str, dict] = {}
 
         async def do_test(proxy: str, _url: str) -> dict:
-            proxy_dict = to_proxy_dict(proxy)
             t0 = time.time()
             # verify 语义按代理类型区分：
             #   http/socks5 代理 + https 目标走隧道端到端 TLS，verify 校验的是目标证书
@@ -68,13 +70,17 @@ class CheckProxiesUseCase:
             #   全部失败，须 False（与项目"免费代理多自签证书，校验会误杀"原则一致）。
             verify = not proxy.startswith("https://")
             try:
-                resp = await asyncio.to_thread(
-                    self._http_getter.get,
+                resp = await self._async_getter.get(
                     _url, timeout=timeout, headers=headers or {},
-                    proxies=proxy_dict, verify=verify,
+                    proxy=proxy, verify=verify,
                 )
                 elapsed = time.time() - t0
-                return {"success": True, "status_code": resp.status_code, "elapsed": elapsed, "error": None}
+                # 校验 2xx：探测目标返回 503/403 等说明目标站挂了或代理被拦，
+                # 不能说明代理可用，须判失败（否则误入队）
+                if 200 <= resp.status_code < 300:
+                    return {"success": True, "status_code": resp.status_code, "elapsed": elapsed, "error": None}
+                return {"success": False, "status_code": resp.status_code, "elapsed": elapsed,
+                        "error": f"HTTP {resp.status_code}"}
             except Exception as e:
                 elapsed = time.time() - t0
                 return {"success": False, "status_code": None, "elapsed": elapsed, "error": f"{type(e).__name__}: {e}"}
@@ -82,7 +88,7 @@ class CheckProxiesUseCase:
         tasks = [(p, url) for p in proxies]
 
         scheduler = self._scheduler_factory(
-            proxies, max_concurrent=max_concurrent, max_fails=0, task_interval=0.1, request_timeout=timeout
+            proxies, max_concurrent=max_concurrent, max_consecutive_fails=0, task_interval=0.1, request_timeout=timeout
         )
 
         def _on_success(p, t, r):

@@ -58,5 +58,7 @@ Thumbs.db
 desktop.ini
 
 # ---- 运行时生成 ----
-.cache
+.cache.db
+.cache.db-shm
+.cache.db-wal
 logs/

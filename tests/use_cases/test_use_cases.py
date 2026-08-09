@@ -15,7 +15,7 @@ logging.disable(logging.WARNING)
 
 from src.domain.models import SourceSpec
 from src.domain.proxy_pool import ProxyPool
-from src.interfaces.json_store import JsonProxyStore
+from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.scheduler import ProxyScheduler
 from src.use_cases.fetch_proxies import FetchProxiesUseCase
 from src.use_cases.get_proxies import GetProxiesUseCase
@@ -23,8 +23,8 @@ from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.request_with_retry import RequestWithRetryUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
 from src.framework.config import (
-    MAX_FAILS,
-    TRUSTED_MAX_FAILS,
+    MAX_CONSECUTIVE_FAILS,
+    TRUSTED_MAX_CONSECUTIVE_FAILS,
     SOURCE_PAUSE_TTL,
     PROXY_GROUPS,
     SOURCES as _SOURCES,
@@ -47,8 +47,8 @@ def make_pool():
     """构造默认配置的 ProxyPool（等价组合根的行为）"""
     return ProxyPool(
         PROXY_GROUPS,
-        max_fails=MAX_FAILS,
-        trusted_max_fails=TRUSTED_MAX_FAILS,
+        max_consecutive_fails=MAX_CONSECUTIVE_FAILS,
+        trusted_max_consecutive_fails=TRUSTED_MAX_CONSECUTIVE_FAILS,
         default_pause_ttl=SOURCE_PAUSE_TTL,
         requestable_groups=("default-http", "freeproxy-world-http", "freeproxy-world-https", "freeproxy-world-socks5", "trusted"),
         trusted_group=TRUSTED_GROUP,
@@ -95,22 +95,24 @@ class TestRecordProxyUseCase(unittest.TestCase):
         self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups["trusted"]["proxies"])
 
     def test_record_success_already_trusted(self):
-        self.pool.add_to_group("trusted", "http://1.2.3.4:8080", fails=1)
+        self.pool.add_to_group("trusted", "http://1.2.3.4:8080", consecutive_fails=1)
         self.record.record_success("http://1.2.3.4:8080")
         self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups["trusted"]["proxies"])
-        self.assertEqual(self.pool.proxy_groups["trusted"]["proxies"]["http://1.2.3.4:8080"]["fails"], 1)
+        self.assertEqual(self.pool.proxy_groups["trusted"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 1)
 
-    def test_record_success_resets_fails(self):
-        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", fails=1)
+    def test_record_success_resets_consecutive_fails(self):
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=1)
         self.record.record_success("http://1.2.3.4:8080")
-        self.assertEqual(self.pool.proxy_groups["trusted"]["proxies"]["http://1.2.3.4:8080"]["fails"], 0)
+        self.assertEqual(self.pool.proxy_groups["trusted"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 0)
 
     def test_record_success_standby_copies_not_moves(self):
-        """备用队列成员成功后只复制进 trusted，保留在队列（serve 上游不被掏空）"""
-        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080")
+        """代理服务队列成员成功后复制进 trusted 并清零队列副本连续失败计数，保留在队列（serve 上游不被掏空）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=1)
         self.record.record_success("http://1.2.3.4:8080")
         self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups[STANDBY_GROUP]["proxies"])
         self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups["trusted"]["proxies"])
+        # 连续语义：成功清零队列副本的连续失败计数（不保留旧累计值）
+        self.assertEqual(self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 0)
 
     def test_remove_clears_all_copies(self):
         """拉黑时清理所有组副本（standby 复制进 trusted 的残留副本一并清除）"""
@@ -132,12 +134,12 @@ class TestRecordProxyUseCase(unittest.TestCase):
     def test_record_fail(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
         self.record.record_fail("http://1.2.3.4:8080")
-        self.assertEqual(self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["fails"], 1)
+        self.assertEqual(self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 1)
 
     def test_record_fail_trusted(self):
         self.pool.add_to_group("trusted", "http://1.2.3.4:8080")
         self.record.record_fail("http://1.2.3.4:8080")
-        self.assertEqual(self.pool.proxy_groups["trusted"]["proxies"]["http://1.2.3.4:8080"]["fails"], 1)
+        self.assertEqual(self.pool.proxy_groups["trusted"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 1)
 
     def test_record_fail_nonexistent(self):
         self.record.record_fail("http://0.0.0.0:0")
@@ -162,29 +164,29 @@ class TestRecordProxyUseCase(unittest.TestCase):
         self.record.trust("http://1.2.3.4:8080")
         self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups["trusted"]["proxies"])
 
-    def test_auto_remove_on_max_fails(self):
-        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", fails=MAX_FAILS - 1)
+    def test_auto_remove_on_max_consecutive_fails(self):
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=MAX_CONSECUTIVE_FAILS - 1)
         self.record.record_fail("http://1.2.3.4:8080")
         self.record.remove("http://1.2.3.4:8080")
         self.assertNotIn("http://1.2.3.4:8080", self.pool.proxy_groups["default-http"]["proxies"])
 
-    def test_trusted_removed_on_max_fails(self):
-        self.pool.add_to_group("trusted", "http://1.2.3.4:8080", fails=TRUSTED_MAX_FAILS - 1)
+    def test_trusted_removed_on_max_consecutive_fails(self):
+        self.pool.add_to_group("trusted", "http://1.2.3.4:8080", consecutive_fails=TRUSTED_MAX_CONSECUTIVE_FAILS - 1)
         self.record.record_fail("http://1.2.3.4:8080")
         self.record.remove("http://1.2.3.4:8080")
         self.assertNotIn("http://1.2.3.4:8080", self.pool.proxy_groups["trusted"]["proxies"])
 
     def test_get_trusted_proxies(self):
         self.pool.add_to_group("trusted", "http://1.2.3.4:8080")
-        self.pool.add_to_group("trusted", "http://5.6.7.8:3128", fails=TRUSTED_MAX_FAILS)
+        self.pool.add_to_group("trusted", "http://5.6.7.8:3128", consecutive_fails=TRUSTED_MAX_CONSECUTIVE_FAILS)
         trusted = self.pool.get_trusted_proxies()
         self.assertIn("http://1.2.3.4:8080", trusted)
         self.assertNotIn("http://5.6.7.8:3128", trusted)
 
-    def test_get_fail_count(self):
-        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", fails=2)
-        self.assertEqual(self.record.get_fail_count("http://1.2.3.4:8080"), 2)
-        self.assertEqual(self.record.get_fail_count("http://0.0.0.0:0"), 0)
+    def test_get_consecutive_fail_count(self):
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=2)
+        self.assertEqual(self.record.get_consecutive_fail_count("http://1.2.3.4:8080"), 2)
+        self.assertEqual(self.record.get_consecutive_fail_count("http://0.0.0.0:0"), 0)
 
 
 class TestGetProxiesUseCase(unittest.TestCase):
@@ -193,13 +195,13 @@ class TestGetProxiesUseCase(unittest.TestCase):
 
     def test_get_proxies_returns_available(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", fails=MAX_FAILS)
+        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", consecutive_fails=MAX_CONSECUTIVE_FAILS)
         get = GetProxiesUseCase(pool=self.pool)
         proxies = get.execute(1)
         self.assertEqual(proxies, ["http://1.2.3.4:8080"])
 
     def test_get_proxies_none_when_all_exhausted(self):
-        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", fails=MAX_FAILS)
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=MAX_CONSECUTIVE_FAILS)
         get = GetProxiesUseCase(pool=self.pool)
         proxies = get.execute(1)
         self.assertEqual(proxies, [])
@@ -249,10 +251,10 @@ class TestFetchProxiesUseCase(unittest.TestCase):
         self.assertIn("http://5.6.7.8:3128", self.pool.proxy_groups["default-http"]["proxies"])
 
     def test_fetch_proxies_no_duplicate(self):
-        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", fails=1)
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=1)
         with patch("src.interfaces.http_client.get", return_value=mock_proxy_response(["http://1.2.3.4:8080", "http://5.6.7.8:3128"])):
             make_fetch(self.pool).execute()
-        self.assertEqual(self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["fails"], 1)
+        self.assertEqual(self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 1)
 
     def test_fetch_proxies_skips_blacklisted(self):
         self.pool.add_to_group("blacklist", "http://1.2.3.4:8080")
@@ -315,11 +317,13 @@ class TestFetchProxiesUseCase(unittest.TestCase):
 class TestPersistence(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
-        self.cache_file = os.path.join(self.tmp_dir, ".cache")
+        self.db_path = os.path.join(self.tmp_dir, ".cache.db")
 
     def tearDown(self):
-        if os.path.exists(self.cache_file):
-            os.remove(self.cache_file)
+        for ext in ("", "-wal", "-shm"):
+            p = self.db_path + ext
+            if os.path.exists(p):
+                os.remove(p)
         os.rmdir(self.tmp_dir)
 
     def test_trusted_survives_default_expiry(self):
@@ -327,22 +331,24 @@ class TestPersistence(unittest.TestCase):
         pool.add_to_group("default-http", "http://1.2.3.4:8080")
         pool.add_to_group("trusted", "http://9.9.9.9:80")
         pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["joined_at"] = time.time() - PROXY_GROUPS["default-http"] - 1
-        store = JsonProxyStore(self.cache_file)
-        store.save(pool.export_state())
+        store = SqliteProxyStore(self.db_path)
+        store.save_full(pool.export_state())
 
         pool2 = make_pool()
         pool2.restore_state(store.load())
+        store.close()
         self.assertNotIn("http://1.2.3.4:8080", pool2.proxy_groups["default-http"]["proxies"])
         self.assertIn("http://9.9.9.9:80", pool2.proxy_groups["trusted"]["proxies"])
 
     def test_save_cache_persists(self):
         pool = make_pool()
         pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        store = JsonProxyStore(self.cache_file)
-        store.save(pool.export_state())
+        store = SqliteProxyStore(self.db_path)
+        store.save_full(pool.export_state())
 
         pool2 = make_pool()
         pool2.restore_state(store.load())
+        store.close()
         self.assertIn("http://1.2.3.4:8080", pool2.proxy_groups["default-http"]["proxies"])
 
 
@@ -393,7 +399,7 @@ class TestRequestWithRetry(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             uc.execute("http://example.com")
 
-    def test_blacklist_on_max_fails(self):
+    def test_blacklist_on_max_consecutive_fails(self):
         get = MagicMock()
         get.execute.side_effect = [["http://1.1.1.1:8080"], ["http://2.2.2.2:3128"]]
         record = MagicMock()
@@ -407,72 +413,92 @@ class TestRequestWithRetry(unittest.TestCase):
 
 
 class TestCheckProxiesConcurrent(unittest.TestCase):
-    def make_uc(self, http_getter):
+    def make_uc(self, async_getter):
         return CheckProxiesUseCase(
             scheduler_factory=lambda proxies, **kw: ProxyScheduler(proxies, **kw),
-            http_getter=http_getter,
+            http_getter=MagicMock(),
+            async_getter=async_getter,
         )
 
+    def make_async_getter(self, *, status_code=200, exc=None):
+        """创建 async_getter mock：返回 status_code 或抛 exc"""
+        getter = MagicMock()
+
+        async def get(url, *, timeout, headers=None, proxy=None, verify=False):
+            if exc is not None:
+                raise exc
+            return MagicMock(status_code=status_code)
+
+        getter.get.side_effect = get
+        return getter
+
     def test_all_succeed(self):
-        http_getter = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        http_getter.get.return_value = mock_resp
-        results = asyncio.run(self.make_uc(http_getter).execute(
+        getter = self.make_async_getter(status_code=200)
+        results = asyncio.run(self.make_uc(getter).execute(
             ["http://1.1.1.1:8080", "http://2.2.2.2:3128"], "http://example.com", max_concurrent=2,
         ))
         self.assertTrue(all(r["success"] for r in results.values()))
         self.assertEqual(len(results), 2)
 
     def test_all_fail(self):
-        http_getter = MagicMock()
-        http_getter.get.side_effect = Exception("fail")
-        results = asyncio.run(self.make_uc(http_getter).execute(
+        getter = self.make_async_getter(exc=Exception("fail"))
+        results = asyncio.run(self.make_uc(getter).execute(
             ["http://1.1.1.1:8080"], "http://example.com", max_concurrent=1,
         ))
         self.assertFalse(results["http://1.1.1.1:8080"]["success"])
         self.assertIn("fail", results["http://1.1.1.1:8080"]["error"])
 
     def test_mixed_results(self):
-        http_getter = MagicMock()
+        getter = MagicMock()
         call_count = 0
 
-        def side_effect(*a, **kw):
+        async def side_effect(url, *, timeout, headers=None, proxy=None, verify=False):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise Exception("fail")
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            return mock_resp
+            return MagicMock(status_code=200)
 
-        http_getter.get.side_effect = side_effect
-        results = asyncio.run(self.make_uc(http_getter).execute(
+        getter.get.side_effect = side_effect
+        results = asyncio.run(self.make_uc(getter).execute(
             ["http://1.1.1.1:8080", "http://2.2.2.2:3128"], "http://example.com", max_concurrent=2,
         ))
         successes = sum(1 for r in results.values() if r["success"])
         self.assertEqual(successes, 1)
 
     def test_empty_proxies(self):
-        http_getter = MagicMock()
-        results = asyncio.run(self.make_uc(http_getter).execute([], "http://example.com"))
+        getter = self.make_async_getter()
+        results = asyncio.run(self.make_uc(getter).execute([], "http://example.com"))
         self.assertEqual(results, {})
 
     def test_verify_policy_by_proxy_type(self):
         """http/socks5 代理严格校验（verify=True），https 代理不校验（TLS 直连代理自签证书会误杀）"""
-        http_getter = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        http_getter.get.return_value = mock_resp
-        asyncio.run(self.make_uc(http_getter).execute(
+        getter = MagicMock()
+
+        async def get(url, *, timeout, headers=None, proxy=None, verify=False):
+            return MagicMock(status_code=200)
+
+        getter.get.side_effect = get
+        asyncio.run(self.make_uc(getter).execute(
             ["http://1.1.1.1:8080", "socks5://2.2.2.2:1080", "https://3.3.3.3:443"],
             "https://example.com", max_concurrent=3,
         ))
-        calls = http_getter.get.call_args_list
+        calls = getter.get.call_args_list
         self.assertEqual(
-            {next(iter(call.kwargs["proxies"].values())): call.kwargs["verify"] for call in calls},
+            {call.kwargs["proxy"]: call.kwargs["verify"] for call in calls},
             {"http://1.1.1.1:8080": True, "socks5://2.2.2.2:1080": True, "https://3.3.3.3:443": False},
         )
+
+    def test_non_2xx_is_failure(self):
+        """探测目标返回非 2xx（如 503）判失败：目标站挂了不能说明代理可用"""
+        getter = self.make_async_getter(status_code=503)
+        results = asyncio.run(self.make_uc(getter).execute(
+            ["http://1.1.1.1:8080"], "https://example.com", max_concurrent=1,
+        ))
+        r = results["http://1.1.1.1:8080"]
+        self.assertFalse(r["success"])
+        self.assertEqual(r["status_code"], 503)
+        self.assertIn("503", r["error"])
 
 
 if __name__ == "__main__":

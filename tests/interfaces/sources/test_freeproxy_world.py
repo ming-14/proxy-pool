@@ -83,10 +83,10 @@ class TestCrawlPages(unittest.TestCase):
         ))
         self.assertEqual(set(working), set(proxies))
         self.assertEqual(failed, [])
-        # 顺序分配：3 代理 4 页 -> 1 页无代理分配，但代理全分配
+        # 轮询分配：3 代理 4 页 -> 全分配，无未使用代理
         self.assertEqual(unused, [])
 
-    def test_failed_proxy_dropped_after_max_fails(self):
+    def test_failed_proxy_dropped_after_max_consecutive_fails(self):
         calls = []
 
         async def do_fetch(proxy, page):
@@ -95,7 +95,7 @@ class TestCrawlPages(unittest.TestCase):
                 raise Exception("fail")
             return "ok"
 
-        # 2 代理 3 页：p1:2, p2:3, 4 无代理
+        # 轮询分配：2 代理 3 页 -> p1:[2,4], p2:[3]；p1 连续失败 2 次丢弃
         working, failed, unused = asyncio.run(_crawl_pages(
             ["p1", "p2"], [2, 3, 4], do_fetch, phase_name="Phase4-http",
         ))

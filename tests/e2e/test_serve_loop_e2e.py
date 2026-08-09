@@ -1,7 +1,7 @@
 """serve 主循环 e2e 测试：真实 pproxy + mock 探测，验证完整稳定性
 
 覆盖：
-1. 启动补入（fill）填备用队列 → pproxy 可服务
+1. 启动补入（fill）填代理服务队列 → pproxy 可服务
 2. 心跳循环稳定运行（不崩、不刷屏）
 3. 队列耗尽后自动重补入
 4. Ctrl+C / 取消后优雅退出（无 traceback）
@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import unittest
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 logging.disable(logging.WARNING)
@@ -37,8 +38,8 @@ async def close_server(srv):
 def make_pool():
     return ProxyPool(
         config.PROXY_GROUPS,
-        max_fails=config.MAX_FAILS,
-        trusted_max_fails=config.TRUSTED_MAX_FAILS,
+        max_consecutive_fails=config.MAX_CONSECUTIVE_FAILS,
+        trusted_max_consecutive_fails=config.TRUSTED_MAX_CONSECUTIVE_FAILS,
         default_pause_ttl=config.SOURCE_PAUSE_TTL,
         requestable_groups=config.REQUESTABLE_GROUPS,
         trusted_group=config.TRUSTED_GROUP,
@@ -47,20 +48,32 @@ def make_pool():
 
 
 def standby_list(pool):
-    """备用队列组当前代理"""
+    """代理服务队列组当前代理"""
     return list(pool.proxy_groups[config.STANDBY_GROUP]["proxies"].keys())
 
 
 def make_standby(pool, record, check):
-    """构造备用队列用例（容器壳：pool/record/check_proxies/save）"""
+    """构造代理服务队列用例（容器壳：pool/record/check_proxies/save）
+
+    e2e 用 mock 上游不走真实网络，network_gate 注入总是 True 的 mock（本地网络恒正常）。
+    """
+    gate = MagicMock()
+    gate.is_ok = True
+
+    async def _gate_ok(timeout):
+        return True
+
+    gate.check.side_effect = _gate_ok
     return StandbyQueueUseCase(
         pool=pool,
         record=record,
         check_proxies=check,
+        network_gate=gate,
         standby_group=config.STANDBY_GROUP,
         fill_groups=config.STANDBY_FILL_GROUPS,
         fill_probe_multiplier=config.STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
+        metrics_window=config.METRICS_WINDOW,
     )
 
 
@@ -96,8 +109,8 @@ class TestServeMainLoop(unittest.TestCase):
 
             pool = make_pool()
             pool.add_to_group("default-http", good)
-            pool.add_to_group("default-http", dead1, fails=config.MAX_FAILS - 1)  # 探测失败即达阈值拉黑
-            pool.add_to_group("default-http", dead2, fails=config.MAX_FAILS - 1)
+            pool.add_to_group("default-http", dead1, consecutive_fails=config.MAX_CONSECUTIVE_FAILS - 1)  # 探测失败即达阈值拉黑
+            pool.add_to_group("default-http", dead2, consecutive_fails=config.MAX_CONSECUTIVE_FAILS - 1)
 
             record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
             check = _FakeCheck([good])
@@ -105,7 +118,7 @@ class TestServeMainLoop(unittest.TestCase):
             server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
             await server.start([])
 
-            # 1. 补入：good 入备用队列，死代理拉黑
+            # 1. 补入：good 入代理服务队列，死代理拉黑
             c = make_standby(pool, record, check)
             added = await c.fill(
                 {"http"}, "http://probe.local",
@@ -128,7 +141,7 @@ class TestServeMainLoop(unittest.TestCase):
             await writer.wait_closed()
             self.assertIn(MOCK_BODY, resp)
 
-            # 3. 心跳：good 存活保留在备用队列（不晋级 trusted）
+            # 3. 心跳：good 存活保留在代理服务队列（不晋级 trusted）
             alive = await c.heartbeat("http://probe.local", timeout=3, concurrency=2)
             self.assertEqual(alive, [good])
             self.assertEqual(standby_list(pool), [good])

@@ -1,7 +1,7 @@
 """带重试的代理请求用例（原 scheduler.request_with_retry）
 
 从池中取代理请求 URL，失败时记录并换代理重试，成功代理自动晋级信任池，
-失败超阈值的代理自动拉黑。
+连续失败超阈值的代理自动拉黑。
 """
 
 import logging
@@ -63,7 +63,7 @@ class RequestWithRetryUseCase:
                 last_exc = e
                 if self._record.should_blacklist(proxy):
                     self._record.remove(proxy)
-                    logger.info("代理 %s 失败次数过多, 已拉黑", proxy)
+                    logger.info("代理 %s 连续失败次数过多, 已拉黑", proxy)
                 logger.info("代理 %s 请求失败 (尝试 %d/%d): %s", proxy, attempt + 1, max_retries, e)
 
         if last_exc:

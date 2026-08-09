@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>proxy-pool 控制面板</title>
+  <script>
+    // 在页面渲染前应用保存的主题，避免浅色闪屏
+    (function () {
+      const saved = localStorage.getItem('proxy-pool-theme');
+      if (saved === 'dark') {
+        document.documentElement.classList.add('dark');
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            primary: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' },
+            slate: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0', 300: '#cbd5e1', 400: '#94a3b8', 500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0f172a' }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Microsoft YaHei', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="/static/css/base.css?v=13">
+  <link rel="stylesheet" href="/static/css/layout.css?v=13">
+  <link rel="stylesheet" href="/static/css/components.css?v=13">
+  <script>window.pageHandlers = window.pageHandlers || {};</script>
+</head>
+<body class="bg-theme-body text-theme-primary antialiased h-screen flex overflow-hidden">
+  <!-- 侧边栏 -->
+  <aside id="sidebar" class="sidebar border-r border-theme flex flex-col transition-all duration-300">
+    <div class="h-16 flex items-center px-5 border-b border-theme-light">
+      <svg class="w-7 h-7 text-theme-accent flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <path d="M2 12h20"></path>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+      </svg>
+      <span class="ml-3 font-bold text-lg tracking-tight sidebar-text">proxy-pool</span>
+    </div>
+    <nav class="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+      <a href="#dashboard" class="nav-item active" data-page="dashboard">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+        <span class="sidebar-text">仪表盘</span>
+      </a>
+      <a href="#groups" class="nav-item" data-page="groups">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+        <span class="sidebar-text">代理组</span>
+      </a>
+      <a href="#standby" class="nav-item" data-page="standby">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+        <span class="sidebar-text">代理服务队列</span>
+      </a>
+      <a href="#sources" class="nav-item" data-page="sources">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+        <span class="sidebar-text">代理源</span>
+      </a>
+    </nav>
+    <div class="p-4 border-t border-theme-light sidebar-text">
+      <div class="text-xs text-theme-muted">本地代理服务</div>
+      <div class="text-sm font-medium text-theme-secondary mt-0.5" id="footer-version">v1.0</div>
+    </div>
+  </aside>
+
+  <!-- 主区域 -->
+  <div class="flex-1 flex flex-col min-w-0">
+    <!-- 顶部栏 -->
+    <header class="h-16 border-b border-theme flex items-center justify-between px-5 flex-shrink-0">
+      <div class="flex items-center gap-3">
+        <button id="menu-toggle" class="lg:hidden p-2 rounded-lg hover:bg-theme-hover text-theme-secondary">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
+        <h1 id="page-title" class="text-lg font-semibold text-theme-primary">仪表盘</h1>
+      </div>
+      <div class="flex items-center gap-3">
+        <button id="btn-pause" class="btn btn-ghost btn-sm gap-1.5" title="暂停/恢复轮询">
+          <svg id="icon-pause" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+          <svg id="icon-play" class="w-4 h-4 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          <span id="text-pause">暂停</span>
+        </button>
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-theme-hover text-xs font-medium">
+          <span id="conn-dot" class="w-2 h-2 rounded-full bg-theme-success"></span>
+          <span id="conn-text">已连接</span>
+        </div>
+        <button id="btn-theme" class="btn btn-ghost btn-sm" title="切换主题">
+          <svg id="icon-sun" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+          <svg id="icon-moon" class="w-5 h-5 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 页面内容 -->
+    <main id="main-content" class="flex-1 overflow-y-auto p-5 lg:p-6">
+      <!-- 各页面容器，由 JS 控制显示 -->
+      <section id="page-dashboard" class="page-section space-y-6"></section>
+      <section id="page-groups" class="page-section hidden space-y-5"></section>
+      <section id="page-standby" class="page-section hidden space-y-5"></section>
+      <section id="page-sources" class="page-section hidden space-y-5"></section>
+    </main>
+
+    <!-- 底部 -->
+    <footer class="border-t border-theme px-5 py-2.5 text-xs text-theme-muted flex justify-between flex-shrink-0">
+      <span>proxy-pool control panel</span>
+      <a href="https://github.com" target="_blank" class="hover:text-theme-accent transition-colors">文档</a>
+    </footer>
+  </div>
+
+  <!-- Toast 容器 -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2"></div>
+
+  <!-- 移动端遮罩 -->
+  <div id="sidebar-overlay" class="fixed inset-0 bg-black/30 z-30 hidden lg:hidden"></div>
+
+  <script src="/static/js/api.js?v=13"></script>
+  <script src="/static/js/charts.js?v=13"></script>
+  <script src="/static/js/dashboard.js?v=13"></script>
+  <script src="/static/js/groups.js?v=13"></script>
+  <script src="/static/js/standby.js?v=13"></script>
+  <script src="/static/js/sources.js?v=13"></script>
+  <script src="/static/js/app.js?v=13"></script>
+</body>
+</html>
