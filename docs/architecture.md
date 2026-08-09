@@ -163,6 +163,7 @@ for attempt in range(max_retries):
 - **单代理测速（pspeed 集成）**：`POST /api/proxy/speedtest` 端点按 bind 反查完整 proxy URL（standby 队列 + 锁定代理），调 vendor/pspeed 的 `probe_one`（Cloudflare 下载+上传节点，10s `hard_limit`），`asyncio.to_thread` 包装避免阻塞事件循环；返回精简后的 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}`。pspeed 源码在 `vendor/pspeed/src`，通过 `sys.path.insert` 导入，依赖 requests + PySocks（已在 requirements.txt）。
 - **本地网络门控（network gate）**：fill/heartbeat/retry_probe 开头调 `LocalNetworkGate.check()`，本地网络异常时跳过本轮操作（不计数/不拉黑/不补测），队列保持现状，网络恢复后自动恢复调度——避免好代理被误拉黑。判定方式：并发直连多个探测目标（`network_probe_urls`，任一通即认为网络正常，容错单目标抽风/被墙）；正常时缓存复用结果（`network_check_cache_ok` 秒内不重复直连，开销几乎为零），异常时退避重检（`network_check_backoff_initial` → ×2 → `network_check_backoff_max`，异常越久探测越稀疏）；retry_probe 在门控异常时重置自身退避到初始值快速轮询 gate 缓存，网络恢复后立即恢复补测。
 - **Web 面板代理组虚拟滚动**：代理组页面（`groups.js`）对大量代理（数千条）采用双向虚拟滚动——`PAGE_SIZE=50` 每批渲染，`MAX_RENDER=150` 超出时销毁远离视口的行；top/bottom spacer（`<div>` 占位符）保持滚动条总高度，`topSpacerH` 变量用**实际行高累加**（非 estRowH 估算）确保 trim/insert 时净位移 = 0、内容不跳变；IntersectionObserver（`root=#main-content`，`rootMargin=300px`）监听 sentinel + top-spacer 触发向下/向上懒加载；拖滚动条跳到 spacer 空白区域时 scroll handler 按 `scrollTop/estRowH` 计算目标行重新渲染；`#main-content` 设 `overflow-anchor:none` 禁用浏览器 scroll anchoring 避免干扰；右下角悬浮回到顶部按钮。
+- **组名标签映射**：`_status_snapshot` 为每个组下发 `label`（中文显示名）+ `kind`（语义类型 `trusted`/`blacklist`/`standby`/`normal`），从 config 的 `TRUSTED_GROUP`/`BLACKLIST_GROUP`/`STANDBY_GROUP` 派生——前端不硬编码组名，改配置即生效。`groups.js` 用 `label` 显示下拉框 + 来源列，`dashboard.js` 用 `kind` 查找 KPI 卡片对应的组。
 
 ```
 浏览器 ──▶ 本地 pproxy(127.0.0.1:8080) ──rc 随机──▶ 代理服务队列上游(存活代理)

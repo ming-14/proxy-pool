@@ -76,14 +76,24 @@
     const pending = status.pending_retries || [];
     const lockedProxy = status.locked_proxy || null;
 
+    // 按 kind 查找组（不硬编码组名，由 API 下发 kind=label 配对）
+    const findByKind = (kind) => {
+      for (const name of Object.keys(groups)) {
+        if (groups[name].kind === kind) return groups[name];
+      }
+      return null;
+    };
+    const trustedGroup = findByKind('trusted');
+    const blacklistGroup = findByKind('blacklist');
+
     document.getElementById('dash-kpis').innerHTML = [
       kpiCard('可用代理', status.available_count ?? '-', `${groupCount} 个分组`, 'text-theme-accent'),
       kpiCard('代理服务队列',
         lockedProxy ? '固定代理' : `${standby.length} / ${status.capacity ?? '-'}`,
         lockedProxy ? utils.esc(lockedProxy) : 'pproxy 上游',
         lockedProxy ? 'text-theme-warning' : 'text-theme-success'),
-      kpiCard('信任池', groups.trusted?.count ?? '-', '请求成功晋级', 'text-theme-warning'),
-      kpiCard('黑名单', groups.blacklist?.count ?? '-', '连续失败淘汰', 'text-theme-danger'),
+      kpiCard(trustedGroup?.label ?? '信任池', trustedGroup?.count ?? '-', '请求成功晋级', 'text-theme-warning'),
+      kpiCard(blacklistGroup?.label ?? '黑名单', blacklistGroup?.count ?? '-', '连续失败淘汰', 'text-theme-danger'),
     ].join('');
 
     // 锁定时隐藏健康率趋势卡片（健康率/队列长度无意义），延迟趋势卡片占满全宽

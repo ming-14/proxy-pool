@@ -10,9 +10,10 @@
   const MAX_RENDER = 150;     // 最大同时渲染行数，超过则销毁远离视口的行
   let estRowH = 40;            // 估计行高（px），渲染后用实际值更新
 
-  // 特殊组名中文显示映射（与仪表盘 KPI 卡片标签一致；value 仍用原组名供 API 调用）
-  const GROUP_LABELS = { blacklist: '黑名单', trusted: '信任池' };
-  function groupLabel(g) { return GROUP_LABELS[g] || g; }
+  // 组显示标签由 API 下发（groups[name].label），不再前端硬编码
+  // source_group 列需要从 status.groups 查 label，缓存到 _groupLabels
+  const _groupLabels = {};
+  function groupLabel(g) { return _groupLabels[g] || g; }
 
   const page = document.getElementById('page-groups');
   let state = {
@@ -394,8 +395,10 @@
 
     const groups = status.groups || {};
     const names = Object.keys(groups);
+    // 缓存 API 下发的 label 供 source_group 列使用
+    for (const g of names) _groupLabels[g] = groups[g].label || g;
     const current = state.currentGroup || names[0];
-    select.innerHTML = names.map((g) => `<option value="${utils.esc(g)}" ${g === current ? 'selected' : ''}>${utils.esc(groupLabel(g))} (${groups[g].count})</option>`).join('');
+    select.innerHTML = names.map((g) => `<option value="${utils.esc(g)}" ${g === current ? 'selected' : ''}>${utils.esc(_groupLabels[g])} (${groups[g].count})</option>`).join('');
 
     if (state.currentGroup !== current) {
       state.currentGroup = current;

@@ -62,14 +62,23 @@ class PanelContext:
 def _status_snapshot(ctx: PanelContext) -> dict:
     """全量状态快照：组统计 / 可用数 / 代理服务队列 / 待补测 / 源暂停 / 调度参数"""
     pool = ctx.pool
+    # 组名 → 中文标签 + 语义类型（从 config 派生，不硬编码）
+    _GROUP_META = {
+        config.TRUSTED_GROUP: ("信任池", "trusted"),
+        config.BLACKLIST_GROUP: ("黑名单", "blacklist"),
+        config.STANDBY_GROUP: ("代理队列", "standby"),
+    }
     groups = {}
     for name, grp in pool.proxy_groups.items():
         if name == LOCKED_GROUP:  # 隐藏内建锁定组
             continue
+        label, kind = _GROUP_META.get(name, (name, "normal"))
         groups[name] = {
             "ttl": grp["ttl"],
             "count": len(grp["proxies"]),
             "active": len(pool.get_active_proxies(name)),
+            "label": label,
+            "kind": kind,
         }
     available = pool.get_available_proxies()
     standby = [
