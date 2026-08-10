@@ -14,7 +14,7 @@
         <div class="card-header">
           <div>
             <div class="card-title">代理源</div>
-            <div class="card-subtitle">启用的源会在拉取时自动遍历</div>
+            <div class="card-subtitle">建议及时更新</div>
           </div>
           <button class="btn btn-primary btn-sm" id="src-fetch">拉取代理</button>
         </div>

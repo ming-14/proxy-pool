@@ -43,7 +43,7 @@
             <div class="card-header">
               <div>
                 <div class="card-title">代理服务队列</div>
-                <div class="card-subtitle">按响应时间升序排列的 pproxy 上游</div>
+                <div class="card-subtitle">pproxy 队列</div>
               </div>
             </div>
             <div class="table-wrap border-0 rounded-t-none" id="sb-table-wrap">
