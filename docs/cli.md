@@ -39,6 +39,7 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
 - **单代理 hover 图表**：代理服务队列页面鼠标悬浮代理 IP（表格行或锁定卡片）时弹出 tooltip，展示该代理的延时趋势 + 流量速率图表（Chart.js 独立实例），数据来自 `/api/proxy/history?bind=`，2s 定时刷新；tooltip 可交互（鼠标可移入查看图表），离开后 100ms 延迟销毁
 - **单代理测速**：tooltip 底部「测速 (CF 10s)」按钮，点击后调 `/api/proxy/speedtest`（POST `{"bind": "..."}`），后端用 vendor/pspeed 对该代理做 Cloudflare 下载+上传 10s 测速（`asyncio.to_thread` 避免阻塞），返回 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}` 展示在按钮下方；测速开始后 tooltip **pin**（鼠标移出不自动消失，点击外部才消失），解除 pin 后恢复正常 mouseleave 行为
 - **右键上下文菜单**：代理服务队列页面右键代理 IP 弹出菜单——「移出」（hover 展开子菜单，列出所有组及其存量，点击调 `/api/proxy/move` 将代理移到目标组并同步 pproxy 上游）、「拉黑」（调 `/api/blacklist`，从所有组移除并加入黑名单）、「测速」（显示 tooltip 并立即触发测速）
+- **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组）+「拉黑」；黑名单组：「还原」（移到代理队列）
 
 #### 控制功能
 

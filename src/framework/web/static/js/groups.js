@@ -31,6 +31,8 @@
   let lastTotal = 0;             // 上次渲染的总行数（scroll handler 用，避免重复排序）
   let scrollJumpPending = false; // 滚动跳转重入保护
   let topSpacerH = 0;            // top spacer 实际像素高度（用实际行高累加，不用 estRowH 估算）
+  let groupsCache = {};          // onStatus 缓存的 groups（右键菜单用）
+  let contextMenu = null;        // 右键菜单 DOM 元素
 
   function render() {
     if (initialized) return;
@@ -110,6 +112,17 @@
       renderTable();
       mainContent.scrollTo({ top: 0, behavior: 'smooth' });
     };
+
+    // 右键表格行：弹出上下文菜单（移动/拉黑/还原）
+    const tableWrap = document.getElementById('grp-table-wrap');
+    tableWrap.addEventListener('contextmenu', (e) => {
+      const tr = e.target.closest('tr');
+      if (!tr) return;
+      const code = tr.querySelector('code');
+      if (!code) return;
+      e.preventDefault();
+      showGroupContextMenu(code.textContent, e);
+    });
 
     initialized = true;
   }
@@ -394,6 +407,7 @@
     if (!select) return;
 
     const groups = status.groups || {};
+    groupsCache = groups;  // 缓存供右键菜单用
     const names = Object.keys(groups);
     // 缓存 API 下发的 label 供 source_group 列使用
     for (const g of names) _groupLabels[g] = groups[g].label || g;
@@ -403,6 +417,124 @@
     if (state.currentGroup !== current) {
       state.currentGroup = current;
       loadGroup();
+    }
+  }
+
+  // ---------------- 右键上下文菜单：移动（子菜单）/ 拉黑（非黑名单组）/ 还原（黑名单组）----------------
+  function showGroupContextMenu(proxy, mouseEvent) {
+    hideGroupContextMenu();
+    const currentKind = groupsCache[state.currentGroup]?.kind || 'normal';
+
+    // 移出子菜单：列出所有组（排除当前组和黑名单——黑名单用"还原"项）
+    const moveItems = Object.entries(groupsCache)
+      .filter(([name, g]) => name !== state.currentGroup && g.kind !== 'blacklist')
+      .map(([name, g]) => `
+        <div class="context-menu-item" data-action="move" data-group="${utils.esc(name)}">
+          <span>${utils.esc(g.label)}</span>
+          <span class="text-theme-muted text-xs">${g.count}</span>
+        </div>
+      `).join('');
+
+    // 黑名单组：显示"还原"（移到代理队列），非黑名单组：显示"移动"+"拉黑"
+    let items = '';
+    if (currentKind === 'blacklist') {
+      items = `<div class="context-menu-item" data-action="restore"><span>还原</span></div>`;
+    } else {
+      items = `
+        <div class="context-menu-item context-menu-has-submenu">
+          <span>移动</span>
+          <svg class="context-menu-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+          <div class="context-submenu">${moveItems}</div>
+        </div>
+        <div class="context-menu-item" data-action="blacklist"><span>拉黑</span></div>
+      `;
+    }
+
+    contextMenu = document.createElement('div');
+    contextMenu.className = 'context-menu';
+    contextMenu.innerHTML = items;
+    document.body.appendChild(contextMenu);
+    positionGroupContextMenu(mouseEvent);
+
+    contextMenu.addEventListener('click', (e) => {
+      const item = e.target.closest('.context-menu-item');
+      if (!item || !item.dataset.action) return;
+      const action = item.dataset.action;
+      if (action === 'move') {
+        doGroupMove(proxy, item.dataset.group);
+        hideGroupContextMenu();
+      } else if (action === 'blacklist') {
+        doGroupBlacklist(proxy);
+        hideGroupContextMenu();
+      } else if (action === 'restore') {
+        doGroupRestore(proxy);
+        hideGroupContextMenu();
+      }
+    });
+
+    document.addEventListener('click', hideGroupContextMenuOnOutside, true);
+    document.addEventListener('scroll', hideGroupContextMenu, true);
+    window.addEventListener('resize', hideGroupContextMenu);
+  }
+
+  function hideGroupContextMenuOnOutside(e) {
+    if (contextMenu && !contextMenu.contains(e.target)) hideGroupContextMenu();
+  }
+
+  function hideGroupContextMenu() {
+    if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+    document.removeEventListener('click', hideGroupContextMenuOnOutside, true);
+    document.removeEventListener('scroll', hideGroupContextMenu, true);
+    window.removeEventListener('resize', hideGroupContextMenu);
+  }
+
+  function positionGroupContextMenu(e) {
+    contextMenu.style.visibility = 'hidden';
+    requestAnimationFrame(() => {
+      const rect = contextMenu.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width - 8;
+      const maxY = window.innerHeight - rect.height - 8;
+      contextMenu.style.left = Math.min(Math.max(e.clientX, 8), maxX) + 'px';
+      contextMenu.style.top = Math.min(Math.max(e.clientY, 8), maxY) + 'px';
+      contextMenu.style.visibility = '';
+    });
+  }
+
+  async function doGroupMove(proxy, targetGroup) {
+    try {
+      await window.api.moveProxy(proxy, targetGroup);
+      const label = groupsCache[targetGroup]?.label || targetGroup;
+      showToast('success', '已移动', `代理已移到 ${label}`);
+      loadGroup();  // 刷新当前组明细
+    } catch (e) {
+      showToast('error', '移动失败', e.message);
+    }
+  }
+
+  async function doGroupBlacklist(proxy) {
+    try {
+      await window.api.blacklist([proxy]);
+      showToast('success', '已拉黑', `${utils.bindOf(proxy)} 已加入黑名单`);
+      loadGroup();
+    } catch (e) {
+      showToast('error', '拉黑失败', e.message);
+    }
+  }
+
+  async function doGroupRestore(proxy) {
+    // 还原：从黑名单移到代理队列
+    const standbyEntry = Object.entries(groupsCache).find(([, g]) => g.kind === 'standby');
+    const target = standbyEntry ? standbyEntry[0] : null;
+    if (!target) {
+      showToast('error', '还原失败', '未找到代理队列组');
+      return;
+    }
+    try {
+      await window.api.moveProxy(proxy, target);
+      showToast('success', '已还原', `代理已移到 ${groupsCache[target]?.label || target}`);
+      loadGroup();
+    } catch (e) {
+      showToast('error', '还原失败', e.message);
     }
   }
 

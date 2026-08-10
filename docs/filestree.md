@@ -62,7 +62,7 @@ proxy-pool/
 │                   ├── app.js         # 主入口（路由 / 轮询 / 主题切换）
 │                   ├── api.js         # API 封装（fetch 包装 / 各端点方法）
 │                   ├── dashboard.js   # 仪表盘页（KPI / 图表）
-│                   ├── groups.js      # 代理组页（双向虚拟滚动 / 懒加载 / 排序 / 过滤 / 导出）
+│                   ├── groups.js      # 代理组页（双向虚拟滚动 / 懒加载 / 排序 / 过滤 / 导出 / 右键菜单）
 │                   ├── standby.js     # 代理服务队列页（hover tooltip / 测速 pin / 右键菜单 / pin / lock）
 │                   ├── sources.js     # 代理源页
 │                   └── charts.js      # Chart.js 封装
