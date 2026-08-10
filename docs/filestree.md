@@ -49,7 +49,7 @@ proxy-pool/
 │       ├── logging.py             # 日志模块
 │       └── web/                   # Web 控制面板（serve 模式）
 │           ├── __init__.py
-│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 代理移组）
+│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 代理移组 + /api/proxy/remove 代理删除 + /api/group/{name}/add 批量添加）
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── server.py          # aiohttp 服务器启动
 │           └── static/

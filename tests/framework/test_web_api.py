@@ -57,8 +57,9 @@ class FakeStandby:
     def standby_group(self):
         return STANDBY_GROUP
 
-    def standby_proxies(self):
+    def standby_proxies(self, *, truncate=True):
         # 完整队列（不因锁定状态改变，用于展示/指标）
+        # FakeStandby 不截断（测试用池无 capacity 概念），truncate 参数保持接口兼容
         return list(self.pool.proxy_groups.get(STANDBY_GROUP, {}).get("proxies", {}))
 
     def upstream_proxies(self):
@@ -339,6 +340,43 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["proxy"] == "http://1.2.3.4:8080"
         assert data["download"]["best_mbps"] == 5.0
         assert data["upload"]["best_mbps"] == 2.0
+
+    async def test_group_add_proxies(self):
+        """向组批量添加代理"""
+        r = await self.client.post("/api/group/trusted/add", json={"proxies": ["3.3.3.3:80", "http://4.4.4.4:3128"]})
+        assert r.status == 200
+        data = await r.json()
+        assert data["added"] == 2
+        assert "http://3.3.3.3:80" in self.pool.get_trusted_proxies()
+
+    async def test_group_add_empty(self):
+        """空列表返回 400"""
+        r = await self.client.post("/api/group/trusted/add", json={"proxies": []})
+        assert r.status == 400
+
+    async def test_group_add_unknown_group(self):
+        """不存在的组返回 404"""
+        r = await self.client.post("/api/group/no-such-group/add", json={"proxies": ["1.2.3.4:80"]})
+        assert r.status == 404
+
+    async def test_proxy_remove(self):
+        """从指定组删除代理"""
+        self.pool.add_to_group("default-http", "http://9.9.9.9:80", consecutive_fails=0)
+        r = await self.client.post("/api/proxy/remove", json={"proxy": "http://9.9.9.9:80", "group": "default-http"})
+        assert r.status == 200
+        assert "http://9.9.9.9:80" not in self.pool.get_available_proxies()
+
+    async def test_proxy_remove_missing_params(self):
+        """缺少 proxy 或 group 返回 400"""
+        r1 = await self.client.post("/api/proxy/remove", json={"proxy": "1.2.3.4:80"})
+        assert r1.status == 400
+        r2 = await self.client.post("/api/proxy/remove", json={"group": "default-http"})
+        assert r2.status == 400
+
+    async def test_proxy_remove_not_in_group(self):
+        """代理不在该组返回 404"""
+        r = await self.client.post("/api/proxy/remove", json={"proxy": "http://0.0.0.0:1", "group": "default-http"})
+        assert r.status == 404
 
 
 if __name__ == "__main__":

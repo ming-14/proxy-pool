@@ -89,7 +89,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
             "consecutive_fails": pool.get_consecutive_fail_count(p),
             "pinned": pool.is_pinned(p),
         }
-        for p in ctx.standby.standby_proxies()
+        for p in ctx.standby.standby_proxies(truncate=False)
     ]
     # 锁定状态：locked 代理作为 pproxy 唯一上游（无论心跳是否成功）
     locked_proxy = None
@@ -174,6 +174,30 @@ async def _group(request: web.Request) -> web.Response:
     return web.json_response(detail)
 
 
+async def _do_group_add(request: web.Request) -> web.Response:
+    """向指定组批量添加代理"""
+    ctx = request.app[_PANEL_KEY]
+    group_name = request.match_info["name"]
+    if group_name not in ctx.pool.proxy_groups:
+        return web.json_response({"error": "组不存在"}, status=404)
+    body = await _json_body(request)
+    proxies = body.get("proxies", [])
+    if not proxies:
+        return web.json_response({"error": "缺少 proxies"}, status=400)
+    added = 0
+    for p in proxies:
+        p = normalize_proxy(p.strip())
+        if not p:
+            continue
+        ctx.pool.add_to_group(group_name, p, consecutive_fails=0)
+        added += 1
+    # 从 standby 组添加时同步 pproxy 上游
+    if group_name == config.STANDBY_GROUP:
+        ctx.server.sync(ctx.standby.upstream_proxies())
+    ctx.save()
+    return web.json_response({"ok": True, "added": added})
+
+
 async def _proxy_history(request: web.Request) -> web.Response:
     """单代理的延时历史 + 流量历史（按需查询，避免全量下发撑大 /api/status）
 
@@ -193,7 +217,7 @@ async def _proxy_history(request: web.Request) -> web.Response:
 # ------------------------------------------------------------------ 测速
 def _find_proxy_by_bind(ctx: PanelContext, bind: str) -> str | None:
     """从 standby 队列 + 锁定代理中按 bind（地址，不含 scheme）反查完整 proxy URL"""
-    for p in ctx.standby.standby_proxies():
+    for p in ctx.standby.standby_proxies(truncate=False):
         if bind_of(p) == bind:
             return p
     if ctx.standby.is_locked():
@@ -304,6 +328,25 @@ async def _do_proxy_move(request: web.Request) -> web.Response:
     ctx.server.sync(ctx.standby.upstream_proxies())
     ctx.save()
     return web.json_response({"ok": True, "proxy": proxy, "target_group": target})
+
+
+async def _do_proxy_remove(request: web.Request) -> web.Response:
+    """从指定组删除代理（不拉黑，直接移除）"""
+    ctx = request.app[_PANEL_KEY]
+    body = await _json_body(request)
+    proxy = body.get("proxy")
+    group = body.get("group")
+    if not proxy or not group:
+        return web.json_response({"error": "缺少 proxy 或 group"}, status=400)
+    proxy = normalize_proxy(proxy)
+    removed = ctx.pool.remove_from_group(group, proxy)
+    if not removed:
+        return web.json_response({"error": "代理不在该组中"}, status=404)
+    # 从 standby 队列移除时同步 pproxy 上游
+    if group == config.STANDBY_GROUP:
+        ctx.server.sync(ctx.standby.upstream_proxies())
+    ctx.save()
+    return web.json_response({"ok": True, "proxy": proxy, "group": group})
 
 
 async def _do_trust(request: web.Request) -> web.Response:
@@ -436,11 +479,13 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/", _index)
     app.router.add_get("/api/status", _status)
     app.router.add_get("/api/group/{name}", _group)
+    app.router.add_post("/api/group/{name}/add", _do_group_add)
     app.router.add_get("/api/proxy/history", _proxy_history)
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)
     app.router.add_post("/api/proxy/move", _do_proxy_move)
+    app.router.add_post("/api/proxy/remove", _do_proxy_remove)
     app.router.add_post("/api/trust", _do_trust)
     app.router.add_post("/api/source/pause", _do_source_pause)
     app.router.add_post("/api/source/resume", _do_source_resume)

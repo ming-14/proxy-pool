@@ -129,6 +129,16 @@ class ProxyPool:
         }
         self._dirty_groups.add(group_name)
 
+    def remove_from_group(self, group_name: str, proxy: str) -> bool:
+        """从指定组移除代理，返回是否实际移除"""
+        proxy = normalize_proxy(proxy)
+        group = self.proxy_groups.get(group_name)
+        if group is None or proxy not in group["proxies"]:
+            return False
+        del group["proxies"][proxy]
+        self._dirty_groups.add(group_name)
+        return True
+
     def move_proxy(self, proxy: str, to_group: str, consecutive_fails: int | None = None,
                    latency: float | None = None) -> None:
         """将代理从当前组移到目标组（保留 pinned/pinned_at 固定状态）

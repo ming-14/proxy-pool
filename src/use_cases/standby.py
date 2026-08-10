@@ -178,8 +178,8 @@ class StandbyQueueUseCase:
         while self._history and self._history[0].ts < cutoff:
             self._history.popleft()
 
-    def standby_proxies(self) -> list[str]:
-        """代理服务队列当前代理（完整队列，用于展示/指标/容量判断/心跳探测）
+    def standby_proxies(self, *, truncate=True) -> list[str]:
+        """代理服务队列当前代理（用于展示/指标/容量判断/心跳探测）
 
         固定代理优先（按固定时间 pinned_at 升序），非固定代理按 latency 升序排后。
         超出 _capacity 的固定代理忽略（保留在组内不移出，但不参与队列/上游/心跳），
@@ -187,6 +187,10 @@ class StandbyQueueUseCase:
 
         注意：本方法始终返回完整队列，不因锁定状态改变。pproxy 上游同步请用
         upstream_proxies()（锁定时只返回锁定代理）。
+
+        Args:
+            truncate: True 时截断到 capacity（上游/心跳/指标采样用），
+                      False 时返回完整列表（面板展示用，显示实际数量 vs capacity）。
         """
         proxies = self._pool.get_group_proxies(self._standby_group)
         pinned = sorted(
@@ -198,7 +202,7 @@ class StandbyQueueUseCase:
             key=lambda p: float("inf") if (l := self._pool.get_latency(p)) is None else l,
         )
         result = pinned + others
-        if self._capacity is not None:
+        if truncate and self._capacity is not None:
             result = result[:self._capacity]
         return result
 

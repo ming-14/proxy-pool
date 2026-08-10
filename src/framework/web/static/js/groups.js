@@ -45,6 +45,7 @@
             <input id="grp-filter" class="input w-48" placeholder="关键字过滤">
           </div>
           <div class="flex items-center gap-2">
+            <button class="btn btn-primary btn-sm" id="grp-add">添加</button>
             <button class="btn btn-ghost btn-sm" id="grp-export-csv">导出 CSV</button>
             <button class="btn btn-ghost btn-sm" id="grp-export-json">导出 JSON</button>
           </div>
@@ -75,6 +76,7 @@
     };
     document.getElementById('grp-export-csv').onclick = exportCsv;
     document.getElementById('grp-export-json').onclick = exportJson;
+    document.getElementById('grp-add').onclick = showAddModal;
 
     // 回到顶部按钮 + 虚拟滚动跳转检测：监听主区域滚动
     const mainContent = document.getElementById('main-content');
@@ -435,10 +437,14 @@
         </div>
       `).join('');
 
-    // 黑名单组：显示"还原"（移到代理队列），非黑名单组：显示"移动"+"拉黑"
+    // 黑名单组：显示"还原"+"删除"，非黑名单组：显示"移动"+"拉黑"+"删除"
     let items = '';
+    const deleteItem = `<div class="context-menu-item context-menu-danger" data-action="delete"><span>删除</span></div>`;
     if (currentKind === 'blacklist') {
-      items = `<div class="context-menu-item" data-action="restore"><span>还原</span></div>`;
+      items = `
+        <div class="context-menu-item" data-action="restore"><span>还原</span></div>
+        ${deleteItem}
+      `;
     } else {
       items = `
         <div class="context-menu-item context-menu-has-submenu">
@@ -447,6 +453,7 @@
           <div class="context-submenu">${moveItems}</div>
         </div>
         <div class="context-menu-item" data-action="blacklist"><span>拉黑</span></div>
+        ${deleteItem}
       `;
     }
 
@@ -468,6 +475,9 @@
         hideGroupContextMenu();
       } else if (action === 'restore') {
         doGroupRestore(proxy);
+        hideGroupContextMenu();
+      } else if (action === 'delete') {
+        doGroupDelete(proxy);
         hideGroupContextMenu();
       }
     });
@@ -522,11 +532,11 @@
   }
 
   async function doGroupRestore(proxy) {
-    // 还原：从黑名单移到代理队列
-    const standbyEntry = Object.entries(groupsCache).find(([, g]) => g.kind === 'standby');
-    const target = standbyEntry ? standbyEntry[0] : null;
+    // 还原：回到拉黑前的来源组（source_group 由后端记入黑名单 info），无来源组记录（直接入黑名单的代理）报错
+    const entry = state.detail?.proxies.find((p) => p.proxy === proxy);
+    const target = entry?.source_group;
     if (!target) {
-      showToast('error', '还原失败', '未找到代理队列组');
+      showToast('error', '还原失败', '该代理无来源组记录，无法还原');
       return;
     }
     try {
@@ -535,6 +545,77 @@
       loadGroup();
     } catch (e) {
       showToast('error', '还原失败', e.message);
+    }
+  }
+
+  async function doGroupDelete(proxy) {
+    try {
+      await window.api.removeProxy(proxy, state.currentGroup);
+      showToast('success', '已删除', `${utils.bindOf(proxy)} 已从当前组移除`);
+      loadGroup();
+    } catch (e) {
+      showToast('error', '删除失败', e.message);
+    }
+  }
+
+  // ---------------- 添加代理模态框 ----------------
+  let addModal = null;
+
+  function showAddModal() {
+    if (!state.currentGroup) {
+      showToast('warning', '请先选择分组', '选择要添加代理的目标组');
+      return;
+    }
+    if (addModal) return;
+    const label = groupsCache[state.currentGroup]?.label || state.currentGroup;
+
+    addModal = document.createElement('div');
+    addModal.className = 'modal-overlay';
+    addModal.innerHTML = `
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title">添加代理到 ${utils.esc(label)}</div>
+          <button class="btn btn-ghost btn-sm" id="grp-add-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <textarea class="input w-full" id="grp-add-input" rows="8" placeholder="每行一个代理地址，如&#10;http://1.2.3.4:8080&#10;socks5://5.6.7.8:1080&#10;9.9.9.9:3128（裸地址默认 http）"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost btn-sm" id="grp-add-cancel">取消</button>
+          <button class="btn btn-primary btn-sm" id="grp-add-submit">添加</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(addModal);
+
+    const close = () => { addModal.remove(); addModal = null; };
+    document.getElementById('grp-add-close').onclick = close;
+    document.getElementById('grp-add-cancel').onclick = close;
+    addModal.addEventListener('click', (e) => { if (e.target === addModal) close(); });
+    document.getElementById('grp-add-submit').onclick = () => submitAdd(close);
+    document.getElementById('grp-add-input').focus();
+  }
+
+  async function submitAdd(close) {
+    const input = document.getElementById('grp-add-input');
+    const proxies = input.value.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+    if (!proxies.length) {
+      showToast('warning', '无代理', '请输入至少一个代理地址');
+      return;
+    }
+    const btn = document.getElementById('grp-add-submit');
+    btn.disabled = true;
+    btn.textContent = '添加中...';
+    try {
+      const d = await window.api.addProxy(state.currentGroup, proxies);
+      showToast('success', '已添加', `成功添加 ${d.added} 个代理`);
+      close();
+      loadGroup();
+    } catch (e) {
+      showToast('error', '添加失败', e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '添加';
     }
   }
 

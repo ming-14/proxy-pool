@@ -566,6 +566,11 @@ html.dark .select:focus {
   background-color: var(--bg-hover);
 }
 
+.context-menu-item.context-menu-danger:hover {
+  background-color: var(--danger-bg, rgba(239, 68, 68, 0.1));
+  color: var(--danger);
+}
+
 .context-menu-arrow {
   width: 1rem;
   height: 1rem;
@@ -589,4 +594,63 @@ html.dark .select:focus {
 
 .context-menu-has-submenu:hover .context-submenu {
   display: block;
+}
+
+/* 模态框：添加代理等弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.4);
+  animation: fadeIn 0.15s ease;
+}
+
+.modal {
+  width: 480px;
+  max-width: 90vw;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: slideIn 0.15s ease;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: 1rem;
+}
+
+.modal-body textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

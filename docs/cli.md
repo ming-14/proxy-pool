@@ -38,8 +38,10 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
 - **代理源**：启用状态、暂停剩余时间；代理服务队列待补测代理一览
 - **单代理 hover 图表**：代理服务队列页面鼠标悬浮代理 IP（表格行或锁定卡片）时弹出 tooltip，展示该代理的延时趋势 + 流量速率图表（Chart.js 独立实例），数据来自 `/api/proxy/history?bind=`，2s 定时刷新；tooltip 可交互（鼠标可移入查看图表），离开后 100ms 延迟销毁
 - **单代理测速**：tooltip 底部「测速 (CF 10s)」按钮，点击后调 `/api/proxy/speedtest`（POST `{"bind": "..."}`），后端用 vendor/pspeed 对该代理做 Cloudflare 下载+上传 10s 测速（`asyncio.to_thread` 避免阻塞），返回 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}` 展示在按钮下方；测速开始后 tooltip **pin**（鼠标移出不自动消失，点击外部才消失），解除 pin 后恢复正常 mouseleave 行为
-- **右键上下文菜单**：代理服务队列页面右键代理 IP 弹出菜单——「移出」（hover 展开子菜单，列出所有组及其存量，点击调 `/api/proxy/move` 将代理移到目标组并同步 pproxy 上游）、「拉黑」（调 `/api/blacklist`，从所有组移除并加入黑名单）、「测速」（显示 tooltip 并立即触发测速）
-- **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组）+「拉黑」；黑名单组：「还原」（移到代理队列）
+- **右键上下文菜单**：代理服务队列页面右键代理行弹出菜单——「移出」（hover 展开子菜单，列出所有组及其存量，点击调 `/api/proxy/move` 将代理移到目标组并同步 pproxy 上游）、「拉黑」（调 `/api/blacklist`，从所有组移除并加入黑名单）、「测速」（显示 tooltip 并立即触发测速）
+- **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」；黑名单组：「还原」（移到代理队列）+「删除」
+- **点击 IP pin tooltip**：代理服务队列页面点击代理 IP 固定悬浮面板（与测速 pin 一致，鼠标移出不消失，点击外部才消失）；已有 pin 面板时悬浮不切换，需先关闭
+- **添加代理**：代理组页面「添加」按钮（导出 CSV 左边），弹出模态框输入代理地址（每行一个，裸地址默认 http），调 `POST /api/group/{name}/add` 批量添加到当前组
 
 #### 控制功能
 
@@ -48,6 +50,8 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
 - 手动拉取 `fetch`
 - 拉黑 / 加入信任池（`/api/blacklist`、`/api/trust`）：拉黑时从所有组移除并加入黑名单，同步 pproxy 上游
 - 移出代理到指定组（`/api/proxy/move`，POST `{"proxy", "target_group"}`）：将代理从当前组移到目标组，从 standby 队列移出时同步 pproxy 上游
+- 删除代理（`/api/proxy/remove`，POST `{"proxy", "group"}`）：从指定组移除代理（不拉黑），从 standby 队列移除时同步 pproxy 上游
+- 添加代理到组（`POST /api/group/{name}/add`，`{"proxies": [...]}`）：批量添加代理到指定组，裸地址自动补 http://，standby 组添加后同步 pproxy 上游
 - 源暂停 / 恢复（可带自定义暂停时长，`/api/source/pause|resume`）
 - 固定 / 解固代理服务队列代理（`/api/standby/pin|unpin`）：固定代理排队列最前（按固定时间升序），不被踢出/拉黑/补测，超出 `capacity` 的固定代理忽略但保留固定状态
 - 锁定 / 解锁单一上游（`/api/standby/lock|unlock`）：锁定队列内代理为 pproxy 唯一上游（move 到内建隐藏组），fill 跳过、心跳仍探测锁定代理测速（延迟数据加趋势图，失败只计数不拉黑）、无论心跳是否成功都只用该代理；锁定时健康率趋势卡片隐藏、调度参数卡片隐藏、队列统计只显示延迟；其他代理保留不动，解锁后恢复原调度。与 pin 区别：pin 只是不被踢出（rc 仍可能选其他），lock 是上游只有这一个

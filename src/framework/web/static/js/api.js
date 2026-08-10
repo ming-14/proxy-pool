@@ -42,6 +42,9 @@
     group(name) {
       return request(`/api/group/${encodeURIComponent(name)}`);
     },
+    addProxy(group, proxies) {
+      return request(`/api/group/${encodeURIComponent(group)}/add`, 'POST', { proxies });
+    },
     fetch() {
       return request('/api/fetch', 'POST', {});
     },
@@ -80,6 +83,9 @@
     },
     moveProxy(proxy, targetGroup) {
       return request('/api/proxy/move', 'POST', { proxy, target_group: targetGroup });
+    },
+    removeProxy(proxy, group) {
+      return request('/api/proxy/remove', 'POST', { proxy, group });
     },
   };
 })();
