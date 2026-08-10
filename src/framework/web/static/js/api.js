@@ -78,5 +78,8 @@
     speedTest(bind) {
       return request('/api/proxy/speedtest', 'POST', { bind });
     },
+    moveProxy(proxy, targetGroup) {
+      return request('/api/proxy/move', 'POST', { proxy, target_group: targetGroup });
+    },
   };
 })();

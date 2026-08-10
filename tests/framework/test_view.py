@@ -262,7 +262,7 @@ class TestGuiSmoke(unittest.TestCase):
 
             # 概览表
             overview_rows = viewer.overview_tree.get_children()
-            self.assertEqual(len(overview_rows), 9)  # 配置的 9 组
+            self.assertEqual(len(overview_rows), 10)  # 配置的 10 组
             values = [viewer.overview_tree.item(i, "values")[1] for i in overview_rows]
             self.assertIn("永不过期", values)
 

@@ -535,3 +535,58 @@ html.dark .select:focus {
   width: 1.25rem;
   height: 1.25rem;
 }
+
+/* 右键上下文菜单：代理 IP 右键弹出（移出/拉黑/测速） */
+.context-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 160px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.25rem;
+  animation: slideIn 0.1s ease;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-arrow {
+  width: 1rem;
+  height: 1rem;
+  color: var(--text-muted);
+}
+
+/* 移出子菜单：hover 父项时展开 */
+.context-submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: -0.25rem;
+  min-width: 160px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.25rem;
+  margin-left: 2px;
+}
+
+.context-menu-has-submenu:hover .context-submenu {
+  display: block;
+}

@@ -18,6 +18,9 @@
   let hideTimer = null;      // 延迟销毁定时器（mouseleave 后 100ms 销毁，期间若重绘触发 mouseover 则取消）
   let hoverSource = null;    // tooltip 来源：'table'（表格）或 'lock'（锁定卡片），renderTable 检查只针对表格
   let speedTestState = null; // 测速状态：{status:'running'|'done', bind, result, time}，tooltip 隐藏后保留，重建时恢复
+  let standbyGroups = {};    // onStatus 缓存的 groups（右键菜单移出子菜单用）
+  let contextMenu = null;    // 右键菜单 DOM 元素
+  let tooltipPinned = false; // 测速 pin：true 时 tooltip 不自动消失，仅点击外部才消失
 
   function render() {
     if (initialized) return;
@@ -95,6 +98,32 @@
     lockProxy.addEventListener('mouseleave', () => {
       scheduleHideProxyTooltip();
     });
+
+    // 右键表格行：弹出上下文菜单（移出/拉黑/测速）
+    wrap.addEventListener('contextmenu', (e) => {
+      const tr = e.target.closest('tr');
+      if (!tr) return;
+      const code = tr.querySelector('code');
+      if (!code) return;
+      e.preventDefault();
+      showContextMenu(code.textContent, e);
+    });
+
+    // 点击代理 IP：pin tooltip（与测速 pin 一致，鼠标移出不消失，点击外部才消失）
+    wrap.addEventListener('click', (e) => {
+      const code = e.target.closest('code');
+      if (!code) return;
+      const bind = utils.bindOf(code.textContent);
+      if (hoverBind === bind) tooltipPinned = true;
+    });
+
+    // pin 状态下点击 tooltip 外部 → 销毁 tooltip（解除 pin）
+    // 排除表格内 code 点击：由上方 wrap click 处理 pin，不在此销毁
+    document.addEventListener('click', (e) => {
+      if (!tooltipPinned || !hoverTooltip) return;
+      if (e.target.closest('#sb-table-wrap code')) return;
+      if (!hoverTooltip.contains(e.target)) hideProxyTooltip();
+    }, true);
   }
 
   function renderTable(standby) {
@@ -187,10 +216,106 @@
     }
   }
 
+  // ---------------- 右键上下文菜单：移出（子菜单选目标组）/ 拉黑 / 测速 ----------------
+  function showContextMenu(proxy, mouseEvent) {
+    hideContextMenu();
+    const bind = utils.bindOf(proxy);
+
+    // 移出子菜单：列出所有组（排除 standby 自身和 blacklist——blacklist 用"拉黑"项）
+    const groupItems = Object.entries(standbyGroups)
+      .filter(([, g]) => g.kind !== 'standby' && g.kind !== 'blacklist')
+      .map(([name, g]) => `
+        <div class="context-menu-item" data-action="move" data-group="${utils.esc(name)}">
+          <span>${utils.esc(g.label)}</span>
+          <span class="text-theme-muted text-xs">${g.count}</span>
+        </div>
+      `).join('');
+
+    contextMenu = document.createElement('div');
+    contextMenu.className = 'context-menu';
+    contextMenu.innerHTML = `
+      <div class="context-menu-item context-menu-has-submenu">
+        <span>移出</span>
+        <svg class="context-menu-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+        <div class="context-submenu">${groupItems}</div>
+      </div>
+      <div class="context-menu-item" data-action="blacklist"><span>拉黑</span></div>
+      <div class="context-menu-item" data-action="speedtest"><span>测速</span></div>
+    `;
+    document.body.appendChild(contextMenu);
+    positionContextMenu(mouseEvent);
+
+    contextMenu.addEventListener('click', (e) => {
+      const item = e.target.closest('.context-menu-item');
+      if (!item || !item.dataset.action) return;
+      const action = item.dataset.action;
+      if (action === 'move') {
+        doMove(proxy, item.dataset.group);
+        hideContextMenu();
+      } else if (action === 'blacklist') {
+        doBlacklist(proxy);
+        hideContextMenu();
+      } else if (action === 'speedtest') {
+        hideContextMenu();
+        showProxyTooltip(bind, mouseEvent, 'table', true);
+        runSpeedTest(bind);
+      }
+    });
+
+    // 点击菜单外部 / 滚动 / 窗口缩放 → 关闭菜单
+    document.addEventListener('click', hideContextMenuOnOutside, true);
+    document.addEventListener('scroll', hideContextMenu, true);
+    window.addEventListener('resize', hideContextMenu);
+  }
+
+  function hideContextMenuOnOutside(e) {
+    if (contextMenu && !contextMenu.contains(e.target)) hideContextMenu();
+  }
+
+  function hideContextMenu() {
+    if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+    document.removeEventListener('click', hideContextMenuOnOutside, true);
+    document.removeEventListener('scroll', hideContextMenu, true);
+    window.removeEventListener('resize', hideContextMenu);
+  }
+
+  function positionContextMenu(e) {
+    contextMenu.style.visibility = 'hidden';
+    requestAnimationFrame(() => {
+      const rect = contextMenu.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width - 8;
+      const maxY = window.innerHeight - rect.height - 8;
+      contextMenu.style.left = Math.min(Math.max(e.clientX, 8), maxX) + 'px';
+      contextMenu.style.top = Math.min(Math.max(e.clientY, 8), maxY) + 'px';
+      contextMenu.style.visibility = '';
+    });
+  }
+
+  async function doMove(proxy, targetGroup) {
+    try {
+      await window.api.moveProxy(proxy, targetGroup);
+      const label = standbyGroups[targetGroup]?.label || targetGroup;
+      showToast('success', '已移出', `代理已移到 ${label}`);
+    } catch (e) {
+      showToast('error', '移出失败', e.message);
+    }
+  }
+
+  async function doBlacklist(proxy) {
+    try {
+      await window.api.blacklist([proxy]);
+      showToast('success', '已拉黑', `${utils.bindOf(proxy)} 已加入黑名单`);
+    } catch (e) {
+      showToast('error', '拉黑失败', e.message);
+    }
+  }
+
   // ---------------- 代理 IP hover tooltip：展示该 IP 的延时+流量图表 ----------------
-  function showProxyTooltip(bind, mouseEvent, source) {
+  function showProxyTooltip(bind, mouseEvent, source, force) {
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }  // 取消延迟销毁
     if (hoverBind === bind) return;
+    // 单实例：已有 pin 的 tooltip 时，不允许悬浮切换（force=true 时强制切换，如右键菜单"测速"）
+    if (tooltipPinned && !force) return;
     hideProxyTooltip();
     hoverBind = bind;
     hoverSource = source;
@@ -273,9 +398,12 @@
     if (hoverTooltip) { hoverTooltip.remove(); hoverTooltip = null; }
     hoverBind = null;
     hoverSource = null;
+    tooltipPinned = false;  // 解除 pin，下次显示时恢复正常 mouseleave 行为
   }
 
   function scheduleHideProxyTooltip() {
+    // 测速中/完成后 tooltip pin：不自动消失，仅点击外部才消失
+    if (tooltipPinned) return;
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(() => { hideProxyTooltip(); hideTimer = null; }, 100);
   }
@@ -312,6 +440,7 @@
 
   async function runSpeedTest(bind) {
     speedTestState = { status: 'running', bind };
+    tooltipPinned = true;  // 测速开始：pin tooltip，mouseleave 不自动消失
     renderSpeedTestState();
     try {
       const data = await window.api.speedTest(bind);
@@ -490,6 +619,7 @@
     render();
     const standby = status.standby || [];
     const lockedProxy = status.locked_proxy || null;
+    standbyGroups = status.groups || {};  // 缓存供右键菜单移出子菜单用
 
     // 锁定状态：显示锁定卡片 + 禁用队列卡片 + 隐藏调度参数卡片
     const lockCard = document.getElementById('sb-lock-card');

@@ -67,6 +67,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         config.TRUSTED_GROUP: ("信任池", "trusted"),
         config.BLACKLIST_GROUP: ("黑名单", "blacklist"),
         config.STANDBY_GROUP: ("代理队列", "standby"),
+        "staging": ("暂存组", "staging"),
     }
     groups = {}
     for name, grp in pool.proxy_groups.items():
@@ -281,8 +282,28 @@ async def _do_blacklist(request: web.Request) -> web.Response:
     proxies = body.get("proxies", [])
     for p in proxies:
         ctx.record.remove(normalize_proxy(p))
+    # 若有代理从 standby 队列移出，同步 pproxy 上游
+    ctx.server.sync(ctx.standby.upstream_proxies())
     ctx.save()
     return web.json_response({"ok": True, "count": len(proxies)})
+
+
+async def _do_proxy_move(request: web.Request) -> web.Response:
+    """将代理移到指定组（从 standby 队列移出时同步 pproxy 上游）"""
+    ctx = request.app[_PANEL_KEY]
+    body = await _json_body(request)
+    proxy = body.get("proxy")
+    target = body.get("target_group")
+    if not proxy or not target:
+        return web.json_response({"error": "缺少 proxy 或 target_group"}, status=400)
+    proxy = normalize_proxy(proxy)
+    if target not in ctx.pool.proxy_groups:
+        return web.json_response({"error": f"组 {target} 不存在"}, status=400)
+    ctx.pool.move_proxy(proxy, target)
+    # 从 standby 队列移出时同步 pproxy 上游
+    ctx.server.sync(ctx.standby.upstream_proxies())
+    ctx.save()
+    return web.json_response({"ok": True, "proxy": proxy, "target_group": target})
 
 
 async def _do_trust(request: web.Request) -> web.Response:
@@ -419,6 +440,7 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)
+    app.router.add_post("/api/proxy/move", _do_proxy_move)
     app.router.add_post("/api/trust", _do_trust)
     app.router.add_post("/api/source/pause", _do_source_pause)
     app.router.add_post("/api/source/resume", _do_source_resume)

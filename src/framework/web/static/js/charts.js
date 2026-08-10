@@ -97,7 +97,7 @@
               label: '最小延迟',
               data: [],
               borderColor: c.success,
-              borderDash: [4, 4],
+
               tension: 0.3,
               pointRadius: 0,
               pointHoverRadius: 3,
@@ -106,14 +106,20 @@
               label: '最大延迟',
               data: [],
               borderColor: c.warning,
-              borderDash: [4, 4],
+
               tension: 0.3,
               pointRadius: 0,
               pointHoverRadius: 3,
             },
           ],
         },
-        options: commonOptions(),
+        options: {
+          ...commonOptions(),
+          scales: {
+            x: commonOptions().scales.x,
+            y: { type: 'logarithmic', grid: { color: c.grid, drawBorder: false }, ticks: { color: c.text } },
+          },
+        },
       });
     },
 
@@ -226,7 +232,7 @@
               label: '平均延迟',
               data: [],
               borderColor: c.warning,
-              borderDash: [4, 4],
+
               tension: 0.3,
               pointRadius: 0,
               pointHoverRadius: 3,
@@ -239,14 +245,16 @@
           scales: {
             x: commonOptions().scales.x,
             y: {
-              ...commonOptions().scales.y,
+              type: 'logarithmic',
+              grid: { color: c.grid, drawBorder: false },
+              ticks: { color: c.text },
               title: { display: true, text: '字节/s' },
             },
             y1: {
+              type: 'logarithmic',
               position: 'right',
               grid: { drawOnChartArea: false },
               ticks: { color: c.text },
-              beginAtZero: true,
               title: { display: true, text: '延迟 s' },
             },
           },
@@ -312,7 +320,7 @@
       `;
       const chartEls = container.querySelectorAll('.proxy-tooltip-chart');
 
-      // 延时图：单条线（latency），与全局 avg/min/max 三条线不同
+      // 延时图：单条线（latency），对数 y 轴避免高延时尖峰压扁正常值
       const latencyC = new Chart(chartEls[0].appendChild(document.createElement('canvas')), {
         type: 'line',
         data: {
@@ -331,6 +339,10 @@
         options: {
           ...commonOptions(),
           plugins: { ...commonOptions().plugins, legend: { display: false } },
+          scales: {
+            x: commonOptions().scales.x,
+            y: { type: 'logarithmic', grid: { color: c.grid, drawBorder: false }, ticks: { color: c.text } },
+          },
         },
       });
 
@@ -356,7 +368,7 @@
 
       return {
         render(latencyHistory, trafficHistory) {
-          // 延时图：{ts, latency} 序列
+          // 延时图：{ts, latency} 序列（对数 y 轴，高值按比例压缩，不裁剪）
           const lh = latencyHistory || [];
           latencyC.data.labels = lh.map((p) => fmtTs(p.ts));
           latencyC.data.datasets[0].data = lh.map((p) => p.latency);

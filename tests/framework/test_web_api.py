@@ -169,6 +169,40 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert (await resp.json())["count"] == 1
         assert "9.9.9.9:80" not in self.pool.get_available_proxies()
 
+    async def test_blacklist_syncs_pproxy(self):
+        """拉黑后同步 pproxy 上游（standby 队列变化时）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        resp = await self.client.post("/api/blacklist", json={"proxies": ["1.2.3.4:8080"]})
+        assert resp.status == 200
+        self.server.sync.assert_called_once()
+
+    async def test_proxy_move(self):
+        """移出代理到目标组：从 standby 移到 trusted，同步 pproxy"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        resp = await self.client.post("/api/proxy/move", json={
+            "proxy": "http://1.2.3.4:8080", "target_group": TRUSTED_GROUP,
+        })
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["target_group"] == TRUSTED_GROUP
+        assert "http://1.2.3.4:8080" in self.pool.get_trusted_proxies()
+        self.server.sync.assert_called_once()
+
+    async def test_proxy_move_missing_params(self):
+        """缺少 proxy 或 target_group 返回 400"""
+        r1 = await self.client.post("/api/proxy/move", json={"proxy": "1.2.3.4:80"})
+        assert r1.status == 400
+        r2 = await self.client.post("/api/proxy/move", json={"target_group": "trusted"})
+        assert r2.status == 400
+
+    async def test_proxy_move_unknown_group(self):
+        """目标组不存在返回 400"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        r = await self.client.post("/api/proxy/move", json={
+            "proxy": "http://1.2.3.4:8080", "target_group": "no-such-group",
+        })
+        assert r.status == 400
+
     async def test_trust_adds_proxy(self):
         resp = await self.client.post("/api/trust", json={"proxies": ["7.7.7.7:99"]})
         assert resp.status == 200

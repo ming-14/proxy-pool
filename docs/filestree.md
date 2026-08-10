@@ -49,7 +49,7 @@ proxy-pool/
 │       ├── logging.py             # 日志模块
 │       └── web/                   # Web 控制面板（serve 模式）
 │           ├── __init__.py
-│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速）
+│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 代理移组）
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── server.py          # aiohttp 服务器启动
 │           └── static/
@@ -63,7 +63,7 @@ proxy-pool/
 │                   ├── api.js         # API 封装（fetch 包装 / 各端点方法）
 │                   ├── dashboard.js   # 仪表盘页（KPI / 图表）
 │                   ├── groups.js      # 代理组页（双向虚拟滚动 / 懒加载 / 排序 / 过滤 / 导出）
-│                   ├── standby.js     # 代理服务队列页（hover tooltip / 测速 / pin / lock）
+│                   ├── standby.js     # 代理服务队列页（hover tooltip / 测速 pin / 右键菜单 / pin / lock）
 │                   ├── sources.js     # 代理源页
 │                   └── charts.js      # Chart.js 封装
 ├── tests/                         # 测试目录（复刻 src 结构）

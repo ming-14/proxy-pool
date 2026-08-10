@@ -44,6 +44,7 @@ requestable_groups = [
 "Proxy-pool-standby-queue" = { ttl = "never" }   # serve 代理服务队列（pproxy 上游），由心跳探测维护
 "trusted" = { ttl = "never" }   # 成功使用过的代理，永不过期
 "blacklist" = { ttl = 10800 }                # 失败过多的代理，3 小时后过期可重新入池
+"staging" = { ttl = "never" }                # 暂存组：手动暂存的代理，永不过期
 
 # ---------------------------------------------------------------- 拉取调度
 [fetch]
