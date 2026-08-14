@@ -5,6 +5,8 @@ async 实现：网络请求经 aiohttp 原生 async 发送（不经 asyncio.to_t
 避免 ssl 模块 C 层内存泄漏），serve 心跳等事件循环场景不被同步阻塞。
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

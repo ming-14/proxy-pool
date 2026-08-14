@@ -278,7 +278,7 @@ async def _do_speedtest(request: web.Request) -> web.Response:
     if not proxy:
         return web.json_response({"error": "未找到该代理"}, status=404)
     try:
-        result = await asyncio.to_thread(_run_speedtest, proxy)
+        result = await asyncio.get_running_loop().run_in_executor(None, _run_speedtest, proxy)
     except Exception as e:
         logger.exception("测速失败 proxy=%s", proxy)
         return web.json_response({"error": f"测速失败: {e}"}, status=500)
@@ -295,7 +295,7 @@ async def _json_body(request: web.Request) -> dict:
 
 async def _do_fetch(request: web.Request) -> web.Response:
     ctx = request.app[_PANEL_KEY]
-    await asyncio.to_thread(ctx.fetch.execute)   # 大量网络请求，避免阻塞事件循环
+    await asyncio.get_running_loop().run_in_executor(None, ctx.fetch.execute)   # 大量网络请求，避免阻塞事件循环
     ctx.save()
     return web.json_response({"ok": True, "available": len(ctx.pool.get_available_proxies())})
 
@@ -313,40 +313,46 @@ async def _do_blacklist(request: web.Request) -> web.Response:
 
 
 async def _do_proxy_move(request: web.Request) -> web.Response:
-    """将代理移到指定组（从 standby 队列移出时同步 pproxy 上游）"""
+    """将代理移到指定组（批量：proxies 数组，从 standby 队列移出时同步 pproxy 上游）"""
     ctx = request.app[_PANEL_KEY]
     body = await _json_body(request)
-    proxy = body.get("proxy")
+    proxies = body.get("proxies")
     target = body.get("target_group")
-    if not proxy or not target:
-        return web.json_response({"error": "缺少 proxy 或 target_group"}, status=400)
-    proxy = normalize_proxy(proxy)
+    if not proxies or not target:
+        return web.json_response({"error": "缺少 proxies 或 target_group"}, status=400)
     if target not in ctx.pool.proxy_groups:
         return web.json_response({"error": f"组 {target} 不存在"}, status=400)
-    ctx.pool.move_proxy(proxy, target)
+    moved = []
+    for p in proxies:
+        p = normalize_proxy(p)
+        ctx.pool.move_proxy(p, target)
+        moved.append(p)
     # 从 standby 队列移出时同步 pproxy 上游
     ctx.server.sync(ctx.standby.upstream_proxies())
     ctx.save()
-    return web.json_response({"ok": True, "proxy": proxy, "target_group": target})
+    return web.json_response({"ok": True, "count": len(moved), "proxies": moved, "target_group": target})
 
 
 async def _do_proxy_remove(request: web.Request) -> web.Response:
-    """从指定组删除代理（不拉黑，直接移除）"""
+    """从指定组删除代理（批量：proxies 数组，不拉黑，直接移除）"""
     ctx = request.app[_PANEL_KEY]
     body = await _json_body(request)
-    proxy = body.get("proxy")
+    proxies = body.get("proxies")
     group = body.get("group")
-    if not proxy or not group:
-        return web.json_response({"error": "缺少 proxy 或 group"}, status=400)
-    proxy = normalize_proxy(proxy)
-    removed = ctx.pool.remove_from_group(group, proxy)
+    if not proxies or not group:
+        return web.json_response({"error": "缺少 proxies 或 group"}, status=400)
+    removed = []
+    for p in proxies:
+        p = normalize_proxy(p)
+        if ctx.pool.remove_from_group(group, p):
+            removed.append(p)
     if not removed:
         return web.json_response({"error": "代理不在该组中"}, status=404)
     # 从 standby 队列移除时同步 pproxy 上游
     if group == config.STANDBY_GROUP:
         ctx.server.sync(ctx.standby.upstream_proxies())
     ctx.save()
-    return web.json_response({"ok": True, "proxy": proxy, "group": group})
+    return web.json_response({"ok": True, "count": len(removed), "proxies": removed, "group": group})
 
 
 async def _do_trust(request: web.Request) -> web.Response:

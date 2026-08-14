@@ -5,6 +5,8 @@ PROTOCOL 为代理协议（http/https/socks5），入池前统一加上 scheme �
 geonode 因分页逻辑覆盖 fetch_proxies，其余源直接用基类默认实现。
 """
 
+from __future__ import annotations
+
 import logging
 from urllib.parse import urlencode
 

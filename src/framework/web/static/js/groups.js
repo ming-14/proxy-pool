@@ -33,6 +33,8 @@
   let topSpacerH = 0;            // top spacer 实际像素高度（用实际行高累加，不用 estRowH 估算）
   let groupsCache = {};          // onStatus 缓存的 groups（右键菜单用）
   let contextMenu = null;        // 右键菜单 DOM 元素
+  let selection = null;          // 行选择控制器（框选/多选）
+  let currentRows = [];          // 当前过滤+排序后的行缓存（供 selection 读取，避免拖拽时重复排序）
 
   function render() {
     if (initialized) return;
@@ -66,12 +68,14 @@
       state.currentGroup = e.target.value;
       state.renderStart = 0;
       state.renderEnd = 0;
+      if (selection) selection.clear();  // 切换分组时清空选中
       loadGroup();
     };
     document.getElementById('grp-filter').oninput = (e) => {
       state.keyword = e.target.value.trim().toLowerCase();
       state.renderStart = 0;
       state.renderEnd = 0;
+      if (selection) selection.clear();  // 过滤改变视图时清空选中
       renderTable();
     };
     document.getElementById('grp-export-csv').onclick = exportCsv;
@@ -115,15 +119,29 @@
       mainContent.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
-    // 右键表格行：弹出上下文菜单（移动/拉黑/还原）
+    // 右键表格行：弹出上下文菜单（移动/拉黑/还原）；右键目标行未选中时先单选它
     const tableWrap = document.getElementById('grp-table-wrap');
     tableWrap.addEventListener('contextmenu', (e) => {
-      const tr = e.target.closest('tr');
+      const tr = e.target.closest('tbody tr');
       if (!tr) return;
-      const code = tr.querySelector('code');
-      if (!code) return;
+      const proxy = tr.dataset.proxy;
+      if (!proxy) return;
       e.preventDefault();
-      showGroupContextMenu(code.textContent, e);
+      if (!selection.has(proxy)) selection.selectOne(proxy);
+      showGroupContextMenu(proxy, e);
+    });
+
+    // 行选择控制器（Windows 资源管理器式框选/多选）
+    // 表头 th 不排除：可从表头开始拖拽框选；th 的排序点击由 th.onclick 处理（selection 不做选择变更）
+    selection = window.createRowSelection({
+      container: tableWrap,
+      scrollEl: document.getElementById('main-content'),
+      getRows: () => currentRows,
+      proxyOf: (r) => r.proxy,
+      estimateIndexAtY,
+      isExcludedTarget: (e) => !!e.target.closest('button, input, select'),
+      onChanged: applyHighlight,
+      isActive: () => window.appState.currentPage === 'groups',
     });
 
     initialized = true;
@@ -186,9 +204,9 @@
     return rows;
   }
 
-  function rowTemplate(p) {
+  function rowTemplate(p, i) {
     return `
-      <tr>
+      <tr data-idx="${i}" data-proxy="${utils.esc(p.proxy)}">
         <td><code>${utils.esc(p.proxy)}</code></td>
         <td>${p.consecutive_fails ?? 0}</td>
         <td>${utils.fmtLatency(p.latency)}</td>
@@ -197,6 +215,27 @@
         <td>${p.source_group ? utils.esc(groupLabel(p.source_group)) : '<span class="text-theme-muted">-</span>'}</td>
       </tr>
     `;
+  }
+
+  // 框选坐标 → 数据索引：tbody 顶对应 renderStart 行，按 estRowH 推算（可跨未渲染区域）
+  // 表头（thead）上方 → 0，表底下方 → total-1，clamp 到有效范围
+  function estimateIndexAtY(clientY) {
+    if (!currentRows.length) return -1;
+    const tbody = document.getElementById('grp-tbody');
+    if (!tbody) return -1;
+    const top = tbody.getBoundingClientRect().top;
+    const idx = state.renderStart + Math.round((clientY - top) / estRowH);
+    return Math.max(0, Math.min(idx, currentRows.length - 1));
+  }
+
+  // 高亮当前渲染行：根据选中集（proxy key）切换 selected class
+  function applyHighlight() {
+    if (!selection) return;
+    const tbody = document.getElementById('grp-tbody');
+    if (!tbody) return;
+    for (const tr of tbody.children) {
+      tr.classList.toggle('selected', selection.has(tr.dataset.proxy || ''));
+    }
   }
 
   function renderTable() {
@@ -215,6 +254,7 @@
     state.renderStart = Math.min(state.renderStart, state.renderEnd);
 
     const renderRows = rows.slice(state.renderStart, state.renderEnd);
+    currentRows = rows;  // 缓存供 selection 读取（避免拖拽/框选时重复排序）
     const hasMoreDown = state.renderEnd < total;
     topSpacerH = state.renderStart * estRowH;  // 初始估算（scroll jump 或首次渲染）
     let bottomSpacerH = (total - state.renderEnd) * estRowH;
@@ -238,7 +278,7 @@
           </tr>
         </thead>
         <tbody id="grp-tbody">
-          ${renderRows.length ? renderRows.map(rowTemplate).join('') : '<tr><td colspan="6" class="text-center text-theme-muted py-8">无匹配代理</td></tr>'}
+          ${renderRows.length ? renderRows.map((p, i) => rowTemplate(p, state.renderStart + i)).join('') : '<tr><td colspan="6" class="text-center text-theme-muted py-8">无匹配代理</td></tr>'}
         </tbody>
       </table>
       ${hasMoreDown ? '<div id="grp-sentinel" class="text-center text-theme-muted py-4">滚动加载更多...</div>' : (total > 0 ? '<div class="text-center text-theme-muted py-3 text-xs">已全部加载</div>' : '')}
@@ -289,6 +329,8 @@
     const sentinel = document.getElementById('grp-sentinel');
     if (sentinel) sentinelObserver.observe(sentinel);
     if (state.renderStart > 0) sentinelObserver.observe(document.getElementById('grp-top-spacer'));
+
+    if (selection) selection.refresh();  // 重渲染后重放高亮
   }
 
   // 向下加载：追加底部行，超过 MAX_RENDER 时销毁顶部
@@ -297,7 +339,7 @@
     const newEnd = Math.min(state.renderEnd + PAGE_SIZE, total);
     if (newEnd === state.renderEnd) return;
     const tbody = document.getElementById('grp-tbody');
-    if (tbody) tbody.insertAdjacentHTML('beforeend', rows.slice(state.renderEnd, newEnd).map(rowTemplate).join(''));
+    if (tbody) tbody.insertAdjacentHTML('beforeend', rows.slice(state.renderEnd, newEnd).map((p, i) => rowTemplate(p, state.renderEnd + i)).join(''));
     state.renderEnd = newEnd;
 
     // trim 顶部行：topSpacerH 用实际移除高度累加，spacer 增量 = removedH，净位移 = 0
@@ -314,6 +356,7 @@
     }
     updateSpacers(rows);
     updateInfo(rows);
+    if (selection) selection.refresh();
   }
 
   // 向上加载：在顶部插入行，超过 MAX_RENDER 时销毁底部，调整 scrollTop 保持视觉位置
@@ -324,7 +367,7 @@
     const insertCount = state.renderStart - newStart;
 
     // 插入行到顶部
-    if (tbody) tbody.insertAdjacentHTML('afterbegin', rows.slice(newStart, state.renderStart).map(rowTemplate).join(''));
+    if (tbody) tbody.insertAdjacentHTML('afterbegin', rows.slice(newStart, state.renderStart).map((p, i) => rowTemplate(p, newStart + i)).join(''));
     state.renderStart = newStart;
 
     // 测量插入行实际高度，topSpacerH 用实际高度递减，spacer 减量 = insertedH，净位移 = 0
@@ -343,6 +386,7 @@
     }
     updateSpacers(rows);
     updateInfo(rows);
+    if (selection) selection.refresh();
   }
 
   function updateSpacers(rows) {
@@ -510,11 +554,19 @@
     });
   }
 
+  // 当前选中集（右键菜单批量操作作用于整个选中集；空则用右键目标行兜底）
+  function selectedProxies() {
+    const sel = selection ? selection.getSelectedArray() : [];
+    return sel.length ? sel : null;
+  }
+
   async function doGroupMove(proxy, targetGroup) {
+    const proxies = selectedProxies() || [proxy];
     try {
-      await window.api.moveProxy(proxy, targetGroup);
+      const d = await window.api.moveProxy(proxies, targetGroup);
       const label = groupsCache[targetGroup]?.label || targetGroup;
-      showToast('success', '已移动', `代理已移到 ${label}`);
+      showToast('success', '已移动', `已将 ${d.count} 个代理移到 ${label}`);
+      selection && selection.clear();
       loadGroup();  // 刷新当前组明细
     } catch (e) {
       showToast('error', '移动失败', e.message);
@@ -522,9 +574,11 @@
   }
 
   async function doGroupBlacklist(proxy) {
+    const proxies = selectedProxies() || [proxy];
     try {
-      await window.api.blacklist([proxy]);
-      showToast('success', '已拉黑', `${utils.bindOf(proxy)} 已加入黑名单`);
+      const d = await window.api.blacklist(proxies);
+      showToast('success', '已拉黑', `已将 ${d.count} 个代理加入黑名单`);
+      selection && selection.clear();
       loadGroup();
     } catch (e) {
       showToast('error', '拉黑失败', e.message);
@@ -533,15 +587,29 @@
 
   async function doGroupRestore(proxy) {
     // 还原：回到拉黑前的来源组（source_group 由后端记入黑名单 info），无来源组记录（直接入黑名单的代理）报错
-    const entry = state.detail?.proxies.find((p) => p.proxy === proxy);
-    const target = entry?.source_group;
-    if (!target) {
-      showToast('error', '还原失败', '该代理无来源组记录，无法还原');
+    const proxies = selectedProxies() || [proxy];
+    // 按 source_group 分组批量移动（各自回到来源组）
+    const byTarget = {};
+    let skipped = 0;
+    for (const p of proxies) {
+      const entry = state.detail?.proxies.find((x) => x.proxy === p);
+      const target = entry?.source_group;
+      if (!target) { skipped++; continue; }
+      (byTarget[target] = byTarget[target] || []).push(p);
+    }
+    if (!Object.keys(byTarget).length) {
+      showToast('error', '还原失败', '所选代理均无来源组记录，无法还原');
       return;
     }
     try {
-      await window.api.moveProxy(proxy, target);
-      showToast('success', '已还原', `代理已移到 ${groupsCache[target]?.label || target}`);
+      let total = 0;
+      for (const [target, list] of Object.entries(byTarget)) {
+        const d = await window.api.moveProxy(list, target);
+        total += d.count;
+      }
+      const skippedText = skipped ? `，${skipped} 个无来源组被跳过` : '';
+      showToast('success', '已还原', `已还原 ${total} 个代理${skippedText}`);
+      selection && selection.clear();
       loadGroup();
     } catch (e) {
       showToast('error', '还原失败', e.message);
@@ -549,9 +617,11 @@
   }
 
   async function doGroupDelete(proxy) {
+    const proxies = selectedProxies() || [proxy];
     try {
-      await window.api.removeProxy(proxy, state.currentGroup);
-      showToast('success', '已删除', `${utils.bindOf(proxy)} 已从当前组移除`);
+      const d = await window.api.removeProxy(proxies, state.currentGroup);
+      showToast('success', '已删除', `已从当前组移除 ${d.count} 个代理`);
+      selection && selection.clear();
       loadGroup();
     } catch (e) {
       showToast('error', '删除失败', e.message);

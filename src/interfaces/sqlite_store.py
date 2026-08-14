@@ -7,6 +7,8 @@ vs 旧 JSON 全量序列化 706KB / 0.3s。复合主键 (proxy, group_name)
 不兼容旧 .cache JSON 格式（直接切换，旧文件删除，无迁移逻辑）。
 """
 
+from __future__ import annotations
+
 import logging
 import sqlite3
 

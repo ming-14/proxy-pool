@@ -6,6 +6,8 @@
 避免 fa（first_available）固定命中第一个坏代理导致持续失败（见 __init__），实现无缝切换。
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextvars
 import logging

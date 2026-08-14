@@ -3,6 +3,8 @@
 供代理源适配器构建浏览器化请求头使用。
 """
 
+from __future__ import annotations
+
 import hashlib
 import random
 import re

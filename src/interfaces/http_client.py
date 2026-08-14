@@ -17,6 +17,8 @@ AsyncHttpGetter：原生 aiohttp async 客户端，SSL 在事件循环管理（�
 用例层只读这些属性，不 import 本模块实现。
 """
 
+from __future__ import annotations
+
 import logging
 import socket
 import threading

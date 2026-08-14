@@ -7,8 +7,11 @@ STANDBY_QUEUE_CAPACITY）。队列维护业务（探测补入/心跳淘汰/退�
     生命周期：启动/停止事件循环。
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
+import signal
 import time
 
 from src.framework import config
@@ -156,8 +159,24 @@ async def _run(
             next_round = max(time.monotonic(), round_start + control.interval)
 
     hb_task = asyncio.create_task(heartbeat_loop())
+    loop = asyncio.get_running_loop()
+
+    # 退出信号处理：Linux/systemd/docker 发 SIGTERM 时完成 stop_future 触发优雅退出
+    # （Windows 的 add_signal_handler 不支持 SIGTERM，SIGINT 仍走 KeyboardInterrupt 路径）
+    stop_future = loop.create_future()
+
+    def _request_shutdown() -> None:
+        """请求优雅退出：完成 stop_future，主循环 finally 走清理"""
+        if not stop_future.done():
+            stop_future.set_result(None)
+
     try:
-        await asyncio.Future()  # 永久运行，直到被取消
+        loop.add_signal_handler(signal.SIGTERM, _request_shutdown)
+    except (NotImplementedError, RuntimeError):
+        pass  # Windows 平台不支持 SIGTERM 信号处理
+
+    try:
+        await stop_future  # 永久运行（收到退出信号时完成）
     finally:
         # 清理：停止心跳与补测任务 → 关闭服务器 → 关闭 async session → 保存
         hb_task.cancel()

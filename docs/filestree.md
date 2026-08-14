@@ -49,7 +49,7 @@ proxy-pool/
 │       ├── logging.py             # 日志模块
 │       └── web/                   # Web 控制面板（serve 模式）
 │           ├── __init__.py
-│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 代理移组 + /api/proxy/remove 代理删除 + /api/group/{name}/add 批量添加）
+│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加）
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── server.py          # aiohttp 服务器启动
 │           └── static/
@@ -61,9 +61,10 @@ proxy-pool/
 │               └── js/
 │                   ├── app.js         # 主入口（路由 / 轮询 / 主题切换）
 │                   ├── api.js         # API 封装（fetch 包装 / 各端点方法）
+│                   ├── selection.js   # 通用行选择模块（Windows 资源管理器式框选/多选：蓝色矩形、表头/空白拖拽、Ctrl/Shift、Ctrl+A、Esc、外部点击清空、边缘自动滚动）
 │                   ├── dashboard.js   # 仪表盘页（KPI / 图表）
-│                   ├── groups.js      # 代理组页（双向虚拟滚动 / 懒加载 / 排序 / 过滤 / 导出 / 右键菜单）
-│                   ├── standby.js     # 代理服务队列页（hover tooltip / 测速 pin / 右键菜单 / pin / lock）
+│                   ├── groups.js      # 代理组页（双向虚拟滚动 / 懒加载 / 排序 / 过滤 / 导出 / 框选 / 右键批量菜单）
+│                   ├── standby.js     # 代理服务队列页（hover tooltip / 测速 pin / 点击 IP pin / 拖选隐藏 / 框选 / 右键批量菜单 / lock）
 │                   ├── sources.js     # 代理源页
 │                   └── charts.js      # Chart.js 封装
 ├── tests/                         # 测试目录（复刻 src 结构）

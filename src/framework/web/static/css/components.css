@@ -189,6 +189,13 @@ tbody tr:hover {
   background-color: var(--bg-hover);
 }
 
+/* 行选中（Windows 资源管理器式）：覆盖 hover 背景，保证选中态清晰 */
+tbody tr.selected,
+tbody tr.selected:hover {
+  background-color: var(--primary-100);
+  box-shadow: inset 3px 0 0 var(--primary-500);
+}
+
 tbody tr:last-child td {
   border-bottom: none;
 }
@@ -653,4 +660,19 @@ html.dark .select:focus {
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* 框选矩形（Windows 资源管理器式）：半透明蓝 + 蓝色边框，不拦截鼠标事件 */
+.marquee-select {
+  position: fixed;
+  z-index: 90;
+  pointer-events: none;
+  background-color: rgba(59, 130, 246, 0.16);
+  border: 1px solid var(--primary-500);
+  border-radius: 2px;
+}
+
+html.dark .marquee-select {
+  background-color: rgba(59, 130, 246, 0.22);
+  border-color: var(--primary-600);
 }

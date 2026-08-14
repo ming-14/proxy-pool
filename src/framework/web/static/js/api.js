@@ -81,11 +81,13 @@
     speedTest(bind) {
       return request('/api/proxy/speedtest', 'POST', { bind });
     },
-    moveProxy(proxy, targetGroup) {
-      return request('/api/proxy/move', 'POST', { proxy, target_group: targetGroup });
+    moveProxy(proxies, targetGroup) {
+      const list = Array.isArray(proxies) ? proxies : [proxies];
+      return request('/api/proxy/move', 'POST', { proxies: list, target_group: targetGroup });
     },
-    removeProxy(proxy, group) {
-      return request('/api/proxy/remove', 'POST', { proxy, group });
+    removeProxy(proxies, group) {
+      const list = Array.isArray(proxies) ? proxies : [proxies];
+      return request('/api/proxy/remove', 'POST', { proxies: list, group });
     },
   };
 })();

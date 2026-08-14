@@ -21,6 +21,18 @@
   let standbyGroups = {};    // onStatus 缓存的 groups（右键菜单移出子菜单用）
   let contextMenu = null;    // 右键菜单 DOM 元素
   let tooltipPinned = false; // 测速 pin：true 时 tooltip 不自动消失，仅点击外部才消失
+  let selection = null;      // 行选择控制器（框选/多选）
+  let currentStandby = [];   // 当前队列数组（供 selection 读取，与渲染保持一致）
+
+  // 高亮当前渲染行：根据选中集（proxy key）切换 selected class
+  function applyHighlight() {
+    if (!selection) return;
+    const tbody = document.querySelector('#sb-table-wrap tbody');
+    if (!tbody) return;
+    for (const tr of tbody.children) {
+      tr.classList.toggle('selected', selection.has(tr.dataset.proxy || ''));
+    }
+  }
 
   function render() {
     if (initialized) return;
@@ -76,6 +88,7 @@
     // 但 mouseleave 只在鼠标真正离开容器时触发，重绘不误触
     const wrap = document.getElementById('sb-table-wrap');
     wrap.addEventListener('mouseover', (e) => {
+      if (selection && selection.isDragging()) return;  // 框选拖拽时抑制 hover tooltip
       const code = e.target.closest('code');
       if (!code) return;
       const bind = utils.bindOf(code.textContent);
@@ -99,27 +112,76 @@
       scheduleHideProxyTooltip();
     });
 
-    // 右键表格行：弹出上下文菜单（移出/拉黑/测速）
+    // 右键表格行：弹出上下文菜单（移出/拉黑/测速）；右键目标行未选中时先单选它
     wrap.addEventListener('contextmenu', (e) => {
-      const tr = e.target.closest('tr');
+      const tr = e.target.closest('tbody tr');
       if (!tr) return;
-      const code = tr.querySelector('code');
-      if (!code) return;
+      const proxy = tr.dataset.proxy;
+      if (!proxy) return;
       e.preventDefault();
-      showContextMenu(code.textContent, e);
+      if (!selection.has(proxy)) selection.selectOne(proxy);
+      showContextMenu(proxy, e);
     });
 
-    // 点击代理 IP：pin tooltip（与测速 pin 一致，鼠标移出不消失，点击外部才消失）
-    wrap.addEventListener('click', (e) => {
+    // 行选择控制器（Windows 资源管理器式框选/多选）
+    // 排除 code（保留点击 pin / hover tooltip）与按钮，行选中仅限非 code 区域
+    selection = window.createRowSelection({
+      container: wrap,
+      scrollEl: document.getElementById('main-content'),
+      getRows: () => currentStandby,
+      proxyOf: (r) => r.proxy,
+      estimateIndexAtY: (clientY) => {
+        if (!currentStandby.length) return -1;
+        const tbody = wrap.querySelector('tbody');
+        if (!tbody || !tbody.children.length) return -1;
+        const rows = tbody.children;
+        const first = rows[0].getBoundingClientRect();
+        const last = rows[rows.length - 1].getBoundingClientRect();
+        if (clientY < first.top) return 0;                 // 表头上方 → 首行
+        if (clientY > last.bottom) return rows.length - 1; // 表底下方 → 末行
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i].getBoundingClientRect();
+          if (clientY >= r.top && clientY <= r.bottom) return i;
+        }
+        return 0;
+      },
+      isExcludedTarget: (e) => !!e.target.closest('code, button'),
+      onChanged: applyHighlight,
+      isActive: () => window.appState.currentPage === 'standby',
+    });
+
+    // 点击代理 IP → pin tooltip；按下后移动（拖选文本）→ 立即隐藏悬浮面板
+    wrap.addEventListener('mousedown', (e) => {
       const code = e.target.closest('code');
       if (!code) return;
-      const bind = utils.bindOf(code.textContent);
-      if (hoverBind === bind) tooltipPinned = true;
+      const startX = e.clientX, startY = e.clientY;
+      let moved = false;
+      const cleanup = () => {
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+      };
+      const onMove = (ev) => {
+        // 按下状态移动超过阈值（开始拖选文本）→ 立刻隐藏悬浮面板
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) {
+          moved = true;
+          cleanup();
+          hideProxyTooltip();
+        }
+      };
+      const onUp = () => {
+        cleanup();
+        if (moved) return;
+        // 无移动 → 视为点击 → pin tooltip
+        const bind = utils.bindOf(code.textContent);
+        if (hoverBind === bind) tooltipPinned = true;
+      };
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
     });
 
-    // pin 状态下点击 tooltip 外部 → 销毁 tooltip（解除 pin）
-    // 排除表格内 code 点击：由上方 wrap click 处理 pin，不在此销毁
-    document.addEventListener('click', (e) => {
+    // pin 状态下在 tooltip 外部按下鼠标 → 立即销毁 tooltip（解除 pin）
+    // 排除表格内 code 按下：pin 由上方 mousedown 处理，不在此销毁
+    document.addEventListener('mousedown', (e) => {
       if (!tooltipPinned || !hoverTooltip) return;
       if (e.target.closest('#sb-table-wrap code')) return;
       if (!hoverTooltip.contains(e.target)) hideProxyTooltip();
@@ -149,7 +211,7 @@
               : `<button class="btn btn-warning btn-sm" data-action="pin" data-proxy="${utils.esc(p.proxy)}">固定</button>`;
             const lockBtn = `<button class="btn btn-danger btn-sm" data-action="lock" data-proxy="${utils.esc(p.proxy)}">锁定</button>`;
             return `
-              <tr>
+              <tr data-idx="${i}" data-proxy="${utils.esc(p.proxy)}">
                 <td class="text-theme-muted w-12">${i + 1}</td>
                 <td><code>${utils.esc(p.proxy)}</code>${pinBadge}</td>
                 <td>${utils.fmtLatency(p.latency)}</td>
@@ -161,6 +223,7 @@
         </tbody>
       </table>
     `;
+    currentStandby = standby;  // 缓存供 selection 读取
     wrap.querySelectorAll('button[data-action]').forEach((btn) => {
       btn.onclick = () => {
         const action = btn.dataset.action;
@@ -170,6 +233,7 @@
         else if (action === 'lock') doLock(proxy);
       };
     });
+    if (selection) selection.refresh();  // 重渲染后重放高亮
     // 表格重绘后：若 hover 的代理来自表格且已不在队列，销毁 tooltip
     // 锁定卡片的代理在 LOCKED_GROUP 不在 standby 队列，跳过检查
     if (hoverBind && hoverSource === 'table') {
@@ -231,6 +295,12 @@
         </div>
       `).join('');
 
+    const selCount = selection ? selection.count() : 0;
+    // 多选时不展示测速（测速仅单选可用）
+    const speedItem = selCount > 1
+      ? ''
+      : '<div class="context-menu-item" data-action="speedtest"><span>测速</span></div>';
+
     contextMenu = document.createElement('div');
     contextMenu.className = 'context-menu';
     contextMenu.innerHTML = `
@@ -240,7 +310,7 @@
         <div class="context-submenu">${groupItems}</div>
       </div>
       <div class="context-menu-item" data-action="blacklist"><span>拉黑</span></div>
-      <div class="context-menu-item" data-action="speedtest"><span>测速</span></div>
+      ${speedItem}
     `;
     document.body.appendChild(contextMenu);
     positionContextMenu(mouseEvent);
@@ -291,20 +361,30 @@
     });
   }
 
+  // 当前选中集（右键菜单批量操作作用于整个选中集；空则用右键目标行兜底）
+  function selectedProxies() {
+    const sel = selection ? selection.getSelectedArray() : [];
+    return sel.length ? sel : null;
+  }
+
   async function doMove(proxy, targetGroup) {
+    const proxies = selectedProxies() || [proxy];
     try {
-      await window.api.moveProxy(proxy, targetGroup);
+      const d = await window.api.moveProxy(proxies, targetGroup);
       const label = standbyGroups[targetGroup]?.label || targetGroup;
-      showToast('success', '已移出', `代理已移到 ${label}`);
+      showToast('success', '已移出', `已将 ${d.count} 个代理移到 ${label}`);
+      selection && selection.clear();
     } catch (e) {
       showToast('error', '移出失败', e.message);
     }
   }
 
   async function doBlacklist(proxy) {
+    const proxies = selectedProxies() || [proxy];
     try {
-      await window.api.blacklist([proxy]);
-      showToast('success', '已拉黑', `${utils.bindOf(proxy)} 已加入黑名单`);
+      const d = await window.api.blacklist(proxies);
+      showToast('success', '已拉黑', `已将 ${d.count} 个代理加入黑名单`);
+      selection && selection.clear();
     } catch (e) {
       showToast('error', '拉黑失败', e.message);
     }

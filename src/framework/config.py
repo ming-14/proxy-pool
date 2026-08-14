@@ -11,13 +11,15 @@ MAX_CONSECUTIVE_FAILS/SOURCES/SERVER_* 等），组合根与各框架层模块�
 CACHE_DB/LOG_DIR 为框架层路径。
 """
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # Python 3.10 兼容
+    import tomli as tomllib  # Python 3.8 兼容
 
 # config.py 位于 src/framework/，上溯 3 级到项目根
 _PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))

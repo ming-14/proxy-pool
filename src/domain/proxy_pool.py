@@ -21,6 +21,8 @@ LOCKED_GROUP 为内建隐藏组（不在 config.toml，运行时承载锁定代�
 serve lock 时代理 move 到该组作为 pproxy 唯一上游。
 """
 
+from __future__ import annotations
+
 import time
 from typing import Any
 

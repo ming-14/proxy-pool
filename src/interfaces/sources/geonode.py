@@ -3,6 +3,8 @@
 JSON 分页接口，每页 limit 条，逐页拉取直到空页或总数达标。
 """
 
+from __future__ import annotations
+
 import logging
 
 from src.domain.ports import ProxySource

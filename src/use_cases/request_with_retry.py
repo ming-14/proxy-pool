@@ -4,6 +4,8 @@
 连续失败超阈值的代理自动拉黑。
 """
 
+from __future__ import annotations
+
 import logging
 
 from src.domain.models import to_proxy_dict

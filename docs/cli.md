@@ -35,12 +35,14 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
 
 - **总览**：各代理组存量/活跃数/TTL、可用代理数、代理服务队列（latency 排序）
 - **组明细**：选择任一组查看每个代理的连续失败数、响应时间、过期倒计时（支持关键字过滤、列排序）；**双向虚拟滚动**——一次渲染 50 行，滚动到底部自动懒加载下一批，超过 150 行时销毁远离视口的行（top/bottom spacer 保持滚动条高度），拖滚动条跳到远处自动定位到对应行；右下角悬浮回到顶部按钮
+- **Windows 资源管理器式框选**：代理组页与代理服务队列页的代理列表支持鼠标框选/多选——空白处、表头或行上按住拖拽出现蓝色矩形框选，矩形覆盖的行被选中（从表头向下拖拽也可框选）；单击行单选、Ctrl+单击切换、Shift+单击锚点范围选择、Ctrl+拖拽切换框内行、Ctrl+A 全选当前列表、Esc 清空、点击列表外部空白清空选中、拖到视口边缘自动滚动（框选可跨未渲染区域）；选中态行高亮（左缘蓝色指示条），列表重绘后选中保持
+- **右键批量操作**：选中多行后右键弹出上下文菜单，菜单项作用于**整个选中集**——代理组页：移动（子菜单选目标组，批量）/ 拉黑（批量）/ 删除（批量）/ 还原（黑名单组批量）；代理服务队列页：移出（批量）/ 拉黑（批量）/ 测速（**多选时菜单不展示测速项**，仅单选可用）。右键目标行不在选中集内时先单选该行（对齐资源管理器）
 - **代理源**：启用状态、暂停剩余时间；代理服务队列待补测代理一览
 - **单代理 hover 图表**：代理服务队列页面鼠标悬浮代理 IP（表格行或锁定卡片）时弹出 tooltip，展示该代理的延时趋势 + 流量速率图表（Chart.js 独立实例），数据来自 `/api/proxy/history?bind=`，2s 定时刷新；tooltip 可交互（鼠标可移入查看图表），离开后 100ms 延迟销毁
-- **单代理测速**：tooltip 底部「测速 (CF 10s)」按钮，点击后调 `/api/proxy/speedtest`（POST `{"bind": "..."}`），后端用 vendor/pspeed 对该代理做 Cloudflare 下载+上传 10s 测速（`asyncio.to_thread` 避免阻塞），返回 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}` 展示在按钮下方；测速开始后 tooltip **pin**（鼠标移出不自动消失，点击外部才消失），解除 pin 后恢复正常 mouseleave 行为
+- **单代理测速**：tooltip 底部「测速 (CF 10s)」按钮，点击后调 `/api/proxy/speedtest`（POST `{"bind": "..."}`），后端用 vendor/pspeed 对该代理做 Cloudflare 下载+上传 10s 测速（`asyncio.to_thread` 避免阻塞），返回 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}` 展示在按钮下方；测速开始后 tooltip **pin**（鼠标移出不自动消失，鼠标在 tooltip 外部按下即销毁），解除 pin 后恢复正常 mouseleave 行为
 - **右键上下文菜单**：代理服务队列页面右键代理行弹出菜单——「移出」（hover 展开子菜单，列出所有组及其存量，点击调 `/api/proxy/move` 将代理移到目标组并同步 pproxy 上游）、「拉黑」（调 `/api/blacklist`，从所有组移除并加入黑名单）、「测速」（显示 tooltip 并立即触发测速）
 - **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」；黑名单组：「还原」（移到代理队列）+「删除」
-- **点击 IP pin tooltip**：代理服务队列页面点击代理 IP 固定悬浮面板（与测速 pin 一致，鼠标移出不消失，点击外部才消失）；已有 pin 面板时悬浮不切换，需先关闭
+- **点击 IP pin tooltip**：代理服务队列页面**点击代理 IP → pin tooltip**（鼠标移出不自动消失，tooltip 外部按下即销毁）；**按住 IP 拖动（拖选文本）→ 立即隐藏悬浮面板**，便于选择/复制 IP 文本；悬浮 IP 仍显示图表，离开后 100ms 延迟销毁
 - **添加代理**：代理组页面「添加」按钮（导出 CSV 左边），弹出模态框输入代理地址（每行一个，裸地址默认 http），调 `POST /api/group/{name}/add` 批量添加到当前组
 
 #### 控制功能
@@ -49,8 +51,8 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
 
 - 手动拉取 `fetch`
 - 拉黑 / 加入信任池（`/api/blacklist`、`/api/trust`）：拉黑时从所有组移除并加入黑名单，同步 pproxy 上游
-- 移出代理到指定组（`/api/proxy/move`，POST `{"proxy", "target_group"}`）：将代理从当前组移到目标组，从 standby 队列移出时同步 pproxy 上游
-- 删除代理（`/api/proxy/remove`，POST `{"proxy", "group"}`）：从指定组移除代理（不拉黑），从 standby 队列移除时同步 pproxy 上游
+- 移出代理到指定组（`/api/proxy/move`，POST `{"proxies": [...], "target_group"}`，**批量**，proxies 为数组）：将代理从当前组移到目标组，从 standby 队列移出时同步 pproxy 上游
+- 删除代理（`/api/proxy/remove`，POST `{"proxies": [...], "group"}`，**批量**，proxies 为数组）：从指定组移除代理（不拉黑），从 standby 队列移除时同步 pproxy 上游
 - 添加代理到组（`POST /api/group/{name}/add`，`{"proxies": [...]}`）：批量添加代理到指定组，裸地址自动补 http://，standby 组添加后同步 pproxy 上游
 - 源暂停 / 恢复（可带自定义暂停时长，`/api/source/pause|resume`）
 - 固定 / 解固代理服务队列代理（`/api/standby/pin|unpin`）：固定代理排队列最前（按固定时间升序），不被踢出/拉黑/补测，超出 `capacity` 的固定代理忽略但保留固定状态

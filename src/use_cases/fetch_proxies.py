@@ -3,6 +3,8 @@
 协调各代理源拉取 -> 跨源去重入组 -> 源去重率过高暂停。
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from typing import Callable

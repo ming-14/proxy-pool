@@ -4,6 +4,8 @@
 只需满足结构签名。领域层本身零第三方依赖、无 IO。
 """
 
+from __future__ import annotations
+
 from typing import Any, Protocol
 
 

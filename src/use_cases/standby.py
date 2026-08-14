@@ -22,6 +22,8 @@ fill/heartbeat/retry_probe 均为 async（探测走 CheckProxiesUseCase.execute�
 网络请求在 asyncio.to_thread 中执行），serve 事件循环不被同步阻塞。
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import time

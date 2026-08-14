@@ -11,6 +11,8 @@
    （阈值来自 src.framework.config，避免硬编码；consecutive_fails 为连续失败计数，任何成功清零）
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import sys

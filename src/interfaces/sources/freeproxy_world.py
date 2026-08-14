@@ -16,6 +16,8 @@
 FPW_* 并发/限流/超时/请求头参数由 src.framework.config 注入（配置数据源 config/config.toml）。
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
@@ -86,15 +88,16 @@ async def _fetch_page(url, headers, proxies_dict=None, timeout=FPW_REQUEST_TIMEO
     走代理时用 requests（https 代理需 TLS 到代理）；直连用 http_client。
     免费代理多自签证书，代理链路 verify=False 不校验其证书（与项目 http_client 默认一致，
     校验会误杀全部代理，见 http_client.get 说明）。
-    网络请求经 asyncio.to_thread 投递，不阻塞事件循环。
+    网络请求经线程池（run_in_executor）投递，不阻塞事件循环。
     """
     t0 = time.time()
+    loop = asyncio.get_running_loop()
     if proxies_dict:
-        resp = await asyncio.to_thread(
-            py_requests.get, url, headers=headers, proxies=proxies_dict, timeout=timeout, verify=False,
+        resp = await loop.run_in_executor(
+            None, py_requests.get, url, headers=headers, proxies=proxies_dict, timeout=timeout, verify=False,
         )
     else:
-        resp = await asyncio.to_thread(http_client.get, url, headers=headers, timeout=timeout)
+        resp = await loop.run_in_executor(None, http_client.get, url, headers=headers, timeout=timeout)
     try:
         elapsed = time.time() - t0
         resp.raise_for_status()

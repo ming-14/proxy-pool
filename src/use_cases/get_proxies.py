@@ -3,6 +3,8 @@
 从池中随机取最多 n 个可用代理；池空时自动触发拉取。
 """
 
+from __future__ import annotations
+
 import logging
 import random
 from typing import Callable
