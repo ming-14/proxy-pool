@@ -23,6 +23,7 @@ import logging
 import re
 import sys
 import time
+from functools import partial
 
 import urllib3
 
@@ -92,12 +93,15 @@ async def _fetch_page(url, headers, proxies_dict=None, timeout=FPW_REQUEST_TIMEO
     """
     t0 = time.time()
     loop = asyncio.get_running_loop()
+    # run_in_executor 不转发 kwargs，须用 partial 包装目标调用
     if proxies_dict:
-        resp = await loop.run_in_executor(
-            None, py_requests.get, url, headers=headers, proxies=proxies_dict, timeout=timeout, verify=False,
-        )
+        resp = await loop.run_in_executor(None, partial(
+            py_requests.get, url, headers=headers, proxies=proxies_dict, timeout=timeout, verify=False,
+        ))
     else:
-        resp = await loop.run_in_executor(None, http_client.get, url, headers=headers, timeout=timeout)
+        resp = await loop.run_in_executor(None, partial(
+            http_client.get, url, headers=headers, timeout=timeout,
+        ))
     try:
         elapsed = time.time() - t0
         resp.raise_for_status()
@@ -239,9 +243,9 @@ class FreeProxyWorldFetcher:
         timeout:  各页面请求的超时秒数（默认 FPW_REQUEST_TIMEOUT）
 
         Windows 上用 SelectorEventLoop 而非默认 ProactorEventLoop：本源大量
-        asyncio.to_thread + SSL 请求，ProactorEventLoop(IOCP) 在此场景下可能
+        run_in_executor 线程池 + SSL 请求，ProactorEventLoop(IOCP) 在此场景下可能
         静默退出导致进程终止；SelectorEventLoop 基于 select，更稳定。本源只用
-        to_thread（网络请求），不需要 IOCP 的 subprocess 等能力。
+        线程池（网络请求），不需要 IOCP 的 subprocess 等能力。
         """
         if sys.platform == "win32":
             loop = asyncio.SelectorEventLoop()

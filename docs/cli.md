@@ -64,7 +64,7 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
 
 仪表盘的「代理服务队列延迟趋势」「健康率趋势」图表由**后端采样**驱动：每轮 heartbeat 结束采一次队列指标，存内存按 `METRICS_WINDOW` 时间窗口保留（超出自动清理），`/api/status` 的 `standby_history` 字段下发完整历史，前端无状态重绘——**刷新页面不丢失趋势**（多标签一致），重启清空。心跳动态调整时窗口始终不变。
 
-「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，每轮 heartbeat 采累计值存历史（同窗口），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。`/api/status` 另返回 `per_proxy_traffic`（按上游代理地址的累计上下行字节，`{bind: {"upload": int, "download": int}}`），通过 monkey-patch `pproxy.schedule` + `contextvars` 记录选中上游代理实现，仅内存实时计数不持久化。`/api/proxy/history?bind=` 按需查单代理的延时历史（`ProxyLatencySample`）+ 流量历史（`TrafficSample`），两种历史统一用 bind（地址，不含 scheme）作 key。
+「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，每轮 heartbeat 采累计值存历史（同窗口），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。`/api/status` 另返回 `per_proxy_traffic`（按上游代理地址的累计上下行字节，`{bind: {"upload": int, "download": int}}`），通过 vendor/pproxy 内化的 `modstat(user, remote_ip, host_name, roption)` 钩子拿到选中上游代理实现，仅内存实时计数不持久化。`/api/proxy/history?bind=` 按需查单代理的延时历史（`ProxyLatencySample`）+ 流量历史（`TrafficSample`），两种历史统一用 bind（地址，不含 scheme）作 key。
 
 面板为单页原生 JS，定时轮询 `/api/status`（2s），无前端构建链；数据通过 REST API 交互。
 

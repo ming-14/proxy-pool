@@ -18,9 +18,39 @@ from src.interfaces.sources import freeproxy_world as fpw
 from src.interfaces.sources.freeproxy_world import (
     FreeProxyWorldFetcher,
     _crawl_pages,
-    _try_first_page,
     _crawl_type,
+    _fetch_page,
+    _try_first_page,
 )
+
+
+class TestFetchPage(unittest.TestCase):
+    """页面请求：run_in_executor 不转发 kwargs，参数须经 partial 透传（回归测试）"""
+
+    PARSABLE = '<td style="font-weight: 500;">1.2.3.4</td><a href="/?port=8080">'
+
+    def test_direct_branch(self):
+        resp = MagicMock()
+        resp.text = self.PARSABLE
+        resp.raise_for_status.return_value = None
+        with patch.object(fpw.http_client, "get", return_value=resp) as m_get:
+            html, _ = asyncio.run(_fetch_page("http://u", {"A": "1"}, timeout=5))
+        m_get.assert_called_once_with("http://u", headers={"A": "1"}, timeout=5)
+        self.assertIn("1.2.3.4", html)
+
+    def test_proxy_branch(self):
+        resp = MagicMock()
+        resp.text = self.PARSABLE
+        resp.raise_for_status.return_value = None
+        with patch.object(fpw.py_requests, "get", return_value=resp) as m_get:
+            html, _ = asyncio.run(_fetch_page(
+                "http://u", {"A": "1"}, {"https": "https://p1:80"}, timeout=5,
+            ))
+        m_get.assert_called_once_with(
+            "http://u", headers={"A": "1"},
+            proxies={"https": "https://p1:80"}, timeout=5, verify=False,
+        )
+        self.assertIn("1.2.3.4", html)
 
 
 class TestTryFirstPage(unittest.TestCase):

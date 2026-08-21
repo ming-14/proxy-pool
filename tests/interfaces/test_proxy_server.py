@@ -1,10 +1,9 @@
 """pproxy 封装（PproxyServer）测试"""
 import asyncio
-import contextvars
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.interfaces.proxy_server import PproxyServer, _pproxy_uri, _current_roption
+from src.interfaces.proxy_server import PproxyServer, _pproxy_uri
 
 
 def _realistic_bind(uri: str) -> str:
@@ -196,37 +195,30 @@ class TestPerProxyTraffic(unittest.TestCase):
         self.assertEqual(traffic["DIRECT"], {"upload": 500, "download": 800})
 
     def test_modstat_records_per_proxy(self):
-        """modstat 钩子在 contextvars 设置 roption 后按 bind 分发计数"""
+        """modstat 钩子按 roption.bind 分发计数（roption 由 pproxy stream_handler 传入）"""
         roption = MagicMock(bind="3.3.3.3:3128")
-        ctx = contextvars.copy_context()
-        ctx.run(_current_roption.set, roption)
-        modstat = ctx.run(self.server._make_modstat)
-        m = ctx.run(modstat, None, "127.0.0.1", "example.com")
-        # i=0 上行, i=2 下行
-        ctx.run(m(0), 1000)
-        ctx.run(m(2), 3000)
+        modstat = self.server._make_modstat()
+        m = modstat(None, "127.0.0.1", "example.com", roption)
+        m(0)(1000)
+        m(2)(3000)
         traffic = self.server.per_proxy_traffic()
         self.assertEqual(traffic["3.3.3.3:3128"], {"upload": 1000, "download": 3000})
 
     def test_modstat_direct_when_no_roption(self):
-        """contextvars 无 roption（schedule 返回 None）时归入 DIRECT"""
-        ctx = contextvars.copy_context()
-        ctx.run(_current_roption.set, None)
-        modstat = ctx.run(self.server._make_modstat)
-        m = ctx.run(modstat, None, "127.0.0.1", "example.com")
-        ctx.run(m(0), 200)
+        """roption=None（schedule 返回 None，直连）时归入 DIRECT"""
+        modstat = self.server._make_modstat()
+        m = modstat(None, "127.0.0.1", "example.com", None)
+        m(0)(200)
         traffic = self.server.per_proxy_traffic()
         self.assertEqual(traffic["DIRECT"], {"upload": 200, "download": 0})
 
     def test_modstat_connection_change_ignored(self):
         """i ∈ {4,5}（连接数变化）不统计流量"""
         roption = MagicMock(bind="4.4.4.4:8080")
-        ctx = contextvars.copy_context()
-        ctx.run(_current_roption.set, roption)
-        modstat = ctx.run(self.server._make_modstat)
-        m = ctx.run(modstat, None, "127.0.0.1", "example.com")
-        ctx.run(m(4), 1)
-        ctx.run(m(5), 1)
+        modstat = self.server._make_modstat()
+        m = modstat(None, "127.0.0.1", "example.com", roption)
+        m(4)(1)
+        m(5)(1)
         self.assertEqual(self.server.per_proxy_traffic(), {})
 
 

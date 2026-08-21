@@ -9,65 +9,25 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import logging
+import os
+import sys
 import time
-import weakref
 from collections import deque
 from typing import NamedTuple
 
+# pproxy 已 vendor 化（vendor/pproxy/），本地维护。三处修复已内化进源码，无需 monkey-patch：
+#   - proto.sslwrap：verbose=None 时静默（原退化为 print 刷 stdout）
+#   - server.sslcontexts：弱引用容器（原全局 list 只 append 不清理 → SSLContext 泄漏）
+#   - server.stream_handler：modstat 钩子签名加 roption（原不传选中上游 → 无法按代理统计流量）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_VENDOR_DIR = os.path.join(_PROJECT_ROOT, "vendor")
+if _VENDOR_DIR not in sys.path:
+    sys.path.insert(0, _VENDOR_DIR)
+
 import pproxy
-import pproxy.server as _pproxy_server_mod
 
 logger = logging.getLogger(__name__)
-
-
-# ------------------------------------------------------------------ pproxy sslcontexts 泄漏修复
-# pproxy.server 维护模块级全局列表 sslcontexts，proxy_by_uri 每次为 http+ssl:// 上游
-# 创建 SSLContext 后 append 进去，但只 append 不清理。SSLContext 被该列表强引用，
-# 即使对应 Connection 已从 rserver 移除也无法 GC → 内存泄漏。
-# 该列表仅在 pproxy CLI --ssl 加载证书链时遍历（server.py:917），项目用 pproxy.Server
-# API 不走该路径，故替换为弱引用容器：SSLContext 仅由 Connection 持有，Connection 移除后可回收。
-class _WeakSSLContexts:
-    """弱引用容器，兼容 pproxy 的 sslcontexts.append 接口，不持有 SSLContext 强引用"""
-    __slots__ = ("_refs",)
-
-    def __init__(self) -> None:
-        self._refs: list[weakref.ref] = []
-
-    def append(self, obj) -> None:
-        self._refs.append(weakref.ref(obj))
-
-    def __iter__(self):
-        live = []
-        for r in self._refs:
-            o = r()
-            if o is not None:
-                live.append(o)
-        self._refs = [weakref.ref(o) for o in live]  # 顺带清理已死引用
-        return iter(live)
-
-
-_pproxy_server_mod.sslcontexts = _WeakSSLContexts()
-
-
-# ------------------------------------------------------------------ pproxy schedule 钩子：记录选中上游代理
-# pproxy stream_handler 在 line 82 调 schedule(rserver, ...) 选上游代理 roption，line 94 调
-# modstat(user, remote_ip, host_name) 统计流量——但 modstat 不传 roption，无法知道"流量走了哪个代理"。
-# 用 contextvars 记录 schedule 返回的 roption：同一 asyncio.Task 内 schedule→modstat 跨 await 保持一致
-# （contextvars 是 task-local 的，并发请求各自独立），modstat 里读 _current_roption 即可拿到上游代理。
-_current_roption: contextvars.ContextVar = contextvars.ContextVar("pproxy_current_roption", default=None)
-_orig_schedule = _pproxy_server_mod.schedule
-
-
-def _tracking_schedule(rserver, salgorithm, host_name, port):
-    """包装 pproxy.schedule：返回 roption 前记入 contextvars 供 modstat 读取"""
-    roption = _orig_schedule(rserver, salgorithm, host_name, port)
-    _current_roption.set(roption)
-    return roption
-
-
-_pproxy_server_mod.schedule = _tracking_schedule
 
 
 class TrafficSample(NamedTuple):
@@ -181,16 +141,16 @@ class PproxyServer:
     def _make_modstat(self):
         """构造 pproxy modstat 钩子：按方向 i 分发到上行/下行计数器
 
+        pproxy stream_handler 选定上游 roption 后调 modstat(user, remote_ip, host_name, roption)
+       （vendor/pproxy 已内化该签名，原版不传 roption 导致无法按代理统计流量）。
         pproto.channel 转发数据时调 stat_bytes(len(data))：
           i ∈ {0,1}（roption.direct=0 代理 / 1 直连）→ 上行（客户端→远程）
           i ∈ {2,3} → 下行（远程→客户端）
           i ∈ {4,5} → 连接数变化（不统计）
 
-        per-proxy 维度：_tracking_schedule 已将选中上游代理记入 contextvars，此处读取
-        roption.bind（上游代理地址，DIRECT 为 "DIRECT"）作 key 分发到 per-proxy 计数器。
+        per-proxy 维度：roption.bind（上游代理地址，DIRECT 为 "DIRECT"）作 key 分发到 per-proxy 计数器。
         """
-        def modstat(user, remote_ip, host_name):
-            roption = _current_roption.get()
+        def modstat(user, remote_ip, host_name, roption):
             bind = roption.bind if roption is not None else "DIRECT"
             def m(i):
                 if i in (0, 1):
