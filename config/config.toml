@@ -8,11 +8,12 @@
 [paths]
 cache_db = ".cache.db"        # 代理池状态持久化 SQLite 数据库（相对项目根，WAL 模式）
 log_dir = "logs"             # 日志目录（相对项目根）
+autoload = "autoload"        # 启动时自动加载的代理清单文件（相对项目根，一行一个，# 注释）
 
 # ---------------------------------------------------------------- 代理池
 [pool]
-max_consecutive_fails = 2        # 普通组代理连续失败次数 >= 该值后不再参与可用集合
-trusted_max_consecutive_fails = 3  # 信任池组代理的连续失败上限（容错更高）
+max_consecutive_fails = 5        # 普通组代理连续失败次数 >= 该值后不再参与可用集合
+trusted_max_consecutive_fails = 10  # 信任池组代理的连续失败上限（容错更高）
 # 特殊语义组（显式指定组名，组须在 [groups] 定义）：
 #   trusted_group:    信任池：请求成功代理的晋级目标，永不过期
 #   blacklist_group:  黑名单：失败淘汰代理的归属，不可请求
@@ -103,10 +104,10 @@ group_by_protocol = true
 host = "127.0.0.1"                # 监听地址
 port = 8080                       # 监听端口
 standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
-standby_queue_capacity = 15       # 代理服务队列组容量上限（serve 探测补入）
+standby_queue_capacity = 30       # 代理服务队列组容量上限（serve 探测补入）
 
 # 代理服务队列填充候选数公式：缺口 × standby_fill_probe_multiplier，且至少 缺口 + standby_fill_probe_min_extra。
-standby_fill_probe_multiplier = 4
+standby_fill_probe_multiplier = 2
 standby_fill_probe_min_extra = 5
 
 # 代理服务队列填充候选组（按优先级顺序，靠前优先；应从可请求组中选择）。
@@ -145,3 +146,10 @@ network_check_backoff_max = 30      # 退避间隔上限秒（异常越久探测
 [web]
 host = "127.0.0.1"                # 面板监听地址（默认仅本机）
 port = 8081                       # 面板监听端口
+
+# ---------------------------------------------------------------- IP 纯洁度检查
+[purity]
+source = "abuseipdb"                            # 检查源：ipok / abuseipdb
+# 各源代理（被墙时用），空字符串表示直连
+ipok_proxy = "https://103.86.47.209:443"  # ipok.io 代理
+abuseipdb_proxy = ""                        # AbuseIPDB 代理（空=直连）

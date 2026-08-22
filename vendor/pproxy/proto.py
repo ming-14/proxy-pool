@@ -4,7 +4,7 @@ HTTP_LINE = re.compile('([^ ]+) +(.+?) +(HTTP/[^ ]+)$')
 packstr = lambda s, n=1: len(s).to_bytes(n, 'big') + s
 
 def netloc_split(loc, default_host=None, default_port=None):
-    ipv6 = re.fullmatch('\[([0-9a-fA-F:]*)\](?::(\d+)?)?', loc)
+    ipv6 = re.fullmatch(r'\[([0-9a-fA-F:]*)\](?::(\d+)?)?', loc)
     if ipv6:
         host_name, port = ipv6.groups()
     elif ':' in loc:
@@ -217,7 +217,7 @@ class Socks4(BaseProtocol):
         writer.write(b'\x00\x5a' + port.to_bytes(2, 'big') + ip)
         return user, socket.inet_ntoa(ip), port
     async def connect(self, reader_remote, writer_remote, rauth, host_name, port, **kw):
-        ip = socket.inet_aton((await asyncio.get_event_loop().getaddrinfo(host_name, port, family=socket.AF_INET))[0][4][0])
+        ip = socket.inet_aton((await asyncio.get_running_loop().getaddrinfo(host_name, port, family=socket.AF_INET))[0][4][0])
         writer_remote.write(b'\x04\x01' + port.to_bytes(2, 'big') + ip + rauth + b'\x00')
         assert await reader_remote.read_n(2) == b'\x00\x5a'
         await reader_remote.read_n(6)
@@ -251,8 +251,29 @@ class Socks5(BaseProtocol):
         assert await reader.read_n(3) == b'\x05\x01\x00', 'Unknown SOCKS protocol'
         header = await reader.read_n(1)
         host_name, port, data = await socks_address_stream(reader, header[0])
-        writer.write(b'\x05\x00\x00' + header + data)
-        return user, host_name, port
+        # #169：成功应答推迟到目标连接成功后（stream_handler 调 client_connected 时），
+        # 连接失败时由 stream_handler 调 error_reply 回 RFC1928 错误码，
+        # 否则 curl 对关闭端口收到空响应（Empty reply）而非 05 05 Connection refused。
+        async def client_connected(writer_remote):
+            writer.write(b'\x05\x00\x00' + header + data)
+            await writer.drain()
+        return user, host_name, port, client_connected
+    async def error_reply(self, writer, ex):
+        """RFC 1928 REP 错误应答：目标连接失败时回 05 <code> 00 ... 再关闭"""
+        rep = 0x01  # general failure
+        if isinstance(ex, ConnectionRefusedError):
+            rep = 0x05  # connection refused
+        elif isinstance(ex, socket.gaierror):
+            rep = 0x04  # host unreachable（DNS 解析失败）
+        elif isinstance(ex, asyncio.TimeoutError):
+            rep = 0x06  # TTL expired / 连接超时
+        elif str(ex).startswith('BLOCK'):
+            rep = 0x02  # connection not allowed by ruleset
+        writer.write(b'\x05' + bytes([rep]) + b'\x00\x01\x00\x00\x00\x00\x00\x00')
+        try:
+            await writer.drain()
+        except Exception:
+            pass
     async def connect(self, reader_remote, writer_remote, rauth, host_name, port, **kw):
         if rauth:
             writer_remote.write(b'\x05\x01\x02')
@@ -595,7 +616,7 @@ def sslwrap(reader, writer, sslcontext, server_side=False, server_hostname=None,
             ssl_reader.feed_eof()
         def connection_lost(self, exc):
             ssl_reader.feed_eof()
-    ssl = asyncio.sslproto.SSLProtocol(asyncio.get_event_loop(), Protocol(), sslcontext, None, server_side, server_hostname, False)
+    ssl = asyncio.sslproto.SSLProtocol(asyncio.get_running_loop(), Protocol(), sslcontext, None, server_side, server_hostname, False)
     class Transport(asyncio.Transport):
         _paused = False
         def __init__(self, extra={}):

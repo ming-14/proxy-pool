@@ -62,3 +62,6 @@ desktop.ini
 .cache.db-shm
 .cache.db-wal
 logs/
+
+autoload
+config/apikey.env

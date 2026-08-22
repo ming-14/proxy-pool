@@ -141,3 +141,29 @@ WEB_PORT = int(_toml["web"]["port"])  # 面板监听端口
 # ---------------------------------------------------------------- 缓存与日志（相对项目根解析）
 CACHE_DB = str(_PROJECT_ROOT / _toml["paths"]["cache_db"])     # 代理池状态持久化 SQLite 数据库（WAL 模式，组级增量 upsert）
 LOG_DIR = str(_PROJECT_ROOT / _toml["paths"]["log_dir"])         # 日志目录（文件名为 proxy-pool-{时间戳}.log，毫秒精度）
+AUTOLOAD_FILE = str(_PROJECT_ROOT / _toml["paths"]["autoload"])  # 启动时自动加载的代理清单文件（一行一个，# 注释；不存在则跳过）
+
+# ---------------------------------------------------------------- AbuseIPDB（IP 纯洁度检查）
+# API key 从 config/apikey.env 加载（敏感信息不入 TOML，避免 git 追踪）。
+# 文件格式：KEY=VALUE 每行一个，# 开头为注释。key 缺失时纯洁度检查功能禁用。
+_APIKEY_FILE = _PROJECT_ROOT / "config" / "apikey.env"
+ABUSEIPDB_API_KEY: str | None = None
+if _APIKEY_FILE.exists():
+    with open(_APIKEY_FILE, "r", encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            if _k.strip() == "ABUSEIPDB_API_KEY":
+                ABUSEIPDB_API_KEY = _v.strip()
+                break
+# 查询窗口（天）：只统计该天数内的举报，AbuseIPDB 允许 1-365
+ABUSEIPDB_MAX_AGE_DAYS = 90
+# 缓存有效期（秒）：30 天内同 IP 直接返回缓存，避免重复调 API 消耗日限额
+ABUSEIPDB_CACHE_TTL = 30 * 86400
+# 各源代理（被墙时用），空字符串表示直连
+_purity_cfg = _toml.get("purity", {})
+PURITY_SOURCE = _purity_cfg.get("source", "ipok")   # 检查源：ipok / abuseipdb
+IPOK_PROXY = _purity_cfg.get("ipok_proxy", "")
+ABUSEIPDB_PROXY = _purity_cfg.get("abuseipdb_proxy", "")

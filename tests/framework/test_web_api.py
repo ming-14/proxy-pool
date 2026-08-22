@@ -112,8 +112,11 @@ def make_ctx(pool):
         fill_probe_multiplier=STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=STANDBY_FILL_PROBE_MIN_EXTRA,
     )
+    purity = MagicMock()
+    purity.query_cache = MagicMock(return_value=None)  # 无缓存，_status_snapshot 里 _purity_cached 返回 None
     ctx = PanelContext(pool=pool, fetch=fetch, record=record, standby=standby,
-                       control=control, server=server, save=MagicMock(), capacity=5)
+                       control=control, server=server, save=MagicMock(), capacity=5,
+                       purity=purity)
     return ctx, fetch, standby, server
 
 
@@ -147,6 +150,28 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["standby_history"] == []
         assert data["traffic_history"] == []
         assert data["traffic_total"] == {"upload": 0, "download": 0}
+
+    async def test_status_with_purity_cache(self):
+        """status 快照带 purity 缓存数据（历史有数据时前端直接显示 tag，无需手动点击）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.purity.query_cache = MagicMock(return_value={
+            "abuse_confidence_score": 35,
+            "usage_type": "hosting",
+            "from_cache": True,
+        })
+        resp = await self.client.get("/api/status")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["standby"][0]["purity"] == {"abuse_confidence_score": 35, "usage_type": "hosting"}
+
+    async def test_status_purity_none_when_no_cache(self):
+        """无缓存时 purity 字段为 None"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        # query_cache 默认返回 None（make_ctx 设置）
+        resp = await self.client.get("/api/status")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["standby"][0]["purity"] is None
 
     async def test_group_detail_and_404(self):
         self.pool.add_to_group("trusted", "5.6.7.8:3128", consecutive_fails=0, latency=0.2)
@@ -407,6 +432,63 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         """代理不在该组返回 404"""
         r = await self.client.post("/api/proxy/remove", json={"proxies": ["http://0.0.0.0:1"], "group": "default-http"})
         assert r.status == 404
+
+    # ---------------- AbuseIPDB 纯洁度检查 ----------------
+    async def test_purity_missing_bind(self):
+        """缺少 bind 返回 400"""
+        self.ctx.purity = MagicMock()
+        r = await self.client.post("/api/proxy/purity", json={})
+        assert r.status == 400
+
+    async def test_purity_proxy_not_found(self):
+        """代理不在队列/锁定中返回 404"""
+        self.ctx.purity = MagicMock()
+        r = await self.client.post("/api/proxy/purity", json={"bind": "0.0.0.0:1"})
+        assert r.status == 404
+
+    async def test_purity_success(self):
+        """缓存未命中 → 调 API → 写缓存 → 返回结果"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.purity = MagicMock()
+        self.ctx.purity.query_cache = MagicMock(return_value=None)
+        self.ctx.purity.check_remote = MagicMock(return_value={
+            "ip": "1.2.3.4",
+            "abuse_confidence_score": 3,
+            "usage_type": "Data Center/Web Hosting/Transit",
+            "country_code": "US",
+        })
+        self.ctx.purity.save_cache = MagicMock(side_effect=lambda proxy, result: result)
+        r = await self.client.post("/api/proxy/purity", json={"bind": "1.2.3.4:8080"})
+        assert r.status == 200
+        data = await r.json()
+        assert data["abuse_confidence_score"] == 3
+        assert data["usage_type"] == "Data Center/Web Hosting/Transit"
+        assert data["ip"] == "1.2.3.4"
+
+    async def test_purity_cache_hit(self):
+        """缓存命中：直接返回 from_cache=True，不调 check_remote"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.purity = MagicMock()
+        self.ctx.purity.query_cache = MagicMock(return_value={
+            "ip": "1.2.3.4",
+            "abuse_confidence_score": 0,
+            "usage_type": "Fixed Line ISP",
+            "from_cache": True,
+        })
+        r = await self.client.post("/api/proxy/purity", json={"bind": "1.2.3.4:8080"})
+        assert r.status == 200
+        data = await r.json()
+        assert data["from_cache"] is True
+        self.ctx.purity.check_remote.assert_not_called()
+
+    async def test_purity_checker_error_returns_500(self):
+        """checker 抛异常返回 500"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.purity = MagicMock()
+        self.ctx.purity.query_cache = MagicMock(return_value=None)
+        self.ctx.purity.check_remote = MagicMock(side_effect=RuntimeError("API error"))
+        r = await self.client.post("/api/proxy/purity", json={"bind": "1.2.3.4:8080"})
+        assert r.status == 500
 
 
 if __name__ == "__main__":

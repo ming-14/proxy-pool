@@ -9,13 +9,16 @@ vs 旧 JSON 全量序列化 706KB / 0.3s。复合主键 (proxy, group_name)
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
+import time
 
 logger = logging.getLogger(__name__)
 
 
-# 三表 schema：proxies 复合主键支持跨组副本；group_meta 存组 ttl；source_paused 存源暂停
+# 四表 schema：proxies 复合主键支持跨组副本；group_meta 存组 ttl；source_paused 存源暂停；
+# ip_purity_cache 存 AbuseIPDB 检查结果（30 天 TTL，用例层判断过期）
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS proxies (
     proxy             TEXT NOT NULL,
@@ -36,6 +39,11 @@ CREATE TABLE IF NOT EXISTS source_paused (
 CREATE TABLE IF NOT EXISTS group_meta (
     group_name TEXT PRIMARY KEY,
     ttl        INTEGER
+);
+CREATE TABLE IF NOT EXISTS ip_purity_cache (
+    ip        TEXT PRIMARY KEY,
+    result    TEXT NOT NULL,
+    cached_at REAL NOT NULL
 );
 """
 
@@ -204,6 +212,23 @@ class SqliteProxyStore:
             p["proxy"], group_name, p["joined_at"], p.get("consecutive_fails", 0),
             p.get("latency"), bool(p.get("pinned", False)), p.get("pinned_at"),
             p.get("source_group"),
+        )
+
+    # ------------------------------------------------------------------ IP 纯洁度缓存
+    def get_purity(self, ip: str) -> dict | None:
+        """读取 IP 纯洁度缓存；返回 {"result": {...}, "cached_at": float}，None 表示无缓存"""
+        row = self._conn.execute(
+            "SELECT result, cached_at FROM ip_purity_cache WHERE ip=?", (ip,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"result": json.loads(row["result"]), "cached_at": row["cached_at"]}
+
+    def save_purity(self, ip: str, result: dict) -> None:
+        """写入/更新 IP 纯洁度缓存（upsert by ip）"""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO ip_purity_cache (ip, result, cached_at) VALUES (?, ?, ?)",
+            (ip, json.dumps(result, ensure_ascii=False), time.time()),
         )
 
     def close(self) -> None:

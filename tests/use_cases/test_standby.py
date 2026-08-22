@@ -115,8 +115,8 @@ class TestStandbyFill(unittest.TestCase):
 
     def test_fill_moves_alive_proxies_blacklists_dead(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        # 预设 consecutive_fails=1，探测失败后 consecutive_fails=2=MAX_CONSECUTIVE_FAILS -> 拉黑（fill 用 max_consecutive_fails 机制，非单次拉黑）
-        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", consecutive_fails=1)
+        # 预设 consecutive_fails=4，探测失败后 consecutive_fails=5=MAX_CONSECUTIVE_FAILS -> 拉黑（fill 用 max_consecutive_fails 机制，非单次拉黑）
+        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", consecutive_fails=4)
         c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
         added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
         self.assertEqual(added, 1)

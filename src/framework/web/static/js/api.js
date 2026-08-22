@@ -81,6 +81,9 @@
     speedTest(bind) {
       return request('/api/proxy/speedtest', 'POST', { bind });
     },
+    purity(bind) {
+      return request('/api/proxy/purity', 'POST', { bind });
+    },
     moveProxy(proxies, targetGroup) {
       const list = Array.isArray(proxies) ? proxies : [proxies];
       return request('/api/proxy/move', 'POST', { proxies: list, target_group: targetGroup });

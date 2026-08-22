@@ -8,15 +8,20 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from src.domain.models import SourceSpec
-from src.domain.ports import ProxySource
+from src.domain.ports import ProxySource, IpPurityChecker
 from src.domain.proxy_pool import ProxyPool
+from src.interfaces.abuseipdb_client import AbuseIpDbClient
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
+from src.interfaces.ipok_client import IpokClient
 from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.proxy_server import PproxyServer
 from src.interfaces.scheduler import ProxyScheduler
+from src.use_cases.autoload import AutoloadUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
+from src.use_cases.check_purity import CheckPurityUseCase
 from src.use_cases.fetch_proxies import FetchProxiesUseCase
 from src.use_cases.get_proxies import GetProxiesUseCase
 from src.use_cases.network_gate import LocalNetworkGate
@@ -39,6 +44,7 @@ class Container:
     proxy_server: PproxyServer
     standby: StandbyQueueUseCase
     async_getter: AsyncHttpGetter
+    purity: CheckPurityUseCase          # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
 
     def save(self) -> None:
         """增量保存：只写 dirty 组（serve 主循环 / Web 控制动作高频调用）
@@ -64,6 +70,19 @@ def _source_loader(name: str) -> ProxySource:
     return importlib.import_module(name).create_source()
 
 
+def _load_autoload(pool: ProxyPool, standby_group: str, file_path: str) -> None:
+    """启动时从 autoload 清单加载代理到代理服务队列（固定、跳过已存在）
+
+    framework 层 IO：读清单文件并委托 AutoloadUseCase（纯逻辑）入池。
+    文件不存在时静默跳过（autoload 为可选功能，不强制存在）。
+    """
+    path = Path(file_path)
+    if not path.exists():
+        return
+    content = path.read_text(encoding="utf-8")
+    AutoloadUseCase(pool=pool, standby_group=standby_group).execute(content)
+
+
 def build_container(cache_db: str | None = None) -> Container:
     """构建完整依赖树。cache_db 缺省时使用 config.CACHE_DB"""
     from src.framework import config
@@ -79,6 +98,8 @@ def build_container(cache_db: str | None = None) -> Container:
     )
     store = SqliteProxyStore(cache_db or config.CACHE_DB)
     pool.restore_state(store.load())
+    # autoload：启动时从清单文件加载固定代理到代理服务队列（在 restore 之后，跳过已存在）
+    _load_autoload(pool, config.STANDBY_GROUP, config.AUTOLOAD_FILE)
 
     sources = [SourceSpec(**s) for s in config.SOURCES]
     http_getter = HttpGetter()
@@ -126,6 +147,21 @@ def build_container(cache_db: str | None = None) -> Container:
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
         metrics_window=config.METRICS_WINDOW,
     )
+    # IP 纯洁度检查：单源，由 config.PURITY_SOURCE 决定（ipok / abuseipdb）
+    if config.PURITY_SOURCE == "ipok":
+        purity_checker: IpPurityChecker = IpokClient(proxy=config.IPOK_PROXY)
+    elif config.PURITY_SOURCE == "abuseipdb":
+        if not config.ABUSEIPDB_API_KEY:
+            raise ValueError("purity.source='abuseipdb' 但未配置 ABUSEIPDB_API_KEY（config/apikey.env）")
+        purity_checker = AbuseIpDbClient(api_key=config.ABUSEIPDB_API_KEY, proxy=config.ABUSEIPDB_PROXY)
+    else:
+        raise ValueError(f"未知 purity.source: {config.PURITY_SOURCE!r}（应为 ipok 或 abuseipdb）")
+    purity = CheckPurityUseCase(
+        checker=purity_checker,
+        cache=store,
+        max_age_in_days=config.ABUSEIPDB_MAX_AGE_DAYS,
+        cache_ttl=config.ABUSEIPDB_CACHE_TTL,
+    )
     return Container(
         pool=pool,
         store=store,
@@ -137,4 +173,5 @@ def build_container(cache_db: str | None = None) -> Container:
         proxy_server=proxy_server,
         standby=standby,
         async_getter=async_getter,
+        purity=purity,
     )

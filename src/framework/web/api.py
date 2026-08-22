@@ -26,6 +26,7 @@ from src.framework import config
 from src.interfaces.proxy_server import PproxyServer
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
+from src.use_cases.check_purity import CheckPurityUseCase
 
 # pspeed 测速工具（vendor 目录，加入 sys.path 后 import）
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,9 +57,28 @@ class PanelContext:
     server: PproxyServer
     save: Callable[[], None]   # 落盘回调（c.save）
     capacity: int              # 代理服务队列容量
+    purity: CheckPurityUseCase           # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
 
 
 # ------------------------------------------------------------------ 读取
+def _purity_cached(ctx: PanelContext, proxy: str) -> dict | None:
+    """查纯洁度缓存（30 天内有数据则返回 score+usage_type，否则 None）
+
+    在 _status_snapshot 中调用（主线程，SQLite 安全）。只取 tag 需要的字段，
+    避免快照 payload 膨胀。query_cache 异常时不影响整体快照。
+    """
+    try:
+        cached = ctx.purity.query_cache(proxy)
+    except Exception:
+        return None
+    if cached is None:
+        return None
+    return {
+        "abuse_confidence_score": cached.get("abuse_confidence_score"),
+        "usage_type": cached.get("usage_type"),
+    }
+
+
 def _status_snapshot(ctx: PanelContext) -> dict:
     """全量状态快照：组统计 / 可用数 / 代理服务队列 / 待补测 / 源暂停 / 调度参数"""
     pool = ctx.pool
@@ -88,15 +108,18 @@ def _status_snapshot(ctx: PanelContext) -> dict:
             "latency": pool.get_latency(p),
             "consecutive_fails": pool.get_consecutive_fail_count(p),
             "pinned": pool.is_pinned(p),
+            "purity": _purity_cached(ctx, p),
         }
         for p in ctx.standby.standby_proxies(truncate=False)
     ]
     # 锁定状态：locked 代理作为 pproxy 唯一上游（无论心跳是否成功）
     locked_proxy = None
+    locked_purity = None
     if ctx.standby.is_locked():
         locked_list = ctx.standby.upstream_proxies()
         if locked_list:
             locked_proxy = locked_list[0]
+            locked_purity = _purity_cached(ctx, locked_proxy)
     traffic_upload, traffic_download = ctx.server.traffic_total()
     sources = []
     for s in config.SOURCES:
@@ -113,6 +136,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "standby": standby,
         "standby_count": len(standby),
         "locked_proxy": locked_proxy,
+        "locked_purity": locked_purity,
         "capacity": ctx.capacity,
         "pending_retries": ctx.standby.pending_retries(),
         "sources": sources,
@@ -283,6 +307,40 @@ async def _do_speedtest(request: web.Request) -> web.Response:
         logger.exception("测速失败 proxy=%s", proxy)
         return web.json_response({"error": f"测速失败: {e}"}, status=500)
     return web.json_response(result)
+
+
+async def _do_purity(request: web.Request) -> web.Response:
+    """检查代理纯洁度：调多源 API（AbuseIPDB + ipok.io）查询 IP 滥用置信度与 usageType
+
+    请求体 {"bind": "1.2.3.4:8080"}，后端反查完整 proxy URL 后调 CheckPurityUseCase。
+    多源分数取最高，usage_type 用最高分源的。
+
+    线程安全：SQLite 连接线程绑定，故分三步编排——
+      1. query_cache 在事件循环线程（主线程 SQLite 读）
+      2. check_remote 在 executor 线程（纯网络，不碰 SQLite）
+      3. save_cache 在事件循环线程（主线程 SQLite 写）
+    """
+    ctx = request.app[_PANEL_KEY]
+    body = await _json_body(request)
+    bind = body.get("bind")
+    if not bind:
+        return web.json_response({"error": "缺少 bind"}, status=400)
+    proxy = _find_proxy_by_bind(ctx, bind)
+    if not proxy:
+        return web.json_response({"error": "未找到该代理"}, status=404)
+    # 1. 查缓存（主线程 SQLite 读）
+    cached = ctx.purity.query_cache(proxy)
+    if cached is not None:
+        return web.json_response(cached)
+    # 2. 调多源 API（executor 线程，纯网络）
+    try:
+        result = await asyncio.get_running_loop().run_in_executor(None, ctx.purity.check_remote, proxy)
+    except Exception as e:
+        logger.exception("纯洁度检查失败 proxy=%s", proxy)
+        return web.json_response({"error": f"检查失败: {e}"}, status=500)
+    # 3. 写缓存（主线程 SQLite 写）
+    final = ctx.purity.save_cache(proxy, result)
+    return web.json_response(final)
 
 
 async def _json_body(request: web.Request) -> dict:
@@ -488,6 +546,7 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_post("/api/group/{name}/add", _do_group_add)
     app.router.add_get("/api/proxy/history", _proxy_history)
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
+    app.router.add_post("/api/proxy/purity", _do_purity)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)
     app.router.add_post("/api/proxy/move", _do_proxy_move)

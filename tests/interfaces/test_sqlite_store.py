@@ -248,6 +248,38 @@ class TestSqliteProxyStoreWithPool(unittest.TestCase):
         pool2.restore_state(self.store.load())
         self.assertNotIn("src.interfaces.sources.ip89", pool2.source_paused)
 
+    # ---------------- IP 纯洁度缓存 ----------------
+    def test_purity_cache_save_and_get(self):
+        """写入后读取返回相同结果 + cached_at 时间戳"""
+        result = {"abuse_confidence_score": 3, "usage_type": "Data Center/Web Hosting/Transit"}
+        self.store.save_purity("1.2.3.4", result)
+        cached = self.store.get_purity("1.2.3.4")
+        assert cached is not None
+        assert cached["result"]["abuse_confidence_score"] == 3
+        assert cached["result"]["usage_type"] == "Data Center/Web Hosting/Transit"
+        assert cached["cached_at"] > 0
+
+    def test_purity_cache_miss_returns_none(self):
+        """未缓存的 IP 返回 None"""
+        assert self.store.get_purity("9.9.9.9") is None
+
+    def test_purity_cache_upsert(self):
+        """同 IP 二次写入覆盖旧值"""
+        self.store.save_purity("1.2.3.4", {"abuse_confidence_score": 0})
+        self.store.save_purity("1.2.3.4", {"abuse_confidence_score": 100})
+        cached = self.store.get_purity("1.2.3.4")
+        assert cached["result"]["abuse_confidence_score"] == 100
+
+    def test_purity_cache_survives_reopen(self):
+        """缓存持久化：关闭并重开数据库后缓存仍在"""
+        result = {"abuse_confidence_score": 5, "usage_type": "Fixed Line ISP"}
+        self.store.save_purity("5.6.7.8", result)
+        self.store.close()
+        self.store = SqliteProxyStore(self.db_path)
+        cached = self.store.get_purity("5.6.7.8")
+        assert cached is not None
+        assert cached["result"]["abuse_confidence_score"] == 5
+
 
 if __name__ == "__main__":
     unittest.main()

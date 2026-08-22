@@ -78,3 +78,28 @@ class TaskScheduler(Protocol):
         do_task: Any,
         on_success: Any = None,
     ) -> dict: ...
+
+
+class IpPurityChecker(Protocol):
+    """IP 纯洁度检查端口：查询 IP 的滥用举报信息（AbuseIPDB 等）
+
+    返回 dict 含 abuse_confidence_score(0-100) / usage_type / country_code /
+    isp / total_reports 等字段。实现方直连外部 API，不走代理。
+    """
+
+    def check(self, ip: str, *, max_age_in_days: int = 90) -> dict: ...
+
+
+class PurityCacheStore(Protocol):
+    """IP 纯洁度缓存存储端口：持久化检查结果避免重复调 API（AbuseIPDB 有日限额）
+
+    TTL 判断在用例层（缓存策略非领域规则）；store 只做纯读写。
+    """
+
+    def get_purity(self, ip: str) -> dict | None:
+        """读取缓存记录；返回 {"result": {...}, "cached_at": float}，None 表示无缓存"""
+        ...
+
+    def save_purity(self, ip: str, result: dict) -> None:
+        """写入/更新缓存（upsert by ip）"""
+        ...

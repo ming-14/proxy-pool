@@ -480,6 +480,23 @@ html.dark .select:focus {
   white-space: nowrap;
 }
 
+.proxy-tooltip-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.125rem 0.375rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.proxy-tooltip-close:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-hover);
+}
+
 .proxy-tooltip-section {
   margin-bottom: 0.25rem;
 }

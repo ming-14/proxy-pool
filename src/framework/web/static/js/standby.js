@@ -16,6 +16,7 @@
   let hoverBind = null;      // 当前 hover 的 bind（地址，不含 scheme）
   let hoverTimer = null;     // 数据刷新定时器（2s 间隔，与 app.js 轮询同频）
   let hideTimer = null;      // 延迟销毁定时器（mouseleave 后 100ms 销毁，期间若重绘触发 mouseover 则取消）
+  let hoverShowTimer = null;  // 延迟显示定时器（悬停 300ms 才显示 tooltip，避免划过误触发）
   let hoverSource = null;    // tooltip 来源：'table'（表格）或 'lock'（锁定卡片），renderTable 检查只针对表格
   let speedTestState = null; // 测速状态：{status:'running'|'done', bind, result, time}，tooltip 隐藏后保留，重建时恢复
   let standbyGroups = {};    // onStatus 缓存的 groups（右键菜单移出子菜单用）
@@ -23,6 +24,59 @@
   let tooltipPinned = false; // 测速 pin：true 时 tooltip 不自动消失，仅点击外部才消失
   let selection = null;      // 行选择控制器（框选/多选）
   let currentStandby = [];   // 当前队列数组（供 selection 读取，与渲染保持一致）
+  let hoveredProxy = null;   // 当前鼠标悬浮的行代理（hover 时冻结排序，避免悬浮行跑位）
+  let selectingText = false; // 用户正在拖选 code 文本（按下到松开期间，跳过重绘避免打断选区）
+  let selectingTextChangeHandler = null;  // selectionchange 监听器（选区消失时重置 selectingText）
+  let lockSelectingText = false;  // 锁定卡片 IP 文本选择中（与 selectingText 同机制：选区存在时冻结锁定卡片 DOM 更新）
+  let lockSelectingTextChangeHandler = null;  // 锁定卡片 selectionchange 监听器（选区消失时重置 lockSelectingText）
+
+  // AbuseIPDB 纯洁度检查结果缓存：bind → {status:'checking'|'done'|'error', abuse_confidence_score, usage_type, ...}
+  // 表格每 2s 重绘，缓存让 tag 在重绘后保留；页面刷新后清空（按需重新检查）
+  const purityCache = new Map();
+
+  // usageType 缩短映射（AbuseIPDB + ipok.io 返回的英文 → 中文短标签，tag 空间有限）
+  const USAGE_TYPE_SHORT = {
+    'Commercial': '商业',
+    'Organization': '组织',
+    'Government': '政府',
+    'Military': '军事',
+    'University/College/School': '学校',
+    'Library': '图书馆',
+    'Content Delivery Network': 'CDN',
+    'Fixed Line ISP': '固定ISP',
+    'Mobile ISP': '移动ISP',
+    'Data Center/Web Hosting/Transit': '数据中心',
+    'Search Engine Spider': '爬虫',
+    'Reserved': '保留',
+    'hosting': '托管',
+    'residential': '住宅',
+    'mobile': '移动',
+    'business': '企业',
+    'unknown': '未知',
+  };
+
+  // 纯洁度 tag：abuseConfidenceScore（按分值着色）+ usageType（缩短中文）
+  // data 来源：purityCache（手动检查，含 status）或后端 status 快照的 p.purity（无 status）
+  function renderPurityTags(data) {
+    if (!data) return '';
+    if (data.status === 'checking' || data.status === 'error') return '';
+    const score = data.abuse_confidence_score;
+    if (score == null) return '';
+    const scoreCls = score === 0 ? 'badge-success' : score < 25 ? 'badge-muted' : score < 75 ? 'badge-warning' : 'badge-danger';
+    const usageFull = data.usage_type || '';
+    const usageShort = USAGE_TYPE_SHORT[usageFull] || usageFull || '-';
+    return `<span class="badge ${scoreCls} ml-2" title="滥用置信度 ${score}/100">${score}</span><span class="badge badge-info ml-1" title="${utils.esc(usageFull)}">${utils.esc(usageShort)}</span>`;
+  }
+
+  // 纯洁度按钮：检查中显示禁用态，否则显示"纯洁"
+  function purityBtnHtml(proxy) {
+    const bind = utils.bindOf(proxy);
+    const r = purityCache.get(bind);
+    if (r && r.status === 'checking') {
+      return `<button class="btn btn-ghost btn-sm" data-action="purity" data-proxy="${utils.esc(proxy)}" disabled>检查中</button>`;
+    }
+    return `<button class="btn btn-ghost btn-sm" data-action="purity" data-proxy="${utils.esc(proxy)}">纯洁</button>`;
+  }
 
   // 高亮当前渲染行：根据选中集（proxy key）切换 selected class
   function applyHighlight() {
@@ -47,8 +101,14 @@
               </div>
             </div>
             <div class="card-body flex items-center justify-between">
-              <code id="sb-lock-proxy" class="text-sm font-medium"></code>
-              <button class="btn btn-warning btn-sm" id="sb-unlock-btn">解锁</button>
+              <div class="flex items-center gap-2 min-w-0">
+                <code id="sb-lock-proxy" class="text-sm font-medium"></code>
+                <span id="sb-lock-purity-tags" class="flex items-center gap-1 flex-shrink-0"></span>
+              </div>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <button class="btn btn-ghost btn-sm" id="sb-lock-purity-btn">纯洁</button>
+                <button class="btn btn-warning btn-sm" id="sb-unlock-btn">解锁</button>
+              </div>
             </div>
           </div>
           <div class="card" id="sb-queue-card">
@@ -88,32 +148,70 @@
     // 但 mouseleave 只在鼠标真正离开容器时触发，重绘不误触
     const wrap = document.getElementById('sb-table-wrap');
     wrap.addEventListener('mouseover', (e) => {
-      if (selection && selection.isDragging()) return;  // 框选拖拽时抑制 hover tooltip
+      // 追踪当前悬浮行（用于冻结排序，避免 2s 刷新重排导致悬浮行跑位）
+      const tr = e.target.closest('tbody tr');
+      hoveredProxy = tr ? (tr.dataset.proxy || null) : null;
+      if (selection && selection.isDragging()) { cancelShowProxyTooltip(); return; }  // 框选拖拽时抑制 hover tooltip
       const code = e.target.closest('code');
-      if (!code) return;
+      if (!code) { cancelShowProxyTooltip(); return; }
+      if (window.getSelection().toString()) { cancelShowProxyTooltip(); return; }  // 有文本选区时不显示悬浮面板
       const bind = utils.bindOf(code.textContent);
       if (hoverBind === bind) return;
-      showProxyTooltip(bind, e, 'table');
+      scheduleShowProxyTooltip(bind, e, 'table');
     });
     wrap.addEventListener('mouseleave', () => {
+      hoveredProxy = null;
+      cancelShowProxyTooltip();
       scheduleHideProxyTooltip();
     });
 
-    // 锁定卡片代理 IP hover：mouseenter/mouseleave 不冒泡，适合单个元素
+    // 锁定卡片代理 IP：hover 不自动弹出统计浮窗（fixed 浮窗会遮住下方禁用的代理队列表格），
+    // 查看延时/流量改为点击 IP（见下方 mousedown 处理，点击后 pin，可点 ✕/外部关闭）
     const lockProxy = document.getElementById('sb-lock-proxy');
-    lockProxy.addEventListener('mouseenter', (e) => {
-      const proxy = lockProxy.textContent;
-      if (!proxy) return;
-      const bind = utils.bindOf(proxy);
-      if (hoverBind === bind) return;
-      showProxyTooltip(bind, e, 'lock');
+    lockProxy.addEventListener('mouseenter', () => {
+      cancelShowProxyTooltip();
     });
     lockProxy.addEventListener('mouseleave', () => {
+      cancelShowProxyTooltip();
       scheduleHideProxyTooltip();
+    });
+
+    // 锁定卡片 IP 文本选择保护（与表格 selectingText 同机制）：
+    // 按下即冻结锁定卡片 DOM 更新（textContent/innerHTML 重建会打断选区），
+    // 拖选完成有选区则保持冻结直到选区消失，方便复制 IP
+    lockProxy.addEventListener('mousedown', (e) => {
+      lockSelectingText = true;
+      const onUp = (ev) => {
+        document.removeEventListener('mouseup', onUp, true);
+        const sel = window.getSelection();
+        if (sel && sel.toString().length > 0) {
+          // 有文本选区：保持冻结直到选区消失（与表格 selectingText 一致）
+          if (lockSelectingTextChangeHandler) document.removeEventListener('selectionchange', lockSelectingTextChangeHandler);
+          lockSelectingTextChangeHandler = () => {
+            if (!window.getSelection().toString()) {
+              lockSelectingText = false;
+              document.removeEventListener('selectionchange', lockSelectingTextChangeHandler);
+              lockSelectingTextChangeHandler = null;
+            }
+          };
+          document.addEventListener('selectionchange', lockSelectingTextChangeHandler);
+        } else {
+          lockSelectingText = false;
+          // 无选区 → 视为点击：显示统计浮窗并 pin（查看锁定代理延时/流量，不自动弹出遮住表格）
+          const proxy = lockProxy.textContent;
+          if (proxy && !window.getSelection().toString()) {
+            showProxyTooltip(utils.bindOf(proxy), ev, 'lock', true);
+            tooltipPinned = true;
+          }
+        }
+      };
+      document.addEventListener('mouseup', onUp, true);
     });
 
     // 右键表格行：弹出上下文菜单（移出/拉黑/测速）；右键目标行未选中时先单选它
     wrap.addEventListener('contextmenu', (e) => {
+      // 有文本选区时让浏览器处理原生右键菜单（复制等），不接管
+      if (window.getSelection().toString()) return;
       const tr = e.target.closest('tbody tr');
       if (!tr) return;
       const proxy = tr.dataset.proxy;
@@ -148,12 +246,19 @@
       isExcludedTarget: (e) => !!e.target.closest('code, button'),
       onChanged: applyHighlight,
       isActive: () => window.appState.currentPage === 'standby',
+      onDragStart: hideProxyTooltip,  // 拖拽框出现时立刻关闭悬浮面板
     });
+
+    // 主区域滚动时关闭悬浮面板（tooltip 为 fixed 定位，不跟随滚动；pin 状态保留）
+    document.getElementById('main-content').addEventListener('scroll', () => {
+      if (hoverTooltip && !tooltipPinned) hideProxyTooltip();
+    }, { passive: true });
 
     // 点击代理 IP → pin tooltip；按下后移动（拖选文本）→ 立即隐藏悬浮面板
     wrap.addEventListener('mousedown', (e) => {
       const code = e.target.closest('code');
       if (!code) return;
+      selectingText = true;  // 按下即冻结重绘（拖选文本/点击，松开后恢复），避免 2s 重绘清空选区
       const startX = e.clientX, startY = e.clientY;
       let moved = false;
       const cleanup = () => {
@@ -164,12 +269,28 @@
         // 按下状态移动超过阈值（开始拖选文本）→ 立刻隐藏悬浮面板
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) {
           moved = true;
-          cleanup();
+          document.removeEventListener('mousemove', onMove, true);
           hideProxyTooltip();
         }
       };
       const onUp = () => {
         cleanup();
+        // 松开后若存在文本选区（拖选了文本），保持冻结直到选区消失（方便复制）
+        const sel = window.getSelection();
+        if (sel && sel.toString().length > 0) {
+          selectingText = true;
+          if (selectingTextChangeHandler) document.removeEventListener('selectionchange', selectingTextChangeHandler);
+          selectingTextChangeHandler = () => {
+            if (!window.getSelection().toString()) {
+              selectingText = false;
+              document.removeEventListener('selectionchange', selectingTextChangeHandler);
+              selectingTextChangeHandler = null;
+            }
+          };
+          document.addEventListener('selectionchange', selectingTextChangeHandler);
+        } else {
+          selectingText = false;
+        }
         if (moved) return;
         // 无移动 → 视为点击 → pin tooltip
         const bind = utils.bindOf(code.textContent);
@@ -205,7 +326,9 @@
         <thead><tr><th>#</th><th>代理</th><th>延迟</th><th>连续失败</th><th class="text-right">操作</th></tr></thead>
         <tbody>
           ${standby.map((p, i) => {
-            const pinBadge = p.pinned ? '<span class="badge badge-info ml-2">固定</span>' : '';
+            const bind = utils.bindOf(p.proxy);
+            const purityTags = renderPurityTags(purityCache.get(bind) || p.purity);
+            const purityBtn = purityBtnHtml(p.proxy);
             const pinBtn = p.pinned
               ? `<button class="btn btn-ghost btn-sm" data-action="unpin" data-proxy="${utils.esc(p.proxy)}">解固</button>`
               : `<button class="btn btn-warning btn-sm" data-action="pin" data-proxy="${utils.esc(p.proxy)}">固定</button>`;
@@ -213,10 +336,10 @@
             return `
               <tr data-idx="${i}" data-proxy="${utils.esc(p.proxy)}">
                 <td class="text-theme-muted w-12">${i + 1}</td>
-                <td><code>${utils.esc(p.proxy)}</code>${pinBadge}</td>
+                <td><code>${utils.esc(p.proxy)}</code>${purityTags}</td>
                 <td>${utils.fmtLatency(p.latency)}</td>
                 <td>${p.consecutive_fails ?? 0}</td>
-                <td class="text-right whitespace-nowrap">${pinBtn} ${lockBtn}</td>
+                <td class="text-right whitespace-nowrap">${purityBtn} ${pinBtn} ${lockBtn}</td>
               </tr>
             `;
           }).join('')}
@@ -228,7 +351,8 @@
       btn.onclick = () => {
         const action = btn.dataset.action;
         const proxy = btn.dataset.proxy;
-        if (action === 'pin') doPin(proxy);
+        if (action === 'purity') doPurity(proxy);
+        else if (action === 'pin') doPin(proxy);
         else if (action === 'unpin') doUnpin(proxy);
         else if (action === 'lock') doLock(proxy);
       };
@@ -236,7 +360,8 @@
     if (selection) selection.refresh();  // 重渲染后重放高亮
     // 表格重绘后：若 hover 的代理来自表格且已不在队列，销毁 tooltip
     // 锁定卡片的代理在 LOCKED_GROUP 不在 standby 队列，跳过检查
-    if (hoverBind && hoverSource === 'table') {
+    // pin 状态（测速中/手动 pin）不强制销毁：tooltip 内容自洽，代理离队不影响查看
+    if (hoverBind && hoverSource === 'table' && !tooltipPinned) {
       const found = standby.some((p) => utils.bindOf(p.proxy) === hoverBind);
       if (!found) {
         hideProxyTooltip();
@@ -277,6 +402,29 @@
       showToast('success', '已解锁', '恢复代理服务队列');
     } catch (e) {
       showToast('error', '解锁失败', e.message);
+    }
+  }
+
+  // ---------------- AbuseIPDB 纯洁度检查 ----------------
+  async function doPurity(proxy) {
+    const bind = utils.bindOf(proxy);
+    purityCache.set(bind, { status: 'checking' });
+    renderTable(currentStandby);  // 立即更新按钮为"检查中"
+    try {
+      const r = await window.api.purity(bind);
+      purityCache.set(bind, { status: 'done', ...r });
+    } catch (e) {
+      purityCache.set(bind, { status: 'error', error: e.message });
+      showToast('error', '纯洁度检查失败', e.message);
+    }
+    renderTable(currentStandby);  // 重渲染显示 tag
+    // 锁定卡片的 tag 也同步更新
+    const lockTagsEl = document.getElementById('sb-lock-purity-tags');
+    if (lockTagsEl && document.getElementById('sb-lock-card').style.display !== 'none') {
+      const lockProxy = document.getElementById('sb-lock-proxy').textContent;
+      if (lockProxy && utils.bindOf(lockProxy) === bind) {
+        lockTagsEl.innerHTML = renderPurityTags(purityCache.get(bind));
+      }
     }
   }
 
@@ -391,6 +539,19 @@
   }
 
   // ---------------- 代理 IP hover tooltip：展示该 IP 的延时+流量图表 ----------------
+  // 悬停 300ms 才显示，避免鼠标划过时误触发
+  function scheduleShowProxyTooltip(bind, mouseEvent, source) {
+    cancelShowProxyTooltip();
+    hoverShowTimer = setTimeout(() => {
+      hoverShowTimer = null;
+      showProxyTooltip(bind, mouseEvent, source);
+    }, 300);
+  }
+
+  function cancelShowProxyTooltip() {
+    if (hoverShowTimer) { clearTimeout(hoverShowTimer); hoverShowTimer = null; }
+  }
+
   function showProxyTooltip(bind, mouseEvent, source, force) {
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }  // 取消延迟销毁
     if (hoverBind === bind) return;
@@ -406,6 +567,7 @@
       <div class="proxy-tooltip-header">
         <code>${utils.esc(bind)}</code>
         <span class="proxy-tooltip-stats" id="proxy-tooltip-stats">加载中...</span>
+        <button class="proxy-tooltip-close" id="proxy-tooltip-close" title="关闭">✕</button>
       </div>
       <div class="proxy-tooltip-charts"></div>
       <div class="proxy-tooltip-speedtest">
@@ -421,6 +583,11 @@
     });
     hoverTooltip.addEventListener('mouseleave', () => {
       scheduleHideProxyTooltip();
+    });
+
+    // 关闭按钮：随时可关闭浮窗（尤其 pin 状态/测速中，避免一直遮住表格）
+    hoverTooltip.querySelector('#proxy-tooltip-close').addEventListener('click', () => {
+      hideProxyTooltip();
     });
 
     const chartsContainer = hoverTooltip.querySelector('.proxy-tooltip-charts');
@@ -460,11 +627,13 @@
   function positionTooltip(el, e) {
     el.style.visibility = 'hidden';
     requestAnimationFrame(() => {
-      const x = e.clientX + 14;
-      const y = e.clientY + 14;
       const rect = el.getBoundingClientRect();
       const maxX = window.innerWidth - rect.width - 8;
       const maxY = window.innerHeight - rect.height - 8;
+      // 优先显示在鼠标右侧；右侧放不下则翻转到左侧，避免越出视口挤压遮挡
+      let x = e.clientX + 14;
+      if (x + rect.width > window.innerWidth - 8) x = e.clientX - 14 - rect.width;
+      const y = e.clientY + 14;
       el.style.left = Math.min(Math.max(x, 8), maxX) + 'px';
       el.style.top = Math.min(Math.max(y, 8), maxY) + 'px';
       el.style.visibility = '';
@@ -472,6 +641,7 @@
   }
 
   function hideProxyTooltip() {
+    cancelShowProxyTooltip();
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
     if (hoverCharts) { hoverCharts.destroy(); hoverCharts = null; }
@@ -694,6 +864,22 @@
     el.innerHTML = pending.map((p) => `<div class="py-1"><code>${utils.esc(p.split('://')[1] || p)}</code></div>`).join('');
   }
 
+  // 保持旧顺序合并新数据：拖拽/选中时避免延时重排导致行跑位
+  // 旧顺序中仍在新列表的代理保留位置（数据更新），被踢出的移除，新加入的追加末尾
+  function mergeKeepOrder(oldList, newList) {
+    const newMap = new Map(newList.map((p) => [p.proxy, p]));
+    const result = [];
+    const seen = new Set();
+    for (const p of oldList) {
+      const fresh = newMap.get(p.proxy);
+      if (fresh) { result.push(fresh); seen.add(p.proxy); }
+    }
+    for (const p of newList) {
+      if (!seen.has(p.proxy)) result.push(p);
+    }
+    return result;
+  }
+
   function onStatus(status) {
     if (window.appState.currentPage !== 'standby') return;
     render();
@@ -707,8 +893,22 @@
     const settingsCard = document.getElementById('sb-settings-card');
     if (lockedProxy) {
       lockCard.style.display = 'block';
-      document.getElementById('sb-lock-proxy').textContent = lockedProxy;
+      // 锁定代理的纯洁度按钮 + tag
+      const lockBind = utils.bindOf(lockedProxy);
+      // 文本选择保护：有选区时不重建锁定卡片 DOM（textContent/innerHTML 重建会打断选区），
+      // 选区消失后下一轮轮询恢复更新。锁定代理文本变化必经卡片隐藏→重新显示，此处跳过无信息损失。
+      const lockTextSelecting = lockSelectingText
+        || (window.getSelection() && window.getSelection().toString().length > 0);
+      if (!lockTextSelecting) {
+        // 仅文本变化时重写 textContent：2s 轮询重建文本节点会打断用户正在进行的 IP 文本选择
+        const lockProxyEl = document.getElementById('sb-lock-proxy');
+        if (lockProxyEl.textContent !== lockedProxy) {
+          lockProxyEl.textContent = lockedProxy;
+        }
+        document.getElementById('sb-lock-purity-tags').innerHTML = renderPurityTags(purityCache.get(lockBind) || status.locked_purity);
+      }
       document.getElementById('sb-unlock-btn').onclick = doUnlock;
+      document.getElementById('sb-lock-purity-btn').onclick = () => doPurity(lockedProxy);
       queueCard.classList.add('opacity-50', 'pointer-events-none');
       settingsCard.style.display = 'none';
     } else {
@@ -717,7 +917,14 @@
       settingsCard.style.display = '';
     }
 
-    renderTable(standby);
+    // 拖选文本期间跳过表格重绘（DOM 重建会清空选区）；锁定卡片选区可能跨越到表格，一并冻结
+    const anyTextSelection = window.getSelection() && window.getSelection().toString().length > 0;
+    if (!selectingText && !lockSelectingText && !anyTextSelection) {
+      // 拖拽中/有选中/鼠标悬浮某行时保持当前顺序（不按延时重排），避免行跑位/悬浮行变更
+      const freezeOrder = (selection && (selection.isDragging() || selection.count() > 0)) || !!hoveredProxy;
+      const effectiveStandby = freezeOrder ? mergeKeepOrder(currentStandby, standby) : standby;
+      renderTable(effectiveStandby);
+    }
     renderStats(standby, status.capacity || '-', !!lockedProxy, status.standby_history || []);
     if (!lockedProxy) renderSettings(status.settings || {});
     renderPending(status.pending_retries || []);

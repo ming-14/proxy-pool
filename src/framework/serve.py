@@ -106,6 +106,7 @@ async def _run(
         server=server,
         save=c.save,
         capacity=capacity,
+        purity=c.purity,
     ))
     if web_port:
         await panel.start(web_host or "127.0.0.1", web_port)

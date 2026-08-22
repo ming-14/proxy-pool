@@ -85,10 +85,18 @@ async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, s
                 reader_remote, writer_remote = await roption.open_connection(host_name, port, local_addr, lbind)
             except asyncio.TimeoutError:
                 raise Exception(f'Connection timeout {roption.bind}')
+            except Exception as ex:
+                # #169：目标连接失败（如 ConnectionRefusedError）时按协议回错误应答
+                # （Socks5 回 RFC1928 REP 码），否则客户端收到空响应而非明确错误。
+                if hasattr(lproto, 'error_reply'):
+                    await lproto.error_reply(writer, ex)
+                raise
             try:
                 reader_remote, writer_remote = await roption.prepare_connection(reader_remote, writer_remote, host_name, port)
                 use_http = (await client_connected(writer_remote)) if client_connected else None
-            except Exception:
+            except Exception as ex:
+                if hasattr(lproto, 'error_reply'):
+                    await lproto.error_reply(writer, ex)
                 writer_remote.close()
                 raise Exception('Unknown remote protocol')
             m = modstat(user, remote_ip, host_name, roption)
@@ -209,7 +217,7 @@ class ProxyDirect(object):
                     prot.transport.close()
             prot = lambda: Protocol(data)
             remote = self.destination(host, port)
-            await asyncio.get_event_loop().create_datagram_endpoint(prot, remote_addr=remote)
+            await asyncio.get_running_loop().create_datagram_endpoint(prot, remote_addr=remote)
     def udp_prepare_connection(self, host, port, data):
         return data
     def wait_open_connection(self, host, port, local_addr, family):
@@ -284,6 +292,8 @@ class ProxySimple(ProxyDirect):
                 prot.transport = transport
             def datagram_received(prot, data, addr):
                 asyncio.ensure_future(datagram_handler(prot.transport, data, addr, **vars(self), **args))
+        # udp_start_server 是同步函数（被 loop.run_until_complete 直接调用，无 running loop），
+        # 依赖 main() 的 set_event_loop（Python 3.14 起 get_event_loop 无 set loop 时抛 RuntimeError）
         return asyncio.get_event_loop().create_datagram_endpoint(Protocol, local_addr=(self.host_name, self.port))
     def wait_open_connection(self, host, port, local_addr, family):
         if self.unix:
@@ -363,7 +373,7 @@ class ProxyH2(ProxySimple):
         class StreamWriter():
             def __init__(self):
                 self.closed = False
-                self.headers = asyncio.get_event_loop().create_future()
+                self.headers = asyncio.get_running_loop().create_future()
             def get_extra_info(self, key):
                 return writer.get_extra_info(key)
             def write(self, data):
@@ -407,7 +417,7 @@ class ProxyH2(ProxySimple):
             if not self.handshake.done():
                 await self.handshake
         else:
-            self.handshake = asyncio.get_event_loop().create_future()
+            self.handshake = asyncio.get_running_loop().create_future()
             reader, writer = await super().wait_open_connection(None, None, local_addr, family)
             asyncio.ensure_future(self.handler(reader, writer))
             await self.handshake
@@ -451,7 +461,7 @@ class ProxyQUIC(ProxySimple):
             if not self.handshake.done():
                 await self.handshake
         else:
-            self.handshake = asyncio.get_event_loop().create_future()
+            self.handshake = asyncio.get_running_loop().create_future()
             import aioquic.asyncio, aioquic.quic.events
             class Protocol(aioquic.asyncio.QuicConnectionProtocol):
                 def quic_event_received(s, event):
@@ -515,7 +525,7 @@ class ProxyH3(ProxyQUIC):
         class StreamWriter():
             def __init__(self):
                 self.closed = False
-                self.headers = asyncio.get_event_loop().create_future()
+                self.headers = asyncio.get_running_loop().create_future()
             def get_extra_info(self, key):
                 return dict(peername=remote_addr, sockname=remote_addr).get(key)
             def write(self, data):
@@ -584,7 +594,7 @@ class ProxyH3(ProxyQUIC):
                 await self.handshake
         else:
             import aioquic.asyncio
-            self.handshake = asyncio.get_event_loop().create_future()
+            self.handshake = asyncio.get_running_loop().create_future()
             self.quic_egress_acm = aioquic.asyncio.connect(self.host_name, self.port, create_protocol=self.get_protocol(), configuration=self.quicclient)
             conn = await self.quic_egress_acm.__aenter__()
             await self.handshake
@@ -752,7 +762,15 @@ def compile_rule(filename):
 
 def proxies_by_uri(uri_jumps):
     jump = DIRECT
-    for uri in reversed(uri_jumps.split('__')):
+    # 跳转链分隔符 __ 会误切 fragment auth 用户名里的合法 __（issue #203）。
+    # 只把含 :// 的段视为独立跳转，不含的段（如被切开的用户名）合并回前一段。
+    uris = []
+    for uri in uri_jumps.split('__'):
+        if '://' in uri or not uris:
+            uris.append(uri)
+        else:
+            uris[-1] += '__' + uri
+    for uri in reversed(uris):
         jump = proxy_by_uri(uri, jump)
     return jump
 
@@ -904,7 +922,12 @@ async def test_url(url, rserver):
     print(f'============ success ============')
 
 def print_server_started(option, server, print_fn):
-    for s in server.sockets:
+    # ProxyBackward 等虚拟 server（start_server 返回自身）无监听 socket，无 sockets 属性
+    sockets = getattr(server, 'sockets', None)
+    if sockets is None:
+        print_fn(option)
+        return
+    for s in sockets:
         # https://github.com/MagicStack/uvloop/blob/master/uvloop/pseudosock.pyx
         laddr = s.getsockname() # tuple size varies with protocol family
         h = laddr[0]
@@ -943,7 +966,9 @@ def main(args = None):
         print('You must specify --ssl to listen in ssl mode')
         return
     if args.test:
-        asyncio.get_event_loop().run_until_complete(test_url(args.test, args.rserver))
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(test_url(args.test, args.rserver))
+        loop.close()
         return
     if not args.listen and not args.ulisten:
         args.listen.append(proxies_by_uri('http+socks4+socks5://:8080/'))
@@ -971,7 +996,10 @@ def main(args = None):
         print('Using uvloop')
     except ModuleNotFoundError:
         pass
-    loop = asyncio.get_event_loop()
+    # Python 3.14 起 get_event_loop() 无 running loop 时抛 RuntimeError（issue #200/205），
+    # 改用 new_event_loop()（uvloop.install() 已替换 policy，仍返回 uvloop 实例）
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     if args.v:
         from . import verbose
         verbose.setup(loop, args)

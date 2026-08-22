@@ -55,10 +55,18 @@
     function updateMarquee() {
       const d = state.drag;
       if (!d || !state.marquee) return;
+      // 起始点固定在文档坐标，随内容滚动；视口位置 = 按下时视口 - 滚动增量
+      // （内容向上滚 scrollTop 增，起始点视口上移，与 explorer.exe 一致）
+      const adjStartY = d.startY - (opts.scrollEl.scrollTop - d.startScrollTop);
       state.marquee.style.left = Math.min(d.startX, d.lastX) + 'px';
-      state.marquee.style.top = Math.min(d.startY, d.lastY) + 'px';
+      state.marquee.style.top = Math.min(adjStartY, d.lastY) + 'px';
       state.marquee.style.width = Math.abs(d.lastX - d.startX) + 'px';
-      state.marquee.style.height = Math.abs(d.lastY - d.startY) + 'px';
+      state.marquee.style.height = Math.abs(d.lastY - adjStartY) + 'px';
+    }
+
+    // 拖拽中容器滚动（用户滚轮手动滚动）→ 重画矩形；自动滚动由 autoScroll 内直接调 updateMarquee
+    function onScroll() {
+      if (state.drag && state.drag.moved) updateMarquee();
     }
 
     function hideMarquee() {
@@ -106,6 +114,7 @@
       state.drag = {
         startX: e.clientX, startY: e.clientY,
         lastX: e.clientX, lastY: e.clientY,
+        startScrollTop: opts.scrollEl.scrollTop,  // 按下时滚动位置，用于滚动时平移矩形起始边
         startIndex: tr && tr.dataset.idx != null ? Number(tr.dataset.idx) : opts.estimateIndexAtY(e.clientY),
         ctrl: e.ctrlKey || e.metaKey,
         shift: e.shiftKey,
@@ -114,14 +123,18 @@
       };
       document.addEventListener('mousemove', onDocMove, true);
       document.addEventListener('mouseup', onDocUp, true);
+      opts.scrollEl.addEventListener('scroll', onScroll, { passive: true });
       e.preventDefault();  // 阻止文本选中 / 拖拽
     }
 
     function onDocMove(e) {
       const d = state.drag;
       if (!d) return;
-      if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
-      d.moved = true;
+      if (!d.moved) {
+        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
+        d.moved = true;
+        opts.onDragStart && opts.onDragStart();  // 首次进入拖拽：通知页面（如关闭 hover tooltip）
+      }
       d.lastX = e.clientX;
       d.lastY = e.clientY;
       showMarquee();
@@ -134,6 +147,7 @@
       const d = state.drag;
       document.removeEventListener('mousemove', onDocMove, true);
       document.removeEventListener('mouseup', onDocUp, true);
+      opts.scrollEl.removeEventListener('scroll', onScroll);
       stopAutoScroll();
       state.drag = null;
       hideMarquee();

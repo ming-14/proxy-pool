@@ -51,7 +51,11 @@ def setup(loop, args):
         sys.stdout.flush()
     args.verbose = verbose
     args.stats = {0: [0]*6}
-    def modstat(user, remote_ip, host_name, stats=args.stats):
+    def modstat(user, remote_ip, host_name, *_):
+        # 兼容 vendor 化后的 4 参调用（server.stream_handler 传 roption 作第 4 参，
+        # 供 proxy_server.py 按上游代理统计流量）；原版只传 3 参，第 4 位 stats 走默认。
+        # stats 从闭包取，避免 roption 被误当作 stats 导致 'ProxyBackward' object is not subscriptable
+        stats = args.stats
         u = user.decode().split(':')[0]+':' if isinstance(user, (bytes,bytearray)) else ''
         host_name_2 = '.'.join(host_name.split('.')[-3 if host_name.endswith('.com.cn') else -2:]) if host_name.split('.')[-1].isalpha() else host_name
         tostat = (stats[0], stats.setdefault(u+remote_ip, {}).setdefault(host_name_2, [0]*6))
