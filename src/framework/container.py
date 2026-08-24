@@ -19,6 +19,7 @@ from src.interfaces.ipok_client import IpokClient
 from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.proxy_server import PproxyServer
 from src.interfaces.scheduler import ProxyScheduler
+from src.interfaces.sources.freeproxy_world import FpwConfig
 from src.use_cases.autoload import AutoloadUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
@@ -66,8 +67,20 @@ class Container:
 
 
 def _source_loader(name: str) -> ProxySource:
-    """按源名加载源实例（源模块暴露 create_source 工厂函数）"""
-    return importlib.import_module(name).create_source()
+    """按源名加载源实例（源模块暴露 create_source 工厂函数，FPW 配置经组合根注入）
+
+    create_source 统一签名为 create_source(config)，无专属参数的源忽略 config。
+    """
+    from src.framework import config
+
+    fpw_config = FpwConfig(
+        accept_language=config.FPW_ACCEPT_LANGUAGE,
+        max_concurrent=config.FPW_MAX_CONCURRENT,
+        proxy_retry=config.FPW_PROXY_RETRY,
+        request_timeout=config.FPW_REQUEST_TIMEOUT,
+        task_interval=config.FPW_TASK_INTERVAL,
+    )
+    return importlib.import_module(name).create_source(config=fpw_config)
 
 
 def _load_autoload(pool: ProxyPool, standby_group: str, file_path: str) -> None:

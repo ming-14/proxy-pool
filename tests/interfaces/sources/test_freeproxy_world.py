@@ -16,12 +16,31 @@ logging.disable(logging.WARNING)
 
 from src.interfaces.sources import freeproxy_world as fpw
 from src.interfaces.sources.freeproxy_world import (
+    FpwConfig,
     FreeProxyWorldFetcher,
+    _build_headers,
     _crawl_pages,
     _crawl_type,
     _fetch_page,
     _try_first_page,
 )
+
+
+class TestConfigInjection(unittest.TestCase):
+    """FPW 参数经 create_source 构造注入（组合根传入 FpwConfig），模块不依赖框架层配置"""
+
+    def test_create_source_injects_config(self):
+        cfg = FpwConfig(max_concurrent=8, proxy_retry=3, task_interval=5,
+                        request_timeout=7, accept_language="zh-CN")
+        fetcher = fpw.create_source(config=cfg)
+        self.assertIs(fetcher._config, cfg)
+
+    def test_build_headers_uses_injected_accept_language(self):
+        ua = MagicMock()
+        ua.get_headers.return_value = {"User-Agent": "ua"}
+        cfg = FpwConfig(accept_language="zh-CN,zh;q=0.9")
+        headers = _build_headers(ua, "seed", cfg)
+        self.assertEqual(headers["Accept-Language"], "zh-CN,zh;q=0.9")
 
 
 class TestFetchPage(unittest.TestCase):
@@ -59,7 +78,7 @@ class TestTryFirstPage(unittest.TestCase):
     def test_retries_then_success(self):
         calls = []
 
-        async def fake_fetch(url, headers, proxies_dict=None, timeout=None):
+        async def fake_fetch(url, headers, proxies_dict=None, timeout=None, config=None):
             calls.append(1)
             if len(calls) < 3:
                 raise Exception("net fail")
@@ -73,7 +92,7 @@ class TestTryFirstPage(unittest.TestCase):
         self.assertEqual(len(calls), 3)  # 两次失败后第三次成功
 
     def test_all_fail_returns_none(self):
-        async def fake_fetch(url, headers, proxies_dict=None, timeout=None):
+        async def fake_fetch(url, headers, proxies_dict=None, timeout=None, config=None):
             raise Exception("net fail")
 
         with patch.object(fpw, "_fetch_page", side_effect=fake_fetch):
@@ -86,7 +105,7 @@ class TestTryFirstPage(unittest.TestCase):
         """校验失败（ValueError，由 _fetch_page 内部抛出）与网络异常同等对待：重试直至成功"""
         calls = []
 
-        async def fake_fetch(url, headers, proxies_dict=None, timeout=None):
+        async def fake_fetch(url, headers, proxies_dict=None, timeout=None, config=None):
             calls.append(1)
             if len(calls) == 1:
                 raise ValueError("响应无有效数据(CF墙或空页)")
@@ -132,7 +151,7 @@ class TestCrawlPages(unittest.TestCase):
         self.assertNotIn("p1", working)
         self.assertIn("p2", working)
         self.assertIn("p1", failed)
-        self.assertEqual(calls.count("p1"), 2)  # FPW_PROXY_RETRY=1 -> 失败 2 次丢弃
+        self.assertEqual(calls.count("p1"), 2)  # proxy_retry=1（默认配置）-> 失败 2 次丢弃
 
     def test_retry_unused_round(self):
         """失败页用未使用代理重爬一轮（Phase2 语义）"""
@@ -186,7 +205,7 @@ class TestCrawlType(unittest.TestCase):
         ua = MagicMock()
         calls = []
 
-        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase):
+        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase, config=None):
             calls.append((proxies_dict, seed))
             return None
 
@@ -202,12 +221,12 @@ class TestCrawlType(unittest.TestCase):
         ua = MagicMock()
         first = (["1.1.1.1:8080"], 3)  # 第 1 页 3 页总数 -> 后续页 [2, 3]
 
-        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase):
+        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase, config=None):
             return first
 
         crawled = []
 
-        async def fake_crawl(proxies, pages, do_fetch, *, phase_name, on_page=None, retry_unused=False):
+        async def fake_crawl(proxies, pages, do_fetch, *, phase_name, on_page=None, retry_unused=False, config=None):
             crawled.append((list(proxies), list(pages), phase_name))
             # 模拟后续页解析出的代理（ip + 端口链接，与 _parse_proxies 正则一致）
             on_page("w1", 2, ('<td style="font-weight: 500;">2.2.2.2</td><a href="/?port=8080">', 0.1))
@@ -226,18 +245,18 @@ class TestFetchProxiesFlow(unittest.TestCase):
     """顶层编排：Phase1-4 串联 + scheme 前缀 + 去重"""
 
     def test_full_flow_with_mocked_phases(self):
-        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase):
+        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase, config=None):
             if phase == "Phase1":
                 return (["h1", "h2"], 3)  # 中转代理 + 3 页
             return (["1.2.3.4:8080"], 1)
 
-        async def fake_crawl(proxies, pages, do_fetch, *, phase_name, on_page=None, retry_unused=False):
+        async def fake_crawl(proxies, pages, do_fetch, *, phase_name, on_page=None, retry_unused=False, config=None):
             # Phase2：h1 可用，h2 未使用；failed 丢弃
             if phase_name == "Phase2":
                 return ["h1"], ["h2"], ["h2"]
             return [], [], []
 
-        async def fake_crawl_type(ua_gen, working, unused, proxy_type, retries, timeout):
+        async def fake_crawl_type(ua_gen, working, unused, proxy_type, retries, timeout, config=None):
             # 各类型第 1 页代理
             return [f"{proxy_type}-x1", f"{proxy_type}-x2"]
 
@@ -255,7 +274,7 @@ class TestFetchProxiesFlow(unittest.TestCase):
         self.assertEqual(set(proxies), expected)
 
     def test_phase1_failure_returns_empty(self):
-        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase):
+        async def fake_first(url, ua_gen, proxies_dict, seed, retries, timeout, phase, config=None):
             return None
 
         with patch.object(fpw, "_try_first_page", side_effect=fake_first):

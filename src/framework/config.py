@@ -97,6 +97,8 @@ FETCH_PROXY_RETRIES = int(_toml["fetch"]["fetch_proxy_retries"])  # 每个代理
 
 # ---------------------------------------------------------------- FreeProxy.World 源专属参数
 # 多阶段爬取的并发/限流/超时/请求头，仅该源使用（置于全局配置以遵循唯一配置数据源原则）。
+# 框架层导出，组合根（container._source_loader）组装为 interfaces 层的 FpwConfig 注入源工厂，
+# interfaces 层不直接依赖本模块。
 _fpw = _toml["fetch"]["freeproxy_world"]
 FPW_MAX_CONCURRENT = int(_fpw["max_concurrent"])        # 并发爬取页面的最大并发数
 FPW_PROXY_RETRY = int(_fpw["proxy_retry"])              # 单代理连续失败上限（超过丢弃）

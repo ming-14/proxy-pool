@@ -25,8 +25,8 @@ class GoodipsProxyFetcher(HttpSourceFetcher):
         return []
 
 
-def create_source() -> ProxySource:
-    """加载器入口：返回本源实例"""
+def create_source(config=None) -> ProxySource:
+    """加载器入口：返回本源实例（config 为组合根注入的通用参数，本源无专属配置，忽略）"""
     return GoodipsProxyFetcher()
 
 
