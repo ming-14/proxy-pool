@@ -115,8 +115,8 @@ class TestStandbyFill(unittest.TestCase):
 
     def test_fill_moves_alive_proxies_blacklists_dead(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
-        # 预设 consecutive_fails=4，探测失败后 consecutive_fails=5=MAX_CONSECUTIVE_FAILS -> 拉黑（fill 用 max_consecutive_fails 机制，非单次拉黑）
-        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", consecutive_fails=4)
+        # 预设 consecutive_fails=阈值-1，探测失败后达到阈值 -> 拉黑（fill 用 max_consecutive_fails 机制，非单次拉黑）
+        self.pool.add_to_group("default-http", "http://5.6.7.8:3128", consecutive_fails=MAX_CONSECUTIVE_FAILS - 1)
         c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
         added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
         self.assertEqual(added, 1)
@@ -337,7 +337,7 @@ class TestStandbyHeartbeat(unittest.TestCase):
         c = make_standby(self.pool, make_check(set()))
         alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
         self.assertEqual(alive, [])
-        # 一次失败：计 1 次，未达阈值（MAX_CONSECUTIVE_FAILS=2），进入退避补测，仍在队列
+        # 一次失败：计 1 次，未达阈值，进入退避补测，仍在队列
         self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 1)
         self.assertEqual(c.pending_retries(), ["http://1.2.3.4:8080"])
         self.assertIn("http://1.2.3.4:8080", c.standby_proxies())
@@ -438,10 +438,12 @@ class TestStandbyRetryProbe(unittest.TestCase):
         self.assertEqual(c.pending_retries(), [])
 
     def test_retry_failure_blacklists_at_threshold(self):
+        # 预设连续失败 = 阈值-2：心跳失败进补测，补测失败即达阈值拉黑（与阈值具体取值无关）
+        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"] = MAX_CONSECUTIVE_FAILS - 2
         c = make_standby(self.pool, make_check(set()))
         asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
         asyncio.run(c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3))
-        # 心跳 1 次 + 补测 1 次 = 2 = MAX_CONSECUTIVE_FAILS -> 拉黑移出
+        # 心跳 1 次 + 补测 1 次达阈值 -> 拉黑移出
         self.assertTrue(self.pool.is_blacklisted("http://1.2.3.4:8080"))
         self.assertNotIn("http://1.2.3.4:8080", c.standby_proxies())
         self.assertEqual(c.pending_retries(), [])

@@ -21,6 +21,7 @@ from view import (
     format_duration, format_remaining, format_ttl,
     load_cache, max_consecutive_fails_of, resolve_group_ttl,
 )
+from src.framework import config
 from src.interfaces.sqlite_store import SqliteProxyStore
 
 
@@ -42,7 +43,8 @@ DEFAULT_TTL = 240
 def make_sample(now):
     """样例缓存（相对传入 now 生成，单测用固定 NOW，GUI 冒烟用真实时间）
 
-    覆盖：过期 / 超限 / 存活 / 即将过期 / 永不过期（trusted）、源暂停、缺字段容错
+    覆盖：过期 / 超限 / 存活 / 即将过期 / 永不过期（trusted）、源暂停、缺字段容错。
+    连续失败数按配置阈值动态生成（达到阈值超限 / 阈值-1 存活），与具体配置值无关。
     """
     return {
         "proxy_groups": {
@@ -50,7 +52,7 @@ def make_sample(now):
                 "ttl": DEFAULT_TTL,
                 "proxies": [
                     {"proxy": "http://1.1.1.1:8080", "joined_at": now - 300, "consecutive_fails": 0},   # 已过期
-                    {"proxy": "http://2.2.2.2:8080", "joined_at": now - 100, "consecutive_fails": 5},   # 超限（consecutive_fails>=5）
+                    {"proxy": "http://2.2.2.2:8080", "joined_at": now - 100, "consecutive_fails": config.MAX_CONSECUTIVE_FAILS},   # 超限（达到阈值）
                     {"proxy": "http://3.3.3.3:8080", "joined_at": now - 200, "consecutive_fails": 0},   # 即将过期（剩 40s）
                     {"proxy": "http://4.4.4.4:8080", "joined_at": now - 10, "consecutive_fails": 0},    # 存活
                     {"proxy": "http://5.5.5.5:8080", "joined_at": now - 10, "extra": True}, # 缺字段容错
@@ -59,8 +61,8 @@ def make_sample(now):
             "trusted": {
                 "ttl": None,
                 "proxies": [
-                    {"proxy": "http://9.9.9.9:80", "joined_at": 0, "consecutive_fails": 10},            # trusted 超限（>=10）
-                    {"proxy": "http://8.8.8.8:80", "joined_at": 0, "consecutive_fails": 5},             # trusted 存活（<10）
+                    {"proxy": "http://9.9.9.9:80", "joined_at": 0, "consecutive_fails": config.TRUSTED_MAX_CONSECUTIVE_FAILS},             # trusted 超限（达到阈值）
+                    {"proxy": "http://8.8.8.8:80", "joined_at": 0, "consecutive_fails": config.TRUSTED_MAX_CONSECUTIVE_FAILS - 1},         # trusted 存活（阈值-1）
                 ],
             },
         },
@@ -131,7 +133,7 @@ class TestBuildProxyRows(unittest.TestCase):
         self.assertEqual(self.by_proxy["http://1.1.1.1:8080"]["status"], "expired")
         self.assertEqual(self.by_proxy["http://2.2.2.2:8080"]["status"], "invalid")
         self.assertEqual(self.by_proxy["http://4.4.4.4:8080"]["status"], "alive")
-        # trusted 阈值更高：consecutive_fails=10 超限 / consecutive_fails=5 存活
+        # trusted 组用 trusted 阈值：达到阈值超限 / 阈值-1 存活
         self.assertEqual(self.by_proxy["http://9.9.9.9:80"]["status"], "invalid")
         self.assertEqual(self.by_proxy["http://8.8.8.8:80"]["status"], "alive")
 
@@ -161,15 +163,15 @@ class TestBuildProxyRows(unittest.TestCase):
 
 class TestThresholds(unittest.TestCase):
     def test_max_consecutive_fails_of(self):
-        self.assertEqual(max_consecutive_fails_of("trusted"), 10)
-        self.assertEqual(max_consecutive_fails_of("default-http"), 5)
-        self.assertEqual(max_consecutive_fails_of("freeproxy-world-http"), 5)
+        self.assertEqual(max_consecutive_fails_of("trusted"), config.TRUSTED_MAX_CONSECUTIVE_FAILS)
+        self.assertEqual(max_consecutive_fails_of("default-http"), config.MAX_CONSECUTIVE_FAILS)
+        self.assertEqual(max_consecutive_fails_of("freeproxy-world-http"), config.MAX_CONSECUTIVE_FAILS)
 
     def test_group_ttl_prefers_cache(self):
         cache = {"proxy_groups": {"default-http": {"ttl": 123, "proxies": []}}}
         self.assertEqual(resolve_group_ttl(cache, "default-http"), 123)
         # 组不在缓存时回退配置
-        self.assertEqual(resolve_group_ttl(SAMPLE, "blacklist"), 10800)
+        self.assertEqual(resolve_group_ttl(SAMPLE, "blacklist"), config.PROXY_GROUPS["blacklist"])
 
 
 class TestGroupSummary(unittest.TestCase):
@@ -192,7 +194,7 @@ class TestSourceRows(unittest.TestCase):
         rows = {r["source"]: r for r in build_source_rows(SAMPLE, now=NOW)}
         self.assertTrue(rows["src.interfaces.sources.ip89"]["active"])
         self.assertFalse(rows["src.interfaces.sources.goodips"]["active"])
-        self.assertEqual(rows["src.interfaces.sources.geonode"]["ttl"], 1200)
+        self.assertEqual(rows["src.interfaces.sources.geonode"]["ttl"], config.SOURCE_PAUSE_TTL)
         self.assertEqual(rows["src.interfaces.sources.goodips"]["remaining"], -200)
 
 
@@ -262,7 +264,7 @@ class TestGuiSmoke(unittest.TestCase):
 
             # 概览表
             overview_rows = viewer.overview_tree.get_children()
-            self.assertEqual(len(overview_rows), 10)  # 配置的 10 组
+            self.assertEqual(len(overview_rows), len(config.PROXY_GROUPS))  # 配置的组数
             values = [viewer.overview_tree.item(i, "values")[1] for i in overview_rows]
             self.assertIn("永不过期", values)
 

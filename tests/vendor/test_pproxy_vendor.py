@@ -422,5 +422,117 @@ class TestSocks5ErrorReply(unittest.TestCase):
         self.assertEqual(resp[1], 0x05, f"应为 Connection refused: {resp!r}")
 
 
+class TestSocks5AuthReply(unittest.TestCase):
+    """认证失败应答（RFC 1928 §3 / RFC 1929 §2）
+
+    旧行为：无可接受认证方法 / 凭证错误时直接关闭连接，客户端只能看到连接中断；
+    修复：先回 05 FF（no acceptable methods）或 01 01（auth failure）再关闭。
+    """
+
+    def test_no_auth_method_returns_05ff(self):
+        async def run():
+            port_proxy = 20311
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "-m", "pproxy",
+                 "-l", f"socks5://127.0.0.1:{port_proxy}#user:pass", "-v"],
+                cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                await asyncio.sleep(2.5)
+                reader, writer = await asyncio.open_connection("127.0.0.1", port_proxy)
+                # 仅提供 no-auth(0x00) 方法，服务端要求认证 -> 05 FF
+                writer.write(b"\x05\x01\x00")
+                await writer.drain()
+                resp = await asyncio.wait_for(reader.readexactly(2), timeout=5)
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return resp
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+
+        self.assertEqual(asyncio.run(run()), b"\x05\xff")
+
+    def test_wrong_credentials_returns_0101(self):
+        async def run():
+            port_proxy = 20312
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "-m", "pproxy",
+                 "-l", f"socks5://127.0.0.1:{port_proxy}#user:pass", "-v"],
+                cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                await asyncio.sleep(2.5)
+                reader, writer = await asyncio.open_connection("127.0.0.1", port_proxy)
+                # 提供 user/pass(0x02) + no-auth(0x00) -> 服务端选 0x02
+                writer.write(b"\x05\x02\x02\x00")
+                await writer.drain()
+                self.assertEqual(await asyncio.wait_for(reader.readexactly(2), timeout=5), b"\x05\x02")
+                # RFC 1929 子协商：用户名 x / 密码 bad（错误凭证）-> 01 01
+                writer.write(b"\x01\x01x\x03bad")
+                await writer.drain()
+                resp = await asyncio.wait_for(reader.readexactly(2), timeout=5)
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return resp
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+
+        self.assertEqual(asyncio.run(run()), b"\x01\x01")
+
+
+class TestHttpPathOnlyRequest404(unittest.TestCase):
+    """非代理形式请求（path-only GET）应回真实 404 而非裸断连
+
+    旧行为：浏览器/curl 直接访问代理端口（非代理形式）时连接被直接关闭；
+    修复：回 HTTP/1.1 404 Not Found（Connection: close）再关闭。
+    """
+
+    def test_path_only_get_returns_404(self):
+        async def run():
+            port_proxy = 20321
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "-m", "pproxy",
+                 "-l", f"http://127.0.0.1:{port_proxy}", "-v"],
+                cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                await asyncio.sleep(2.5)
+                reader, writer = await asyncio.open_connection("127.0.0.1", port_proxy)
+                writer.write(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                data = b""
+                while True:
+                    chunk = await asyncio.wait_for(reader.read(65536), timeout=5)
+                    if not chunk:
+                        break
+                    data += chunk
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return data
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+
+        data = asyncio.run(run())
+        self.assertIn(b"HTTP/1.1 404 Not Found", data, data)
+
+
 if __name__ == "__main__":
     unittest.main()

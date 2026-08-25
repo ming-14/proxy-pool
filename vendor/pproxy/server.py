@@ -77,6 +77,9 @@ async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, s
         elif host_name == 'empty':
             asyncio.ensure_future(lproto.channel(reader, writer, None, DUMMY))
         elif block and block(host_name):
+            # 回 RFC1928 REP 0x02（connection not allowed by ruleset），再关闭连接
+            if hasattr(lproto, 'error_reply'):
+                await lproto.error_reply(writer, Exception('BLOCK ' + host_name))
             raise Exception('BLOCK ' + host_name)
         else:
             roption = schedule(rserver, salgorithm, host_name, port) or DIRECT
@@ -757,8 +760,12 @@ class ProxyBackward(ProxySimple):
 def compile_rule(filename):
     if filename.startswith("{") and filename.endswith("}"):
         return re.compile(filename[1:-1]).match
-    with open(filename) as f:
-        return re.compile('(:?'+''.join('|'.join(i.strip() for i in f if i.strip() and not i.startswith('#')))+')$').match
+    try:
+        with open(filename) as f:
+            return re.compile('(:?'+''.join('|'.join(i.strip() for i in f if i.strip() and not i.startswith('#')))+')$').match
+    except OSError as ex:
+        # 非 {regex} 形式时按规则文件处理；文件不存在给出友好错误而非裸回溯
+        raise argparse.ArgumentTypeError(f'cannot read rule file "{filename}": {ex} (enclose inline regex in {{...}})')
 
 def proxies_by_uri(uri_jumps):
     jump = DIRECT
@@ -804,9 +811,11 @@ def proxy_by_uri(uri, jump):
     url = urllib.parse.urlparse('s://'+uri)
     rawprotos = [i.lower() for i in scheme.split('+')]
     err_str, protos = proto.get_protos(rawprotos)
-    protonames = [i.name for i in protos]
     if err_str:
+        # 先检查 err_str 再访问 protos：protos 为 None 时取 name 会抛 TypeError，
+        # 掩盖真正的 "existing protocols" 提示（argparse 只能显示 generic invalid value）
         raise argparse.ArgumentTypeError(err_str)
+    protonames = [i.name for i in protos]
     if 'ssl' in rawprotos or 'secure' in rawprotos:
         import ssl
         sslserver = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -922,8 +931,13 @@ async def test_url(url, rserver):
     print(f'============ success ============')
 
 def print_server_started(option, server, print_fn):
-    # ProxyBackward 等虚拟 server（start_server 返回自身）无监听 socket，无 sockets 属性
+    # ProxyBackward 等虚拟 server（start_server 返回自身）无监听 socket，无 sockets 属性；
+    # UDP 路径返回的是 DatagramTransport（无 .sockets，但可用 get_extra_info('socket') 取真实 socket，
+    # 否则端口 0 时只会打印原始 bind 串 ":0" 而看不到实际端口）
     sockets = getattr(server, 'sockets', None)
+    if sockets is None and hasattr(server, 'get_extra_info'):
+        sock = server.get_extra_info('socket')
+        sockets = [sock] if sock else None
     if sockets is None:
         print_fn(option)
         return

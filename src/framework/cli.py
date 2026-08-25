@@ -5,7 +5,6 @@
 """
 
 import argparse
-import asyncio
 import json
 import logging
 import sys
@@ -15,6 +14,7 @@ from src.domain.models import normalize_proxy, to_proxy_dict
 from src.framework import config
 from src.framework.container import build_container
 from src.framework.logging import setup_logging
+from src.framework.loop import run_coro
 from src.interfaces import http_client
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ def cmd_test(args):
             print("错误: 无可用代理", file=sys.stderr)
             sys.exit(1)
         print(f"并发测试 {len(proxies)} 个代理访问 {args.url}")
-        results = asyncio.run(c.check_proxies.execute(
+        results = run_coro(c.check_proxies.execute(
             proxies, args.url, max_concurrent=args.concurrent or 8, timeout=args.timeout,
         ))
         success_count = sum(1 for r in results.values() if r["success"])

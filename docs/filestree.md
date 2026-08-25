@@ -69,7 +69,7 @@ proxy-pool/
 │                   └── charts.js      # Chart.js 封装
 ├── tests/                         # 测试目录（复刻 src 结构）
 ├── vendor/
-│   ├── pproxy/                    # pproxy 代理库（fork 自 pproxy 2.7.9，本地维护：sslwrap verbose 静默 / sslcontexts 弱引用 / modstat 传 roption 三处修复内化进源码；proxy_server.py 通过 sys.path 导入）
+│   ├── pproxy/                    # pproxy 代理库（fork 自 pproxy 2.7.9，本地维护: sslwrap 静默 / sslcontexts 弱引用 / modstat 传 roption / SOCKS5 认证应答与 UDP ASSOCIATE / HTTP 404 / WebSocket 握手修复 等内化进源码；proxy_server.py 通过 sys.path 导入）
 │   └── pspeed/                    # 代理测速工具（TCP/IP/下载/上传带宽，JSON 输出；api.py 通过 sys.path 导入 probe_one）
 ├── logs/                          # 日志目录（毫秒时间戳命名：proxy-pool-{YYYYMMDD-HHMMSS-mmm}.log）
 └── .cache.db                      # 代理池状态持久化 SQLite 数据库（WAL 模式，proxies + source_paused + group_meta）

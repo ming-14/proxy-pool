@@ -16,10 +16,11 @@ import time
 from collections import deque
 from typing import NamedTuple
 
-# pproxy 已 vendor 化（vendor/pproxy/），本地维护。三处修复已内化进源码，无需 monkey-patch：
+# pproxy 已 vendor 化（vendor/pproxy/），本地维护，修复已内化进源码，无需 monkey-patch：
 #   - proto.sslwrap：verbose=None 时静默（原退化为 print 刷 stdout）
 #   - server.sslcontexts：弱引用容器（原全局 list 只 append 不清理 → SSLContext 泄漏）
 #   - server.stream_handler：modstat 钩子签名加 roption（原不传选中上游 → 无法按代理统计流量）
+# 其余协议层修复（SOCKS5 认证应答/UDP ASSOCIATE、HTTP 404、WebSocket 握手等）见 docs/filestree.md。
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _VENDOR_DIR = os.path.join(_PROJECT_ROOT, "vendor")
 if _VENDOR_DIR not in sys.path:

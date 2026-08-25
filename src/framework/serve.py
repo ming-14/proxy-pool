@@ -15,6 +15,7 @@ import signal
 import time
 
 from src.framework import config
+from src.framework.loop import run_coro
 from src.interfaces.proxy_server import PproxyServer
 from src.framework.web import ServeControl, WebPanel
 from src.framework.web.api import PanelContext
@@ -213,7 +214,7 @@ def run(
     """同步入口：构建并运行事件循环（Ctrl+C 干净退出）"""
     types = allowed_types or {"http", "https", "socks5"}
     try:
-        asyncio.run(_run(
+        run_coro(_run(
             c,
             interval=interval,
             probe_url=probe_url,

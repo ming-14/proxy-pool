@@ -20,7 +20,7 @@ Web 控制面板支持 Windows 资源管理器式代理列表框选/多选（蓝
 pip install -r requirements.txt
 ```
 
-依赖：`requests`、`PySocks`、`fake-useragent`、`pproxy`、`aiohttp`
+依赖：`requests`、`PySocks`、`fake-useragent`、`aiohttp`、`aiohttp-socks`（`pproxy`、`pspeed` 已 vendor 化，见 `vendor/`）
 
 ## 快速开始
 

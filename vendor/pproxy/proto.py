@@ -233,6 +233,12 @@ class Socks5(BaseProtocol):
         user = authtable.authed()
         if users and (not user or b'\x00' not in methods):
             if b'\x02' not in methods:
+                # RFC 1928 §3：无可接受认证方法时回 05 FF 再关闭
+                try:
+                    writer.write(b'\x05\xff')
+                    await writer.drain()
+                except Exception:
+                    pass
                 raise Exception(f'Unauthorized SOCKS')
             writer.write(b'\x05\x02')
             assert (await reader.read_n(1))[0] == 1, 'Unknown SOCKS auth'
@@ -240,15 +246,60 @@ class Socks5(BaseProtocol):
             p = await reader.read_n((await reader.read_n(1))[0])
             user = u+b':'+p
             if user not in users:
+                # RFC 1929 §2：认证失败回 01 01 再关闭
+                try:
+                    writer.write(b'\x01\x01')
+                    await writer.drain()
+                except Exception:
+                    pass
                 raise Exception(f'Unauthorized SOCKS {u}:{p}')
             writer.write(b'\x01\x00')
         elif users and not user:
+            try:
+                writer.write(b'\x05\xff')
+                await writer.drain()
+            except Exception:
+                pass
             raise Exception(f'Unauthorized SOCKS')
         else:
             writer.write(b'\x05\x00')
         if users:
             authtable.set_authed(user)
-        assert await reader.read_n(3) == b'\x05\x01\x00', 'Unknown SOCKS protocol'
+        head = await reader.read_n(3)
+        assert head[0] == 0x05, 'Unknown SOCKS protocol'
+        if head[1] == 0x03:
+            # UDP ASSOCIATE (RFC 1928 §7)：回复 UDP 中继地址，保持 TCP 连接直到客户端关闭。
+            # 数据面由 -ul 端口的 datagram_handler 处理（与 TCP 连接无关联）。
+            atyp = await reader.read_n(1)
+            await socks_address_stream(reader, atyp[0])
+            relay = next((o for o in (kw.get('ulisten') or []) if getattr(o, 'port', None) is not None), None)
+            sockname = writer.get_extra_info('sockname') or (None, None)
+            if relay is None:
+                # 未配置 UDP 中继（-ul）：回 0x07 command not supported
+                writer.write(b'\x05\x07\x00' + b'\x01\x00\x00\x00\x00\x00\x00')
+                try:
+                    await writer.drain()
+                except Exception:
+                    pass
+                raise Exception('UDP relay not configured')
+            if relay.port:
+                host = relay.host_name or sockname[0] or '127.0.0.1'
+                port = relay.port
+            else:
+                host = sockname[0] or '127.0.0.1'
+                port = sockname[1]
+            if ':' in host:
+                bnd = b'\x04' + socket.inet_pton(socket.AF_INET6, host) + port.to_bytes(2, 'big')
+            else:
+                bnd = b'\x01' + socket.inet_aton(host) + port.to_bytes(2, 'big')
+            writer.write(b'\x05\x00\x00' + bnd)
+            try:
+                await writer.drain()
+            except Exception:
+                pass
+            # 复用 'empty' 语义：channel 读取并丢弃数据，连接保持到客户端关闭
+            return user, 'empty', 0
+        assert head[1] == 0x01, 'Unknown SOCKS protocol'
         header = await reader.read_n(1)
         host_name, port, data = await socks_address_stream(reader, header[0])
         # #169：成功应答推迟到目标连接成功后（stream_handler 调 client_connected 时），
@@ -263,7 +314,9 @@ class Socks5(BaseProtocol):
         rep = 0x01  # general failure
         if isinstance(ex, ConnectionRefusedError):
             rep = 0x05  # connection refused
-        elif isinstance(ex, socket.gaierror):
+        elif isinstance(ex, (socket.gaierror, UnicodeError)):
+            # DNS 解析失败：gaierror 为常规解析错误；UnicodeError 为 IDNA 编码失败
+            # （非法域名标签如 "bad!!name" 会先在 getaddrinfo 内抛 UnicodeError）
             rep = 0x04  # host unreachable（DNS 解析失败）
         elif isinstance(ex, asyncio.TimeoutError):
             rep = 0x06  # TTL expired / 连接超时
@@ -330,6 +383,8 @@ class HTTP(BaseProtocol):
                             text = (text % dict(host=host)).encode()
                         await reply(200, f'{ver} 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nCache-Control: max-age=900\r\nContent-Length: {len(text)}\r\n\r\n'.encode(), text, True)
                         raise Exception('Connection closed')
+            # 非代理形式 GET（path-only）：回真实 404 响应再关闭，而不是裸断连
+            await reply(404, f'{ver} 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'.encode(), wait=True)
             raise Exception(f'404 {method} {url.path}')
         if users:
             user = authtable.authed()
@@ -485,10 +540,12 @@ class Tunnel(Transparent):
         return data
 
 class WS(BaseProtocol):
+    # RFC 6455 §1.3：Sec-WebSocket-Accept 计算用固定 GUID
+    WS_GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
     async def guess(self, reader, **kw):
         header = await reader.read_w(4)
         reader.rollback(header)
-        return reader == b'GET '
+        return header == b'GET '
     def patch_ws_stream(self, reader, writer, masked=False):
         data_len, mask_key, _buffer = None, None, bytearray()
         def feed_data(s, o=reader.feed_data):
@@ -550,7 +607,7 @@ class WS(BaseProtocol):
         if headers.get('Sec-WebSocket-Key', None) is None:
             raise Exception(f'Unsupported headers {headers}')
         seckey = base64.b64decode(headers.get('Sec-WebSocket-Key'))
-        rseckey = base64.b64encode(hashlib.sha1(seckey+b'amtf').digest()[:16]).decode()
+        rseckey = base64.b64encode(hashlib.sha1(seckey + self.WS_GUID).digest()).decode()
         writer.write(f'{ver} 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {rseckey}\r\nSec-WebSocket-Protocol: chat\r\n\r\n'.encode())
         self.patch_ws_stream(reader, writer, False)
         if not self.param:
