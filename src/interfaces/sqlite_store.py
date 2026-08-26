@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS ip_purity_cache (
     result    TEXT NOT NULL,
     cached_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ip_geo_cache (
+    ip           TEXT PRIMARY KEY,
+    country      TEXT,
+    country_code TEXT,
+    province     TEXT,
+    city         TEXT,
+    lat          REAL,
+    lng          REAL,
+    cached_at    REAL NOT NULL
+);
 """
 
 # 代理行 INSERT 语句（8 列）
@@ -234,3 +244,47 @@ class SqliteProxyStore:
     def close(self) -> None:
         """关闭连接（serve 退出时调用）"""
         self._conn.close()
+
+    # ------------------------------------------------------------------ IP 归属缓存
+    def get_geo_batch(self, ips: list[str]) -> dict[str, dict]:
+        """批量读取归属缓存；返回 {ip: {country, country_code, province, city, lat, lng, cached_at}}
+
+        只返回缓存中有记录的 IP（无记录不包含在返回 dict 中）。
+        """
+        if not ips:
+            return {}
+        placeholders = ",".join("?" for _ in ips)
+        rows = self._conn.execute(
+            f"SELECT ip, country, country_code, province, city, lat, lng, cached_at "
+            f"FROM ip_geo_cache WHERE ip IN ({placeholders})", ips
+        ).fetchall()
+        result: dict[str, dict] = {}
+        for r in rows:
+            result[r["ip"]] = {
+                "country": r["country"],
+                "country_code": r["country_code"],
+                "province": r["province"],
+                "city": r["city"],
+                "lat": r["lat"],
+                "lng": r["lng"],
+                "cached_at": r["cached_at"],
+            }
+        return result
+
+    def save_geo_batch(self, results: dict[str, dict]) -> None:
+        """批量写入/更新归属缓存（upsert by ip）
+
+        results: {ip: {country, country_code, province, city, lat, lng}}
+        """
+        if not results:
+            return
+        now = time.time()
+        rows = [
+            (ip, d["country"], d["country_code"], d.get("province"), d.get("city"), d["lat"], d["lng"], now)
+            for ip, d in results.items()
+        ]
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO ip_geo_cache "
+            "(ip, country, country_code, province, city, lat, lng, cached_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+        )

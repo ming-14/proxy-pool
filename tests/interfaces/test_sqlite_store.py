@@ -281,5 +281,49 @@ class TestSqliteProxyStoreWithPool(unittest.TestCase):
         assert cached["result"]["abuse_confidence_score"] == 5
 
 
+class TestGeoCache(unittest.TestCase):
+    """IP 归属缓存 (ip_geo_cache) 批量读写"""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmp_dir, ".cache.db")
+        self.store = SqliteProxyStore(self.db_path)
+
+    def tearDown(self):
+        self.store.close()
+        _cleanup_db(self.db_path)
+        os.rmdir(self.tmp_dir)
+
+    def test_get_geo_batch_empty(self):
+        assert self.store.get_geo_batch([]) == {}
+
+    def test_get_geo_batch_miss_all(self):
+        assert self.store.get_geo_batch(["1.2.3.4"]) == {}
+
+    def test_save_then_get(self):
+        self.store.save_geo_batch({"1.2.3.4": {"country": "中国", "country_code": "CN", "province": "上海",
+                                                "city": "上海", "lat": 31.23, "lng": 121.47}})
+        result = self.store.get_geo_batch(["1.2.3.4"])
+        assert "1.2.3.4" in result
+        assert result["1.2.3.4"]["country"] == "中国"
+        assert result["1.2.3.4"]["lat"] == 31.23
+        assert result["1.2.3.4"]["cached_at"] > 0
+
+    def test_batch_save_and_batch_get(self):
+        self.store.save_geo_batch({
+            "1.1.1.1": {"country": "A", "country_code": "AA", "lat": 1.0, "lng": 1.0},
+            "2.2.2.2": {"country": "B", "country_code": "BB", "lat": 2.0, "lng": 2.0},
+        })
+        result = self.store.get_geo_batch(["1.1.1.1", "2.2.2.2", "3.3.3.3"])
+        assert len(result) == 2
+        assert "3.3.3.3" not in result
+
+    def test_upsert_overwrites(self):
+        self.store.save_geo_batch({"1.2.3.4": {"country": "旧", "country_code": "XX", "lat": 0.0, "lng": 0.0}})
+        self.store.save_geo_batch({"1.2.3.4": {"country": "新", "country_code": "YY", "lat": 1.0, "lng": 1.0}})
+        result = self.store.get_geo_batch(["1.2.3.4"])
+        assert result["1.2.3.4"]["country"] == "新"
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,29 +19,10 @@ from __future__ import annotations
 import logging
 import time
 
+from src.domain.models import proxy_to_ip
 from src.domain.ports import IpPurityChecker, PurityCacheStore
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_ip(bind: str) -> str:
-    """从代理 bind（ip:port）提取 IP（不含端口）
-
-    IPv4: "1.2.3.4:8080" → "1.2.3.4"
-    IPv6: "[::1]:8080" → "::1"
-    裸 IP（无端口）原样返回。
-    """
-    if bind.startswith("["):  # IPv6 [::1]:8080
-        return bind[1:bind.index("]")]
-    if ":" in bind:
-        return bind.rsplit(":", 1)[0]
-    return bind
-
-
-def _proxy_to_ip(proxy: str) -> str:
-    """从 proxy URL 或 bind 提取 IP"""
-    bind = proxy.split("://", 1)[1] if "://" in proxy else proxy
-    return _extract_ip(bind)
 
 
 class CheckPurityUseCase:
@@ -71,7 +52,7 @@ class CheckPurityUseCase:
         """
         if self._cache is None:
             return None
-        ip = _proxy_to_ip(proxy)
+        ip = proxy_to_ip(proxy)
         cached = self._cache.get_purity(ip)
         if cached is None or (time.time() - cached["cached_at"]) >= self._cache_ttl:
             return None
@@ -83,7 +64,7 @@ class CheckPurityUseCase:
 
     def check_remote(self, proxy: str) -> dict:
         """调 checker 查询（纯网络，可放 executor 线程）；不碰缓存/SQLite"""
-        ip = _proxy_to_ip(proxy)
+        ip = proxy_to_ip(proxy)
         logger.info("检查 IP 纯洁度: %s (proxy=%s)", ip, proxy)
         result = self._checker.check(ip, max_age_in_days=self._max_age)
         result["ip"] = ip
@@ -92,7 +73,7 @@ class CheckPurityUseCase:
     def save_cache(self, proxy: str, result: dict) -> dict:
         """写缓存并返回结果；访问 SQLite，必须在创建连接的线程调用"""
         if self._cache is not None:
-            ip = _proxy_to_ip(proxy)
+            ip = proxy_to_ip(proxy)
             self._cache.save_purity(ip, result)
         return result
 

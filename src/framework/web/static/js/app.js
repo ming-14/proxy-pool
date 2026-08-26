@@ -53,6 +53,15 @@
       const d = new Date();
       return d.toLocaleTimeString('zh-CN', { hour12: false });
     },
+    // 国家/地区名显示映射（仅影响展示，不改后端数据）：
+    // 中文名来自 GeoLite2（中国），英文名来自 world.json 地图区域（China）
+    displayCountryName(name) {
+      const map = {
+        '中国': '中国大陆',
+        'China': "China's Mainland",
+      };
+      return map[name] || name;
+    },
   };
 
   // ---------------- Toast ----------------

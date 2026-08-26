@@ -62,6 +62,13 @@
             <div class="space-y-3 text-sm" id="dash-traffic-kpi"></div>
           </div>
         </div>
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <div class="card-title">IP 分布地图</div>
+            <div class="text-xs text-theme-muted" id="dash-geo-stats"></div>
+          </div>
+          <div id="dash-geo-map" style="height: 480px"></div>
+        </div>
         <div id="dash-pending"></div>
       `;
       window.charts.initLatency('dash-latency-chart');
@@ -121,6 +128,9 @@
     window.charts.renderHealth(status.standby_history || []);
     window.charts.renderTraffic(status.traffic_history || [], status.standby_history || []);
     renderTrafficKpi(status);
+
+    // IP 分布地图（内嵌仪表盘底部，内部 60s 节流，不随 2s 心跳刷）
+    if (window.geoMap) window.geoMap.refresh();
   }
 
   // 字节自适应格式化：B / KB / MB / GB

@@ -193,6 +193,10 @@
           av = a.joined_at ?? 0;
           bv = b.joined_at ?? 0;
           break;
+        case 'geo':
+          av = geoSortKey(a);
+          bv = geoSortKey(b);
+          break;
         default:
           av = a.proxy;
           bv = b.proxy;
@@ -204,6 +208,13 @@
     return rows;
   }
 
+  // 归属排序键：国家+省+市拼接（无归属排最后）
+  function geoSortKey(p) {
+    const geo = p.geo;
+    if (!geo) return '\uffff';
+    return [geo.country || '', geo.province || '', geo.city || ''].join('\u0000');
+  }
+
   function rowTemplate(p, i) {
     return `
       <tr data-idx="${i}" data-proxy="${utils.esc(p.proxy)}">
@@ -212,9 +223,22 @@
         <td>${utils.fmtLatency(p.latency)}</td>
         <td>${p.expires_in == null ? '-' : utils.fmtDuration(p.expires_in)}</td>
         <td class="text-theme-muted">${new Date((p.joined_at || 0) * 1000).toLocaleString('zh-CN')}</td>
+        <td>${geoCell(p)}</td>
         <td>${p.source_group ? utils.esc(groupLabel(p.source_group)) : '<span class="text-theme-muted">-</span>'}</td>
       </tr>
     `;
+  }
+
+  // IP 归属单元格：国家 · 城市（有省无市显示省）；无归属显示 -
+  // title 提供完整归属信息（省市区），hover 查看
+  function geoCell(p) {
+    const geo = p.geo;
+    if (!geo) return '<span class="text-theme-muted">-</span>';
+    const country = utils.displayCountryName(geo.country || '未知');
+    const parts = [geo.province, geo.city].filter(Boolean);
+    const short = parts.length ? `${country} · ${parts.join('')}` : country;
+    const full = [country, geo.province, geo.city].filter(Boolean).join(' · ');
+    return `<span class="geo-cell" title="${utils.esc(full)}">${utils.esc(short)}</span>`;
   }
 
   // 框选坐标 → 数据索引：tbody 顶对应 renderStart 行，按 estRowH 推算（可跨未渲染区域）
@@ -274,11 +298,12 @@
             <th class="sortable" data-sort="latency">延迟 ${sortIcon('latency')}</th>
             <th class="sortable" data-sort="expires_in">过期倒计时 ${sortIcon('expires_in')}</th>
             <th class="sortable" data-sort="joined_at">加入时间 ${sortIcon('joined_at')}</th>
+            <th class="sortable" data-sort="geo">IP 归属 ${sortIcon('geo')}</th>
             <th class="sortable" data-sort="source_group">来源 ${sortIcon('source_group')}</th>
           </tr>
         </thead>
         <tbody id="grp-tbody">
-          ${renderRows.length ? renderRows.map((p, i) => rowTemplate(p, state.renderStart + i)).join('') : '<tr><td colspan="6" class="text-center text-theme-muted py-8">无匹配代理</td></tr>'}
+          ${renderRows.length ? renderRows.map((p, i) => rowTemplate(p, state.renderStart + i)).join('') : '<tr><td colspan="7" class="text-center text-theme-muted py-8">无匹配代理</td></tr>'}
         </tbody>
       </table>
       ${hasMoreDown ? '<div id="grp-sentinel" class="text-center text-theme-muted py-4">滚动加载更多...</div>' : (total > 0 ? '<div class="text-center text-theme-muted py-3 text-xs">已全部加载</div>' : '')}
@@ -416,16 +441,24 @@
       showToast('warning', '无数据', '当前没有可导出的代理');
       return;
     }
-    const header = ['proxy', 'consecutive_fails', 'latency', 'expires_in', 'joined_at', 'source_group'];
+    const header = ['proxy', 'consecutive_fails', 'latency', 'expires_in', 'joined_at', 'geo', 'source_group'];
     const lines = rows.map((p) => [
       p.proxy,
       p.consecutive_fails ?? 0,
       p.latency ?? '',
       p.expires_in ?? '',
       new Date((p.joined_at || 0) * 1000).toISOString(),
+      geoExport(p),
       p.source_group ?? '',
     ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','));
     downloadFile([header.join(','), ...lines].join('\n'), `${state.currentGroup}.csv`, 'text/csv');
+  }
+
+  // 导出用归属文本：国家·省·市（完整，不省略）
+  function geoExport(p) {
+    const geo = p.geo;
+    if (!geo) return '';
+    return [geo.country || '', geo.province || '', geo.city || ''].filter(Boolean).join('·');
   }
 
   function exportJson() {

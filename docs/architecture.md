@@ -228,6 +228,16 @@ for attempt in range(max_retries):
 - `restore_state()` 恢复时：**组 ttl 以运行时配置为准**（改配置即生效，文件里的 ttl 不覆盖）；过滤已过期条目与已过期源暂停。
 - CLI 各命令在 `finally` 中调用 `c.save_full()` 保证退出时落盘；serve 主循环用 `c.save()` 增量保存（只写 dirty 组，~0.3ms）。
 
+## IP 归属地图（Web 面板）
+
+Web 面板「IP 分布」页用 ECharts 世界地图展示池中代理的地理分布（城市级散点，点大小 + 颜色深浅 = 该城市 IP 密度）。
+
+- **定位引擎**：`GeoLite2CityLocator`（`src/interfaces/geoip_client.py`）封装 MaxMind GeoLite2-City mmdb（`vendor/geoip/GeoLite2-City.mmdb`，配置 `[geoip].db_file`），纯离线查询，返回国家/省市/经纬度；国家/城市名取中文（zh-CN）优先。
+- **缓存**：定位结果持久化到 `.cache.db` 的 `ip_geo_cache` 表（`SqliteProxyStore.get_geo_batch/save_geo_batch`），TTL 由 `[geoip].cache_ttl` 控制（默认 90 天，IP 段归属变化以月计）；重复解析只发生在缓存缺失时。
+- **用例**：`IpGeoUseCase`（`src/use_cases/ip_geo.py`）拆成三步供 API 编排——`collect_ips`+`query_cache`（主线程 SQLite 读）→ `locate`（executor 线程，纯 mmdb 读）→ `save_cache`（主线程 SQLite 写），遵守 SQLite 线程绑定约束；`aggregate` 为纯计算，按「国家+省+市」聚合出散点与国家级汇总。
+- **API**：`GET /api/geo/map` 返回 `{total_ips, resolved_ips, unresolved_ips, countries, points}`，points 为城市级坐标点（`{name, country, country_code, lat, lng, count}`）。首次请求全量解析 2400+ IP 约 3 秒，之后纯读缓存毫秒级。
+- **前端**：`map.js` 懒加载 `world.json` 注册 ECharts 地图，`effectScatter` 叠加散点 + `visualMap` 颜色映射密度，暗色模式自适应；ECharts 与地图数据本地 vendor（无外网依赖）。
+
 ## 配置项速查（config/config.toml）
 
 唯一配置数据源为 `config/config.toml`（`src/framework/config.py` 在导入时加载并导出同名常量；`[paths]` 下路径相对项目根解析）。
@@ -267,6 +277,8 @@ for attempt in range(max_retries):
 | `NETWORK_CHECK_BACKOFF_INITIAL` / `_MAX` | 2 / 30 | 网络异常时门控退避重检起始间隔与上限（异常越久探测越稀疏） |
 | `SERVE_PROXY_TYPES` | `("http", "socks5")` | serve 默认允许的代理类型（不含 https，原因见 serve 机制） |
 | `CACHE_DB` / `LOG_DIR` | 项目根 `.cache.db` / `logs/` | 框架层路径（`[paths]` 下相对项目根解析） |
+| `GEOIP_DB_FILE` | `vendor/geoip/GeoLite2-City.mmdb` | GeoLite2-City 离线数据库路径（`[geoip].db_file`，相对项目根） |
+| `GEOIP_CACHE_TTL` | 7776000 (90d) | IP 归属缓存有效期（秒），`[geoip].cache_ttl` |
 
 ## view.py — .cache.db 只读查看器
 

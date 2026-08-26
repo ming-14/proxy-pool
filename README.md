@@ -12,7 +12,7 @@
 
 代理池管理工具。自动从多个免费代理源拉取代理，支持分组管理、TTL 过期、成功/失败追踪、黑名单淘汰、源暂停、多线程并发调度，并提供本地 HTTP/SOCKS4/SOCKS5 正向代理服务器（自动心跳 + 无缝切换）。
 
-Web 控制面板支持 Windows 资源管理器式代理列表框选/多选（蓝色矩形框选、Ctrl/Shift 多选、Ctrl+A 全选、批量拉黑/移动/删除），详见 [docs/cli.md](docs/cli.md)。
+Web 控制面板支持 Windows 资源管理器式代理列表框选/多选（蓝色矩形框选、Ctrl/Shift 多选、Ctrl+A 全选、批量拉黑/移动/删除），并提供 **IP 分布世界地图**（ECharts，IP 归属 GeoLite2 离线解析，城市级散点颜色深浅表示密度），详见 [docs/cli.md](docs/cli.md)。
 
 ## 安装
 
@@ -20,7 +20,16 @@ Web 控制面板支持 Windows 资源管理器式代理列表框选/多选（蓝
 pip install -r requirements.txt
 ```
 
-依赖：`requests`、`PySocks`、`fake-useragent`、`aiohttp`、`aiohttp-socks`（`pproxy`、`pspeed` 已 vendor 化，见 `vendor/`）
+依赖：`requests`、`PySocks`、`fake-useragent`、`aiohttp`、`aiohttp-socks`、`geoip2`（`pproxy`、`pspeed` 已 vendor 化，见 `vendor/`）
+
+### IP 归属数据库（地图功能需要）
+
+Web 面板「IP 分布」页面依赖 MaxMind **GeoLite2-City** 离线数据库（自带经纬度）。下载后放到 `vendor/geoip/GeoLite2-City.mmdb`：
+
+- 官方：https://www.maxmind.com/en/accounts/current/geoip/downloads（免费注册）
+- 或社区构建版（如 `P3TERX/GeoLite.mmdb` 的 GitHub Releases）
+
+未放置时 serve 启动会报错（GeoLocator 加载失败）；放置后首次打开地图页面自动全量解析并缓存到 `.cache.db` 的 `ip_geo_cache` 表（后续毫秒级返回）。路径与缓存 TTL 见 `config.toml` 的 `[geoip]` 节。
 
 ## 快速开始
 

@@ -14,6 +14,7 @@ from src.domain.models import SourceSpec
 from src.domain.ports import ProxySource, IpPurityChecker
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.abuseipdb_client import AbuseIpDbClient
+from src.interfaces.geoip_client import GeoLite2CityLocator
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
 from src.interfaces.ipok_client import IpokClient
 from src.interfaces.sqlite_store import SqliteProxyStore
@@ -25,6 +26,7 @@ from src.use_cases.check_proxies import CheckProxiesUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
 from src.use_cases.fetch_proxies import FetchProxiesUseCase
 from src.use_cases.get_proxies import GetProxiesUseCase
+from src.use_cases.ip_geo import IpGeoUseCase
 from src.use_cases.network_gate import LocalNetworkGate
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.request_with_retry import RequestWithRetryUseCase
@@ -46,6 +48,7 @@ class Container:
     standby: StandbyQueueUseCase
     async_getter: AsyncHttpGetter
     purity: CheckPurityUseCase          # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
+    geo: IpGeoUseCase                   # IP 归属地图（GeoLite2 定位 + 缓存 + 聚合）
 
     def save(self) -> None:
         """增量保存：只写 dirty 组（serve 主循环 / Web 控制动作高频调用）
@@ -175,6 +178,12 @@ def build_container(cache_db: str | None = None) -> Container:
         max_age_in_days=config.ABUSEIPDB_MAX_AGE_DAYS,
         cache_ttl=config.ABUSEIPDB_CACHE_TTL,
     )
+    # IP 归属地图：GeoLite2 离线定位 + SQLite 缓存（Web 面板地图页面按需懒查）
+    geo = IpGeoUseCase(
+        locator=GeoLite2CityLocator(config.GEOIP_DB_FILE),
+        cache=store,
+        cache_ttl=config.GEOIP_CACHE_TTL,
+    )
     return Container(
         pool=pool,
         store=store,
@@ -187,4 +196,5 @@ def build_container(cache_db: str | None = None) -> Container:
         standby=standby,
         async_getter=async_getter,
         purity=purity,
+        geo=geo,
     )

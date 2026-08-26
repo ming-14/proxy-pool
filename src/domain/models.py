@@ -30,6 +30,20 @@ def to_proxy_dict(proxy: str) -> dict[str, str]:
     return {"http": p, "https": p}
 
 
+def proxy_to_ip(proxy: str) -> str:
+    """从 proxy URL 或 bind（ip:port）提取 IP（不含端口）
+
+    "http://1.2.3.4:8080" / "1.2.3.4:8080" → "1.2.3.4"
+    "[::1]:8080" → "::1"；裸 IP 原样返回。
+    """
+    bind = bind_of(proxy)
+    if bind.startswith("["):  # IPv6 [::1]:8080
+        return bind[1:bind.index("]")]
+    if ":" in bind:
+        return bind.rsplit(":", 1)[0]
+    return bind
+
+
 @dataclass(frozen=True)
 class SourceSpec:
     """代理源元数据（组合根从 config.SOURCES 构建）

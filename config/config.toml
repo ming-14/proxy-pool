@@ -153,3 +153,10 @@ source = "abuseipdb"                            # 检查源：ipok / abuseipdb
 # 各源代理（被墙时用），空字符串表示直连
 ipok_proxy = ""  # ipok.io 代理
 abuseipdb_proxy = ""                        # AbuseIPDB 代理（空=直连）
+
+# ---------------------------------------------------------------- IP 归属地（Web 地图）
+[geoip]
+# GeoLite2-City 离线数据库（相对项目根，MaxMind GeoLite2 或 P3TERX/GeoLite.mmdb 构建版）
+db_file = "vendor/geoip/GeoLite2-City.mmdb"
+# 定位结果缓存有效期秒：IP 段归属变化以月计，90 天内不重复解析 mmdb
+cache_ttl = 7776000

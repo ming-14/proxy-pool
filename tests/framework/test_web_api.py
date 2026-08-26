@@ -114,9 +114,14 @@ def make_ctx(pool):
     )
     purity = MagicMock()
     purity.query_cache = MagicMock(return_value=None)  # 无缓存，_status_snapshot 里 _purity_cached 返回 None
+    geo = MagicMock()
+    # IP 归属：默认无缓存、无定位结果（group detail 正常路径，避免解包异常被吞）
+    geo.query_cache = MagicMock(return_value=({}, []))
+    geo.locate = MagicMock(return_value={})
+    geo.save_cache = MagicMock()
     ctx = PanelContext(pool=pool, fetch=fetch, record=record, standby=standby,
                        control=control, server=server, save=MagicMock(), capacity=5,
-                       purity=purity)
+                       purity=purity, geo=geo)
     return ctx, fetch, standby, server
 
 
@@ -182,6 +187,34 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["proxies"][0]["proxy"] == "http://5.6.7.8:3128"
         notfound = await self.client.get("/api/group/no-such-group")
         assert notfound.status == 404
+
+    async def test_group_detail_geo_from_cache(self):
+        """代理组明细带 IP 归属：缓存命中直接下发 geo 字段"""
+        self.pool.add_to_group("trusted", "5.6.7.8:3128", consecutive_fails=0)
+        self.ctx.geo.query_cache = MagicMock(return_value=(
+            {"5.6.7.8": {"country": "美国", "country_code": "US", "province": "California",
+                         "city": "Los Angeles", "lat": 34.05, "lng": -118.24, "cached_at": 1}},
+            [],
+        ))
+        resp = await self.client.get("/api/group/trusted")
+        data = await resp.json()
+        geo = data["proxies"][0]["geo"]
+        assert geo["country"] == "美国" and geo["country_code"] == "US"
+        assert geo["city"] == "Los Angeles"
+
+    async def test_group_detail_geo_missing_triggers_locate(self):
+        """缓存缺失：locate 在 executor 执行并写缓存，结果合并下发"""
+        self.pool.add_to_group("trusted", "5.6.7.8:3128", consecutive_fails=0)
+        self.ctx.geo.query_cache = MagicMock(return_value=({}, ["5.6.7.8"]))
+        self.ctx.geo.locate = MagicMock(return_value={
+            "5.6.7.8": {"country": "日本", "country_code": "JP", "province": "Tokyo", "city": "Tokyo",
+                        "lat": 35.68, "lng": 139.69},
+        })
+        resp = await self.client.get("/api/group/trusted")
+        data = await resp.json()
+        assert data["proxies"][0]["geo"]["country"] == "日本"
+        self.ctx.geo.locate.assert_called_once_with(["5.6.7.8"])
+        self.ctx.geo.save_cache.assert_called_once()
 
     async def test_fetch_control(self):
         resp = await self.client.post("/api/fetch", json={})

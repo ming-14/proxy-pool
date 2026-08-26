@@ -169,3 +169,8 @@ _purity_cfg = _toml.get("purity", {})
 PURITY_SOURCE = _purity_cfg.get("source", "ipok")   # 检查源：ipok / abuseipdb
 IPOK_PROXY = _purity_cfg.get("ipok_proxy", "")
 ABUSEIPDB_PROXY = _purity_cfg.get("abuseipdb_proxy", "")
+
+# ---------------------------------------------------------------- IP 归属地（Web 地图）
+_geoip_cfg = _toml.get("geoip", {})
+GEOIP_DB_FILE = str(_PROJECT_ROOT / _geoip_cfg.get("db_file", "vendor/geoip/GeoLite2-City.mmdb"))
+GEOIP_CACHE_TTL = int(_geoip_cfg.get("cache_ttl", 7776000))  # 默认 90 天

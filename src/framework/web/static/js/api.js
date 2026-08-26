@@ -84,6 +84,9 @@
     purity(bind) {
       return request('/api/proxy/purity', 'POST', { bind });
     },
+    geoMap() {
+      return request('/api/geo/map');
+    },
     moveProxy(proxies, targetGroup) {
       const list = Array.isArray(proxies) ? proxies : [proxies];
       return request('/api/proxy/move', 'POST', { proxies: list, target_group: targetGroup });

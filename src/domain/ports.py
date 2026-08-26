@@ -103,3 +103,28 @@ class PurityCacheStore(Protocol):
     def save_purity(self, ip: str, result: dict) -> None:
         """写入/更新缓存（upsert by ip）"""
         ...
+
+
+class GeoLocator(Protocol):
+    """IP 归属地定位端口：查询 IP 的国家/省市/经纬度（GeoLite2-City 等离线库）
+
+    返回 dict 含 country / country_code / province / city / lat / lng；
+    无法定位（保留地址、库中无记录）返回 None。实现方为纯本地查询，无网络 IO。
+    """
+
+    def locate(self, ip: str) -> dict | None: ...
+
+
+class GeoCacheStore(Protocol):
+    """IP 归属地缓存存储端口：持久化定位结果，避免重复解析 mmdb
+
+    定位结果长期稳定（IP 段归属变化以月计），TTL 判断在用例层；store 只做纯读写。
+    """
+
+    def get_geo_batch(self, ips: list[str]) -> dict[str, dict]:
+        """批量读取缓存；返回 {ip: {"country", "country_code", "province", "city", "lat", "lng", "cached_at"}}"""
+        ...
+
+    def save_geo_batch(self, results: dict[str, dict]) -> None:
+        """批量写入/更新缓存（upsert by ip）"""
+        ...

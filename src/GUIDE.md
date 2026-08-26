@@ -10,6 +10,7 @@ proxy-pool/
     ├── use_cases/                 # 用例测试
     │   ├── __init__.py
     │   ├── test_use_cases.py
+    │   ├── test_ip_geo.py         # IP 归属地图用例测试
     │   └── test_standby.py
     ├── interfaces/                # 接口测试
     │   ├── __init__.py

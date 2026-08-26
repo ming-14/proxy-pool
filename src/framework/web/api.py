@@ -20,7 +20,7 @@ from typing import Callable
 
 from aiohttp import web
 
-from src.domain.models import bind_of, normalize_proxy
+from src.domain.models import bind_of, normalize_proxy, proxy_to_ip
 from src.domain.proxy_pool import LOCKED_GROUP
 from src.framework import config
 from src.interfaces.proxy_server import PproxyServer
@@ -58,6 +58,7 @@ class PanelContext:
     save: Callable[[], None]   # 落盘回调（c.save）
     capacity: int              # 代理服务队列容量
     purity: CheckPurityUseCase           # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
+    geo: object                          # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）
 
 
 # ------------------------------------------------------------------ 读取
@@ -148,8 +149,13 @@ def _status_snapshot(ctx: PanelContext) -> dict:
     }
 
 
-def _group_detail(ctx: PanelContext, name: str) -> dict | None:
-    """单组代理明细（地址/加入时间/连续失败数/latency/过期倒计时/来源组）"""
+async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
+    """单组代理明细（地址/加入时间/连续失败数/latency/过期倒计时/来源组/IP 归属）
+
+    IP 归属复用 IpGeoUseCase 三步编排（SQLite 线程绑定）：
+    主线程读缓存 → executor 定位缺失 IP（纯 mmdb）→ 主线程写缓存。
+    首次打开组页面会补齐该组新增 IP 的归属缓存，之后纯读缓存。
+    """
     pool = ctx.pool
     grp = pool.proxy_groups.get(name)
     if grp is None:
@@ -167,6 +173,25 @@ def _group_detail(ctx: PanelContext, name: str) -> dict | None:
             "expires_in": expires_in,
             "source_group": info.get("source_group"),
         })
+    # IP 归属：批量查缓存（主线程），缺失的批量定位（executor）+ 写缓存（主线程）
+    ips = [proxy_to_ip(x["proxy"]) for x in proxies]
+    geo_map: dict[str, dict] = {}
+    try:
+        cached, missing = ctx.geo.query_cache(ips)
+        located: dict[str, dict] = {}
+        if missing:
+            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
+            ctx.geo.save_cache(located)
+        geo_map = {**cached, **located}
+    except Exception:
+        logger.exception("代理组 IP 归属查询失败 group=%s", name)
+    for x in proxies:
+        geo = geo_map.get(proxy_to_ip(x["proxy"]))
+        x["geo"] = (
+            {"country": geo["country"], "country_code": geo["country_code"],
+             "province": geo.get("province"), "city": geo.get("city")}
+            if geo else None
+        )
     return {"group": name, "ttl": ttl, "count": len(proxies), "proxies": proxies}
 
 
@@ -192,7 +217,7 @@ async def _status(request: web.Request) -> web.Response:
 
 async def _group(request: web.Request) -> web.Response:
     ctx = request.app[_PANEL_KEY]
-    detail = _group_detail(ctx, request.match_info["name"])
+    detail = await _group_detail(ctx, request.match_info["name"])
     if detail is None:
         return web.json_response({"error": "组不存在"}, status=404)
     return web.json_response(detail)
@@ -349,6 +374,41 @@ async def _json_body(request: web.Request) -> dict:
         return await request.json()
     except Exception:
         return {}
+
+
+async def _geo_map(request: web.Request) -> web.Response:
+    """IP 归属地图：池中全部 IP 定位后聚合为城市级散点 + 国家级汇总
+
+    线程安全（SQLite 连接线程绑定）三步编排：
+      1. collect_ips + query_cache 在事件循环线程（主线程 SQLite 读）
+      2. locate 在 executor 线程（纯 mmdb 磁盘读，不碰 SQLite）
+      3. save_cache 在事件循环线程（主线程 SQLite 写）
+    首次请求全量定位并落缓存，之后纯读缓存（毫秒级）。
+    """
+    ctx = request.app[_PANEL_KEY]
+    # 1. 收集池中全部 IP + 查缓存（主线程）
+    ips = ctx.geo.collect_ips(ctx.pool)
+    cached, missing = ctx.geo.query_cache(ips)
+    # 2. 缺失 IP 批量定位（executor 线程，纯 mmdb 查询）
+    located: dict[str, dict] = {}
+    if missing:
+        try:
+            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
+        except Exception:
+            logger.exception("IP 归属批量定位失败: %d 个", len(missing))
+            located = {}
+        # 3. 写缓存（主线程 SQLite 写）
+        ctx.geo.save_cache(located)
+    # 4. 聚合（纯计算）
+    geo_map = {**cached, **located}
+    agg = ctx.geo.aggregate(geo_map)
+    return web.json_response({
+        "total_ips": len(ips),
+        "resolved_ips": len(geo_map),
+        "unresolved_ips": len(ips) - len(geo_map),
+        "countries": agg["countries"],
+        "points": agg["points"],
+    })
 
 
 async def _do_fetch(request: web.Request) -> web.Response:
@@ -547,6 +607,7 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/api/proxy/history", _proxy_history)
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
     app.router.add_post("/api/proxy/purity", _do_purity)
+    app.router.add_get("/api/geo/map", _geo_map)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)
     app.router.add_post("/api/proxy/move", _do_proxy_move)

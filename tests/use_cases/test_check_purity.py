@@ -9,7 +9,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 logging.disable(logging.WARNING)
 
-from src.use_cases.check_purity import CheckPurityUseCase, _extract_ip
+from src.domain.models import proxy_to_ip
+from src.use_cases.check_purity import CheckPurityUseCase
 
 
 class FakeChecker:
@@ -43,13 +44,13 @@ class FakeCache:
 
 class ExtractIpTest(unittest.TestCase):
     def test_ipv4(self):
-        assert _extract_ip("1.2.3.4:8080") == "1.2.3.4"
+        assert proxy_to_ip("1.2.3.4:8080") == "1.2.3.4"
 
     def test_ipv6_bracketed(self):
-        assert _extract_ip("[::1]:8080") == "::1"
+        assert proxy_to_ip("[::1]:8080") == "::1"
 
     def test_bare_ip(self):
-        assert _extract_ip("1.2.3.4") == "1.2.3.4"
+        assert proxy_to_ip("1.2.3.4") == "1.2.3.4"
 
 
 class CheckPurityUseCaseTest(unittest.TestCase):

@@ -63,5 +63,8 @@ desktop.ini
 .cache.db-wal
 logs/
 
+# ---- 用户自行下载的离线数据库（体积大，不随仓库分发）----
+vendor/geoip/
+
 autoload
 config/apikey.env
