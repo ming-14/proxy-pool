@@ -151,5 +151,5 @@ port = 8081                       # 面板监听端口
 [purity]
 source = "abuseipdb"                            # 检查源：ipok / abuseipdb
 # 各源代理（被墙时用），空字符串表示直连
-ipok_proxy = "https://103.86.47.209:443"  # ipok.io 代理
+ipok_proxy = ""  # ipok.io 代理
 abuseipdb_proxy = ""                        # AbuseIPDB 代理（空=直连）
