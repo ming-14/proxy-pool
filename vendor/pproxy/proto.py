@@ -415,7 +415,20 @@ class HTTP(BaseProtocol):
             return user, host_name, port, connected
     async def connect(self, reader_remote, writer_remote, rauth, host_name, port, **kw):
         writer_remote.write(f'CONNECT {host_name}:{port} HTTP/1.1\r\nHost: {host_name}:{port}'.encode() + (b'\r\nProxy-Authorization: Basic '+base64.b64encode(rauth) if rauth else b'') + b'\r\n\r\n')
-        await reader_remote.read_until(b'\r\n\r\n')
+        resp = await reader_remote.read_until(b'\r\n\r\n')
+        # 非 200 应答（上游拒绝/重定向，如仅放行 443 的代理对 80 回 302）时抛错：
+        # 若当成功继续，头部已被 read_until 消费，残留 body 会被当响应转发，
+        # 客户端收到缺状态行/头的残缺响应（"代理无法使用"）。抛错后由
+        # stream_handler 走 error_reply 明确告知客户端失败。
+        status = resp.split(b'\r\n', 1)[0]
+        if not status.startswith(b'HTTP/') or b' 200 ' not in status:
+            raise Exception(f'CONNECT {host_name}:{port} failed: {status.decode(errors="replace")}')
+
+    async def error_reply(self, writer, ex):
+        """上游 CONNECT 失败（拒绝/超时/连接错误）时回 502，避免客户端收空/残缺响应"""
+        writer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+        await writer.drain()
+
     async def http_channel(self, reader, writer, stat_bytes, stat_conn):
         try:
             stat_conn(1)

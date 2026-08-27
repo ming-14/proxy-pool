@@ -454,6 +454,80 @@ class TestHttpSslUpstream(unittest.TestCase):
         self.assertIn(b"tls-target-ok", data)
 
 
+class TestHttpSslUpstreamReject(unittest.TestCase):
+    """http+ssl 上游 CONNECT 被拒（非 200，如仅放行 443 的代理对 80 回 302）
+
+    原行为：HTTP.connect 读 CONNECT 应答不验证状态码，302 被当成功——
+    头部被 read_until 消费、残留 body 被当响应转发，客户端收到缺状态行的
+    残缺响应。修复：非 200 抛错，stream_handler 经 HTTP.error_reply 回 502。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cert, key = _make_self_signed_cert(cls._tmp.name)
+        cls.tls_port = _free_port()
+        cls.proxy_port = _free_port()
+        cls.cert, cls.key = cert, key
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    async def _run(self):
+        sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        sslctx.load_cert_chain(self.cert, self.key)
+
+        async def reject_tunnel(reader, writer):
+            # 模拟"仅放行 443"的代理: 对 CONNECT 回 302 + body 后关闭
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+                writer.write(b"HTTP/1.1 302 Found\r\nServer: mock\r\n"
+                             b"Content-Length: 13\r\n\r\nrejected-body")
+                await writer.drain()
+                writer.close()
+            except Exception:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+
+        tls_srv = await asyncio.start_server(reject_tunnel, "127.0.0.1", self.tls_port, ssl=sslctx)
+        server = pproxy.Server(f"http://127.0.0.1:{self.proxy_port}")
+        args = dict(rserver=[pproxy.Connection(f"http+ssl://127.0.0.1:{self.tls_port}")],
+                    verbose=lambda *a: None, salgorithm="fa")
+        handler = await server.start_server(args)
+        try:
+            assert await _wait_port(self.proxy_port), "代理服务未就绪"
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.proxy_port)
+            writer.write(b"GET http://example.com/ HTTP/1.1\r\n"
+                         b"Host: example.com\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            data = b""
+            while True:
+                chunk = await asyncio.wait_for(reader.read(65536), timeout=5)
+                if not chunk:
+                    break
+                data += chunk
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return data
+        finally:
+            handler.close()
+            await handler.wait_closed()
+            tls_srv.close()
+            await tls_srv.wait_closed()
+
+    def test_rejected_connect_returns_502(self):
+        """CONNECT 被拒时客户端收到完整 502，而不是残缺 302 body"""
+        data = asyncio.run(self._run())
+        self.assertIn(b"502 Bad Gateway", data)
+        self.assertTrue(data.startswith(b"HTTP/"), "响应必须以 HTTP 状态行开头, 实际: %r" % data[:60])
+
+
 class TestSocks5ErrorReply(unittest.TestCase):
     """#169: SOCKS5 目标连接失败应回 RFC1928 REP 错误码而非空响应
 
