@@ -41,6 +41,15 @@
 
   function renderContent(status) {
     if (!initialized) {
+      // IP 分布地图区块：geoip.enabled=false 时不渲染（无 /api/geo/map 路由与坐标数据）
+      const geoCard = status.geo_enabled ? `
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <div class="card-title">IP 分布地图</div>
+            <div class="text-xs text-theme-muted" id="dash-geo-stats"></div>
+          </div>
+          <div id="dash-geo-map" style="height: 480px"></div>
+        </div>` : '';
       page.innerHTML = `
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="dash-kpis"></div>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -62,13 +71,7 @@
             <div class="space-y-3 text-sm" id="dash-traffic-kpi"></div>
           </div>
         </div>
-        <div class="card p-4">
-          <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-            <div class="card-title">IP 分布地图</div>
-            <div class="text-xs text-theme-muted" id="dash-geo-stats"></div>
-          </div>
-          <div id="dash-geo-map" style="height: 480px"></div>
-        </div>
+        ${geoCard}
         <div id="dash-pending"></div>
       `;
       window.charts.initLatency('dash-latency-chart');
@@ -129,8 +132,10 @@
     window.charts.renderTraffic(status.traffic_history || [], status.standby_history || []);
     renderTrafficKpi(status);
 
-    // IP 分布地图（内嵌仪表盘底部，内部 60s 节流，不随 2s 心跳刷）
-    if (window.geoMap) window.geoMap.refresh();
+    // IP 分布地图（内嵌仪表盘底部，内部 60s 节流，不随 2s 心跳刷）；geo 禁用时跳过
+    if (status.geo_enabled && window.geoMap) {
+      window.geoMap.refresh();
+    }
   }
 
   // 字节自适应格式化：B / KB / MB / GB

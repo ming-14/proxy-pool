@@ -16,9 +16,8 @@ import time
 
 from src.framework import config
 from src.framework.loop import run_coro
+from src.framework.web.control import ServeControl
 from src.interfaces.proxy_server import PproxyServer
-from src.framework.web import ServeControl, WebPanel
-from src.framework.web.api import PanelContext
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +34,9 @@ async def _run(
     capacity: int,
     web_host: str | None = None,
     web_port: int | None = None,
+    web_enabled: bool = True,
 ) -> None:
-    """服务器主循环：启动 + 周期心跳 + 队列补充 + 退避补测 + Web 控制面板"""
+    """服务器主循环：启动 + 周期心跳 + 队列补充 + 退避补测 + Web 控制面板（web_enabled=false 时跳过面板）"""
     server = PproxyServer(listen_uri=f"http+socks4+socks5://{host}:{port}",
                           metrics_window=config.METRICS_WINDOW)
     standby = c.standby
@@ -98,21 +98,25 @@ async def _run(
         logger.warning("警告: 代理服务队列仍无可用 %s 类型代理", ",".join(sorted(control.allowed_types)))
 
     # Web 控制面板（挂载到本事件循环，共享 control 实现运行时调度调整）
-    panel = WebPanel(PanelContext(
-        pool=c.pool,
-        fetch=c.fetch,
-        record=c.record,
-        standby=standby,
-        control=control,
-        server=server,
-        save=c.save,
-        capacity=capacity,
-        purity=c.purity,
-        geo=c.geo,
-    ))
-    if web_port:
-        await panel.start(web_host or "127.0.0.1", web_port)
-
+    # web.enabled=false 时不构造面板（延迟导入，不加载 aiohttp，省内存）
+    panel = None
+    if web_enabled:
+        from src.framework.web.api import PanelContext
+        from src.framework.web.server import WebPanel
+        panel = WebPanel(PanelContext(
+            pool=c.pool,
+            fetch=c.fetch,
+            record=c.record,
+            standby=standby,
+            control=control,
+            server=server,
+            save=c.save,
+            capacity=capacity,
+            purity=c.purity,
+            geo=c.geo,
+        ))
+        if web_port:
+            await panel.start(web_host or "127.0.0.1", web_port)
 
     # 退避补测任务表：proxy -> asyncio.Task（失败代理独立复核，完成即清出）
     retry_tasks: dict[str, asyncio.Task] = {}
@@ -194,7 +198,7 @@ async def _run(
             await c.async_getter.close()
         except Exception as e:
             logger.warning("关闭 async session 异常: %s", e)
-        if web_port:
+        if panel is not None:
             await panel.close()
         c.save_full()
 
@@ -211,6 +215,7 @@ def run(
     concurrency: int,
     web_host: str | None = None,
     web_port: int | None = None,
+    web_enabled: bool = True,
 ) -> None:
     """同步入口：构建并运行事件循环（Ctrl+C 干净退出）"""
     types = allowed_types or {"http", "https", "socks5"}
@@ -226,6 +231,7 @@ def run(
             capacity=capacity,
             web_host=web_host,
             web_port=web_port,
+            web_enabled=web_enabled,
         ))
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("收到退出信号，服务器已停止")

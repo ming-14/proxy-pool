@@ -106,13 +106,19 @@ class PurityCacheStore(Protocol):
 
 
 class GeoLocator(Protocol):
-    """IP 归属地定位端口：查询 IP 的国家/省市/经纬度（GeoLite2-City 等离线库）
+    """IP 归属地定位端口：查询 IP 的国家/省市/经纬度（GeoLite2-City/Country 等离线库）
 
-    返回 dict 含 country / country_code / province / city / lat / lng；
+    返回 dict 含 country / country_code / province / city / lat / lng
+    （Country 库无坐标，后四者可为 None，坐标兜底由用例层处理）；
     无法定位（保留地址、库中无记录）返回 None。实现方为纯本地查询，无网络 IO。
     """
 
     def locate(self, ip: str) -> dict | None: ...
+
+    @property
+    def fingerprint(self) -> str:
+        """来源库指纹（文件名 + 构建版本），库切换/升级时用于失效 geo 缓存"""
+        ...
 
 
 class GeoCacheStore(Protocol):
@@ -127,4 +133,16 @@ class GeoCacheStore(Protocol):
 
     def save_geo_batch(self, results: dict[str, dict]) -> None:
         """批量写入/更新缓存（upsert by ip）"""
+        ...
+
+    def get_geo_cache_fingerprint(self) -> str | None:
+        """读缓存来源库指纹；未记录返回 None"""
+        ...
+
+    def set_geo_cache_fingerprint(self, fingerprint: str) -> None:
+        """记录缓存来源库指纹"""
+        ...
+
+    def clear_geo_cache(self) -> None:
+        """清空归属缓存（库切换/升级时调用）"""
         ...

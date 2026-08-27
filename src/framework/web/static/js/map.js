@@ -3,7 +3,6 @@
  * 数据通过 /api/geo/map 获取，后端按城市聚合后返回坐标点。
  * 由 dashboard.js 调用 window.geoMap.refresh()（内部 60 秒节流），懒加载 world.json 注册地图。
  * 暗色模式自适应：监听 document.documentElement class 变化重绘配色。
- * 国家名显示映射（中国 → 中国大陆 / China → China's Mainland）仅影响展示。
  */
 (function () {
   'use strict';
@@ -22,8 +21,6 @@
   function isDark() {
     return document.documentElement.classList.contains('dark');
   }
-
-  // 国家名显示映射统一走 app.js 的 utils.displayCountryName（地图 + 代理组共用）
 
   // ---------------------------------------------------------------- 地图加载（懒加载，全局只注册一次）
   function loadMap() {
@@ -123,14 +120,65 @@
   }
 
   // ---------------------------------------------------------------- 渲染
+  // 保留 geo 组件的 roam 状态（缩放/平移），供全量重绘时恢复
+  function captureRoamState() {
+    var state = {};
+    if (!mapChart) return state;
+    try {
+      var cur = mapChart.getOption();
+      if (cur.geo && cur.geo[0]) {
+        if (cur.geo[0].center) state.center = cur.geo[0].center;
+        if (cur.geo[0].zoom) state.zoom = cur.geo[0].zoom;
+      }
+    } catch (e) { /* 忽略 */ }
+    return state;
+  }
+
+  function applyRoamState(opt, state) {
+    if (state.center) opt.geo.center = state.center;
+    if (state.zoom) opt.geo.zoom = state.zoom;
+    return opt;
+  }
+
+  function mapContainerEl() {
+    return document.getElementById('dash-geo-map');
+  }
+
+  // 容器是否可见（页面 hidden 时 offsetParent 为 null 或尺寸为 0）
+  function isMapVisible() {
+    var el = mapContainerEl();
+    if (!el) return false;
+    return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+  }
+
+  // 销毁图表实例：容器不可见时调用，立即停掉 ECharts 动画循环，
+  // 避免 0 尺寸 canvas 的 drawImage 疯狂报错（InvalidStateError）
+  function disposeChart() {
+    if (mapChart) {
+      mapChart.dispose();
+      mapChart = null;
+    }
+  }
+
+  // 确保图表实例存在且容器可见；不可见时销毁并返回 false
+  function ensureChart() {
+    if (!isMapVisible()) {
+      disposeChart();
+      return false;
+    }
+    if (!mapChart) {
+      mapChart = echarts.init(mapContainerEl());
+    }
+    return true;
+  }
+
   function renderMap() {
     if (!geoData) return;
-    var el = document.getElementById('dash-geo-map');
-    if (!el) return;
-    if (!mapChart) {
-      mapChart = echarts.init(el);
-    }
-    mapChart.setOption(buildOption(geoData), true);
+    if (!mapContainerEl()) return;
+    if (!ensureChart()) return;
+    var roam = captureRoamState();
+    var opt = applyRoamState(buildOption(geoData), roam);
+    mapChart.setOption(opt, true);
     mapChart.resize();
   }
 
@@ -152,16 +200,40 @@
   }
 
   function onResize() {
-    if (mapChart) mapChart.resize();
+    if (!mapChart) return;
+    if (!isMapVisible()) {
+      disposeChart();
+      return;
+    }
+    mapChart.resize();
   }
 
   // 主题切换时重绘地图配色（图表常驻仪表盘，需响应主题变化）
   var observer = new MutationObserver(function () {
+    if (!isMapVisible()) {
+      disposeChart();
+      return;
+    }
     if (mapChart && geoData) {
-      mapChart.setOption(buildOption(geoData), true);
+      var roam = captureRoamState();
+      mapChart.setOption(applyRoamState(buildOption(geoData), roam), true);
     }
   });
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] });
+
+  // 页面切换观察器：仪表盘 section 被加/移 hidden class 时销毁/重建图表，
+  // 避免切走页面后图表动画在 0 尺寸 canvas 上持续绘制导致 InvalidStateError 刷屏
+  var dashSection = document.getElementById('page-dashboard');
+  if (dashSection) {
+    var sectionObserver = new MutationObserver(function () {
+      if (!isMapVisible()) {
+        disposeChart();
+      } else if (!mapChart && geoData) {
+        renderMap();  // 切回仪表盘时重建图表（数据已缓存，直接渲染）
+      }
+    });
+    sectionObserver.observe(dashSection, { attributes: true, attributeFilter: ['class'] });
+  }
 
   window.addEventListener('resize', onResize);
 

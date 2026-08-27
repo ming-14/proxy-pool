@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS ip_geo_cache (
     lng          REAL,
     cached_at    REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 # 代理行 INSERT 语句（8 列）
@@ -288,3 +292,18 @@ class SqliteProxyStore:
             "(ip, country, country_code, province, city, lat, lng, cached_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
         )
+
+    def get_geo_cache_fingerprint(self) -> str | None:
+        """读 geo 缓存来源库指纹；未记录返回 None"""
+        row = self._conn.execute("SELECT value FROM app_kv WHERE key='geo_db_fingerprint'").fetchone()
+        return row["value"] if row else None
+
+    def set_geo_cache_fingerprint(self, fingerprint: str) -> None:
+        """记录 geo 缓存来源库指纹"""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO app_kv (key, value) VALUES ('geo_db_fingerprint', ?)", (fingerprint,)
+        )
+
+    def clear_geo_cache(self) -> None:
+        """清空归属缓存（切换 GeoLite2 库类型/版本时调用，防止旧粒度数据复用）"""
+        self._conn.execute("DELETE FROM ip_geo_cache")

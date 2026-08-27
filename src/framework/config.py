@@ -137,6 +137,7 @@ NETWORK_CHECK_BACKOFF_INITIAL = float(_toml["server"]["network_check_backoff_ini
 NETWORK_CHECK_BACKOFF_MAX = float(_toml["server"]["network_check_backoff_max"])    # 退避间隔上限
 
 # ---------------------------------------------------------------- Web 控制面板（serve 模式）
+WEB_ENABLED = bool(_toml["web"].get("enabled", True))  # 面板总开关；false 时 serve 不构造/启动面板
 WEB_HOST = _toml["web"]["host"]   # 面板监听地址（默认仅本机）
 WEB_PORT = int(_toml["web"]["port"])  # 面板监听端口
 
@@ -172,5 +173,6 @@ ABUSEIPDB_PROXY = _purity_cfg.get("abuseipdb_proxy", "")
 
 # ---------------------------------------------------------------- IP 归属地（Web 地图）
 _geoip_cfg = _toml.get("geoip", {})
+GEOIP_ENABLED = bool(_geoip_cfg.get("enabled", True))  # 地图/归属定位开关；false 时不加载 mmdb 定位器
 GEOIP_DB_FILE = str(_PROJECT_ROOT / _geoip_cfg.get("db_file", "vendor/geoip/GeoLite2-City.mmdb"))
 GEOIP_CACHE_TTL = int(_geoip_cfg.get("cache_ttl", 7776000))  # 默认 90 天

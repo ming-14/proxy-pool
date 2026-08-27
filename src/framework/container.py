@@ -7,14 +7,17 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from src.domain.models import SourceSpec
 from src.domain.ports import ProxySource, IpPurityChecker
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.abuseipdb_client import AbuseIpDbClient
-from src.interfaces.geoip_client import GeoLite2CityLocator
+from src.interfaces.geoip_client import GeoLite2Locator
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
 from src.interfaces.ipok_client import IpokClient
 from src.interfaces.sqlite_store import SqliteProxyStore
@@ -48,7 +51,7 @@ class Container:
     standby: StandbyQueueUseCase
     async_getter: AsyncHttpGetter
     purity: CheckPurityUseCase          # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
-    geo: IpGeoUseCase                   # IP 归属地图（GeoLite2 定位 + 缓存 + 聚合）
+    geo: IpGeoUseCase | None          # IP 归属地图（GeoLite2 定位 + 缓存 + 聚合）；geoip.enabled=false 时为 None
 
     def save(self) -> None:
         """增量保存：只写 dirty 组（serve 主循环 / Web 控制动作高频调用）
@@ -179,11 +182,21 @@ def build_container(cache_db: str | None = None) -> Container:
         cache_ttl=config.ABUSEIPDB_CACHE_TTL,
     )
     # IP 归属地图：GeoLite2 离线定位 + SQLite 缓存（Web 面板地图页面按需懒查）
-    geo = IpGeoUseCase(
-        locator=GeoLite2CityLocator(config.GEOIP_DB_FILE),
-        cache=store,
-        cache_ttl=config.GEOIP_CACHE_TTL,
-    )
+    # geoip.enabled=false 时不构造定位器（不加载 mmdb，省内存），Container.geo 为 None
+    # 定位库切换（City/Country 或版本升级）时指纹变化，清空旧缓存防止粒度不一致数据复用
+    if config.GEOIP_ENABLED:
+        geo_locator = GeoLite2Locator(config.GEOIP_DB_FILE)
+        if store.get_geo_cache_fingerprint() != geo_locator.fingerprint:
+            store.clear_geo_cache()
+            store.set_geo_cache_fingerprint(geo_locator.fingerprint)
+            logger.info("GeoLite2 定位库变化，已清空 geo 缓存")
+        geo = IpGeoUseCase(
+            locator=geo_locator,
+            cache=store,
+            cache_ttl=config.GEOIP_CACHE_TTL,
+        )
+    else:
+        geo = None
     return Container(
         pool=pool,
         store=store,

@@ -238,10 +238,33 @@ class StandbyQueueUseCase:
         logger.info("代理 %s 已锁定为唯一上游", proxy)
 
     def unlock(self) -> str | None:
-        """解除锁定：LOCKED_GROUP 代理 move 回代理服务队列，返回解锁的代理（无则 None）"""
+        """解除锁定：LOCKED_GROUP 代理移回代理服务队列，返回解锁的代理（无则 None）
+
+        只操作 LOCKED_GROUP：代理若因历史数据同时在 standby 组有副本，保留队列
+        那份（它本就是队列成员），但用锁定副本的状态覆盖它——锁定期间心跳探测
+        更新的 latency/连续失败计数只落在锁定副本上，以它为准。
+        """
         unlocked = None
-        for p in self._pool.get_group_proxies(LOCKED_GROUP):
-            self._pool.move_proxy(p, self._standby_group, consecutive_fails=0)
+        locked_items = list(self._pool.proxy_groups[LOCKED_GROUP]["proxies"].items())
+        standby_proxies = self._pool.proxy_groups[self._standby_group]["proxies"]
+        for p, info in locked_items:
+            self._pool.remove_from_group(LOCKED_GROUP, p)
+            if p in standby_proxies:
+                # 队列已有副本：覆盖锁定期间的状态（latency/失败计数/pinned）
+                standby_proxies[p].update(
+                    consecutive_fails=info.get("consecutive_fails", 0),
+                    latency=info.get("latency"),
+                    pinned=info.get("pinned", False),
+                    pinned_at=info.get("pinned_at"),
+                )
+            else:
+                self._pool.add_to_group(
+                    self._standby_group, p,
+                    consecutive_fails=info.get("consecutive_fails", 0),
+                    latency=info.get("latency"),
+                    pinned=info.get("pinned", False),
+                    pinned_at=info.get("pinned_at"),
+                )
             unlocked = p
         if unlocked:
             logger.info("代理 %s 解除锁定，回到代理服务队列", unlocked)

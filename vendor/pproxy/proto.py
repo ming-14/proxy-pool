@@ -1,5 +1,9 @@
 import asyncio, socket, urllib.parse, time, re, base64, hmac, struct, hashlib, io, os
 
+# channel/http_channel 的读写空闲超时（server.py 同值）。上游挂死/keep-alive
+# 僵尸连接时靠它回收，避免通道永久阻塞。
+SOCKET_TIMEOUT = 60
+
 HTTP_LINE = re.compile('([^ ]+) +(.+?) +(HTTP/[^ ]+)$')
 packstr = lambda s, n=1: len(s).to_bytes(n, 'big') + s
 
@@ -57,14 +61,19 @@ class BaseProtocol:
         try:
             stat_conn(1)
             while not reader.at_eof() and not writer.is_closing():
-                data = await reader.read(65536)
+                # read_w/drain 超时：SOCKET_TIMEOUT 内无数据（空闲）即抛超时回收连接，
+                # 防止客户端/上游挂死时通道永久阻塞导致连接与缓冲无法回收（内存泄漏）
+                data = await reader.read_w(65536)
                 if not data:
                     break
                 if stat_bytes is None:
                     continue
                 stat_bytes(len(data))
                 writer.write(data)
-                await writer.drain()
+                # asyncio.timeout（3.11+）：超时抛 TimeoutError 且正确等待被取消的 drain 协程，
+                # 避免 wait_for 取消产生 "coroutine never awaited" 警告
+                async with asyncio.timeout(SOCKET_TIMEOUT):
+                    await writer.drain()
         except Exception:
             pass
         finally:
@@ -411,12 +420,13 @@ class HTTP(BaseProtocol):
         try:
             stat_conn(1)
             while not reader.at_eof() and not writer.is_closing():
-                data = await reader.read(65536)
+                # 同 channel：read/drain 加 SOCKET_TIMEOUT 空闲超时，回收 keep-alive 僵尸连接
+                data = await reader.read_w(65536)
                 if not data:
                     break
                 if b'\r\n' in data and HTTP_LINE.match(data.split(b'\r\n', 1)[0].decode()):
                     if b'\r\n\r\n' not in data:
-                        data += await reader.readuntil(b'\r\n\r\n')
+                        data += await reader.read_until(b'\r\n\r\n')
                     lines, data = data.split(b'\r\n\r\n', 1)
                     headers = lines.decode().split('\r\n')
                     method, path, ver = HTTP_LINE.match(headers.pop(0)).groups()
@@ -426,7 +436,9 @@ class HTTP(BaseProtocol):
                     data = f'{method} {newpath} {ver}\r\n{lines}\r\n\r\n'.encode() + data
                 stat_bytes(len(data))
                 writer.write(data)
-                await writer.drain()
+                # 同 channel：drain 加 SOCKET_TIMEOUT 超时（asyncio.timeout 3.11+）
+                async with asyncio.timeout(SOCKET_TIMEOUT):
+                    await writer.drain()
         except Exception:
             pass
         finally:

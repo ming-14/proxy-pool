@@ -147,6 +147,7 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert resp.status == 200
         data = await resp.json()
         assert data["standby_count"] == 1
+        assert data["geo_enabled"] is True
         assert data["standby"][0]["proxy"] == "http://1.2.3.4:8080"
         assert data["settings"]["salgorithm"] == "rc"
         assert data["settings"]["allowed_types"] == ["http", "socks5"]
@@ -522,6 +523,40 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.ctx.purity.check_remote = MagicMock(side_effect=RuntimeError("API error"))
         r = await self.client.post("/api/proxy/purity", json={"bind": "1.2.3.4:8080"})
         assert r.status == 500
+
+
+class WebApiGeoDisabledTest(unittest.IsolatedAsyncioTestCase):
+    """geoip.enabled=false 场景：geo=None 时不注册地图路由、组明细不带 geo 字段"""
+
+    async def asyncSetUp(self):
+        self.pool = make_pool()
+        self.ctx, self.fetch, self.standby, self.server = make_ctx(self.pool)
+        self.ctx.geo = None  # 模拟 geoip.enabled=false
+        self.client = TestClient(TestServer(build_app(self.ctx)))
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_geo_map_route_not_registered(self):
+        """地图路由未注册：/api/geo/map 返回 404"""
+        resp = await self.client.get("/api/geo/map")
+        assert resp.status == 404
+
+    async def test_status_geo_enabled_false(self):
+        """status 快照 geo_enabled=false，前端据此隐藏地图区块"""
+        resp = await self.client.get("/api/status")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["geo_enabled"] is False
+
+    async def test_group_detail_without_geo_field(self):
+        """组明细不带 geo 字段（归属查询跳过）"""
+        resp = await self.client.get("/api/group/default-http")
+        assert resp.status == 200
+        data = await resp.json()
+        for p in data["proxies"]:
+            assert "geo" not in p
 
 
 if __name__ == "__main__":

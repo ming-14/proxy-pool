@@ -232,10 +232,12 @@ for attempt in range(max_retries):
 
 Web 面板「IP 分布」页用 ECharts 世界地图展示池中代理的地理分布（城市级散点，点大小 + 颜色深浅 = 该城市 IP 密度）。
 
-- **定位引擎**：`GeoLite2CityLocator`（`src/interfaces/geoip_client.py`）封装 MaxMind GeoLite2-City mmdb（`vendor/geoip/GeoLite2-City.mmdb`，配置 `[geoip].db_file`），纯离线查询，返回国家/省市/经纬度；国家/城市名取中文（zh-CN）优先。
+**开关**：`[web].enabled` 控制面板总开关（false 时不构造 aiohttp 面板）；`[geoip].enabled` 控制归属定位（false 时不加载 mmdb 定位器、不注册 `/api/geo/map` 路由，前端按 `/api/status` 的 `geo_enabled` 隐藏地图区块，组明细不带 `geo` 字段）。两者独立，均可按需关闭省内存。
+
+- **定位引擎**：`GeoLite2Locator`（`src/interfaces/geoip_client.py`）封装 MaxMind GeoLite2 mmdb（默认 `vendor/geoip/GeoLite2-City.mmdb`，配置 `[geoip].db_file`），按库的 database_type 自动识别 City/Country：City 返回国家/省市/经纬度，Country 仅国家级（省/市/坐标恒 None，由用例层国家中心坐标兜底）；国家/城市名取中文（zh-CN）优先。
 - **缓存**：定位结果持久化到 `.cache.db` 的 `ip_geo_cache` 表（`SqliteProxyStore.get_geo_batch/save_geo_batch`），TTL 由 `[geoip].cache_ttl` 控制（默认 90 天，IP 段归属变化以月计）；重复解析只发生在缓存缺失时。
 - **用例**：`IpGeoUseCase`（`src/use_cases/ip_geo.py`）拆成三步供 API 编排——`collect_ips`+`query_cache`（主线程 SQLite 读）→ `locate`（executor 线程，纯 mmdb 读）→ `save_cache`（主线程 SQLite 写），遵守 SQLite 线程绑定约束；`aggregate` 为纯计算，按「国家+省+市」聚合出散点与国家级汇总。
-- **API**：`GET /api/geo/map` 返回 `{total_ips, resolved_ips, unresolved_ips, countries, points}`，points 为城市级坐标点（`{name, country, country_code, lat, lng, count}`）。首次请求全量解析 2400+ IP 约 3 秒，之后纯读缓存毫秒级。
+- **API**：`GET /api/geo/map` 返回 `{total_ips, resolved_ips, unresolved_ips, countries, points}`，points 为城市级（City 库）或国家级（Country 库）坐标点（`{name, country, country_code, lat, lng, count}`）。首次请求全量解析 2400+ IP 约 3 秒，之后纯读缓存毫秒级。
 - **前端**：`map.js` 懒加载 `world.json` 注册 ECharts 地图，`effectScatter` 叠加散点 + `visualMap` 颜色映射密度，暗色模式自适应；ECharts 与地图数据本地 vendor（无外网依赖）。
 
 ## 配置项速查（config/config.toml）
@@ -276,8 +278,10 @@ Web 面板「IP 分布」页用 ECharts 世界地图展示池中代理的地理�
 | `NETWORK_CHECK_CACHE_OK` | 5 | 网络正常时门控缓存秒数（期内复用结果，不重复直连） |
 | `NETWORK_CHECK_BACKOFF_INITIAL` / `_MAX` | 2 / 30 | 网络异常时门控退避重检起始间隔与上限（异常越久探测越稀疏） |
 | `SERVE_PROXY_TYPES` | `("http", "socks5")` | serve 默认允许的代理类型（不含 https，原因见 serve 机制） |
+| `WEB_ENABLED` | `true` | 面板总开关（`[web].enabled`；false 时不构造 aiohttp 面板，省内存） |
 | `CACHE_DB` / `LOG_DIR` | 项目根 `.cache.db` / `logs/` | 框架层路径（`[paths]` 下相对项目根解析） |
-| `GEOIP_DB_FILE` | `vendor/geoip/GeoLite2-City.mmdb` | GeoLite2-City 离线数据库路径（`[geoip].db_file`，相对项目根） |
+| `GEOIP_ENABLED` | `true` | 归属定位开关（`[geoip].enabled`；false 时不加载 mmdb，Container.geo 为 None） |
+| `GEOIP_DB_FILE` | `vendor/geoip/GeoLite2-City.mmdb` | GeoLite2 City/Country 离线数据库路径（`[geoip].db_file`，相对项目根，按库类型自动识别） |
 | `GEOIP_CACHE_TTL` | 7776000 (90d) | IP 归属缓存有效期（秒），`[geoip].cache_ttl` |
 
 ## view.py — .cache.db 只读查看器

@@ -648,6 +648,33 @@ class TestStandbyLock(unittest.TestCase):
         self.assertFalse(c.is_locked())
         self.assertEqual(set(c.standby_proxies()), {"http://1.2.3.4:8080", "http://5.6.7.8:3128"})
 
+    def test_unlock_with_duplicate_in_standby(self):
+        """代理同时存在于 standby + locked（历史脏数据）时，unlock 只清锁定副本
+
+        回归：move_proxy 的 find_proxy 按组遍历顺序命中 standby 副本，删错组导致
+        locked 副本永远残留；unlock 必须只操作 LOCKED_GROUP，且用锁定副本状态
+        覆盖队列副本（锁定期间的心跳状态以锁定副本为准）。
+        """
+        c = make_standby(self.pool, MagicMock())
+        # 构造脏数据：同一代理同时存在于 standby 与 locked
+        c.lock("http://1.2.3.4:8080")
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)  # 手工复制回队列
+        # 锁定副本带 pin + 失败计数（锁定期间心跳更新的状态）
+        locked_info = self.pool.proxy_groups[LOCKED_GROUP]["proxies"]["http://1.2.3.4:8080"]
+        locked_info["pinned"] = True
+        locked_info["pinned_at"] = 123
+        locked_info["consecutive_fails"] = 7
+        c.unlock()
+        self.assertFalse(c.is_locked())
+        # 锁定副本已清除
+        self.assertEqual(self.pool.get_group_proxies(LOCKED_GROUP), [])
+        # 队列里恰好一份（不因解锁产生重复）
+        self.assertEqual(self.pool.get_group_proxies(STANDBY_GROUP).count("http://1.2.3.4:8080"), 1)
+        # 锁定副本的状态已覆盖到队列副本
+        standby_info = self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]
+        self.assertTrue(standby_info["pinned"])
+        self.assertEqual(standby_info["consecutive_fails"], 7)
+
     def test_fill_skipped_when_locked(self):
         """lock 后 fill 跳过（不探测，返回 0）"""
         check = MagicMock()

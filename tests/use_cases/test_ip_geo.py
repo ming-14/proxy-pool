@@ -60,6 +60,7 @@ class FakeGeoCache:
 
     def __init__(self):
         self.store: dict[str, dict] = {}
+        self.fingerprint: str | None = None
 
     def get_geo_batch(self, ips):
         return {ip: self.store[ip] for ip in ips if ip in self.store}
@@ -67,6 +68,15 @@ class FakeGeoCache:
     def save_geo_batch(self, results):
         for ip, d in results.items():
             self.store[ip] = dict(d)
+
+    def get_geo_cache_fingerprint(self):
+        return self.fingerprint
+
+    def set_geo_cache_fingerprint(self, fingerprint):
+        self.fingerprint = fingerprint
+
+    def clear_geo_cache(self):
+        self.store.clear()
 
 
 class CollectIpsTest(unittest.TestCase):
@@ -188,6 +198,35 @@ class AggregateTest(unittest.TestCase):
         agg = IpGeoUseCase.aggregate(geo_map)
         assert agg["points"][0]["name"] == "c2" and agg["points"][0]["count"] == 2
         assert agg["points"][1]["name"] == "c1" and agg["points"][1]["count"] == 1
+
+    def test_country_db_falls_back_to_national_center(self):
+        """Country 库（无坐标）：散点用国家中心坐标兜底，聚合到国家粒度"""
+        geo_map = {
+            "8.8.8.8": {"country": "美国", "country_code": "US", "province": None, "city": None,
+                        "lat": None, "lng": None},
+            "8.8.4.4": {"country": "美国", "country_code": "US", "province": None, "city": None,
+                        "lat": None, "lng": None},
+            "114.114.114.114": {"country": "中国", "country_code": "CN", "province": None, "city": None,
+                                "lat": None, "lng": None},
+        }
+        agg = IpGeoUseCase.aggregate(geo_map)
+        assert len(agg["points"]) == 2
+        us = next(p for p in agg["points"] if p["country_code"] == "US")
+        assert us["name"] == "美国" and us["count"] == 2
+        assert us["lat"] == 39.8 and us["lng"] == -98.6  # 美国中心坐标
+        cn = next(p for p in agg["points"] if p["country_code"] == "CN")
+        assert cn["count"] == 1 and cn["lat"] == 35.0 and cn["lng"] == 105.0
+        assert agg["countries"][0] == {"name": "美国", "code": "US", "count": 2}
+
+    def test_country_db_without_center_skips_point(self):
+        """无坐标且国家中心表无记录：不进散点，仅计入国家级汇总"""
+        geo_map = {
+            "1.1.1.1": {"country": "某未知国", "country_code": "ZZ", "province": None, "city": None,
+                        "lat": None, "lng": None},
+        }
+        agg = IpGeoUseCase.aggregate(geo_map)
+        assert agg["points"] == []
+        assert agg["countries"] == [{"name": "某未知国", "code": "ZZ", "count": 1}]
 
 
 if __name__ == "__main__":

@@ -149,7 +149,7 @@ class TestPproxyServer(unittest.TestCase):
                 # 重建 handler（start_server 被再次调用），且上游列表保留
                 self.assertEqual(mock_start.call_count, 2)
                 args = mock_start.call_args[0][0]
-                self.assertEqual(args["s"], "fa")
+                self.assertEqual(args["salgorithm"], "fa")
                 self.assertEqual(args["rserver"], saved_rserver)
         asyncio.run(run())
 
@@ -161,6 +161,29 @@ class TestPproxyServer(unittest.TestCase):
                 # 相同算法：不应触发重建
                 mock_start.assert_not_called()
         asyncio.run(run())
+
+    def test_salgorithm_reaches_pproxy(self):
+        """回归：调度参数必须以 salgorithm 键名传给 pproxy stream_handler
+
+        旧 bug：start/set_salgorithm 传 s=self._salgorithm，但 vendored
+        stream_handler 读取的是 salgorithm（默认 'fa'），s 被 **kwargs 静默吞掉
+        → 实际恒为 fa，rc/rr/lc 与 Web 面板调度选择器全部失效。
+        本测试用与 ProxySimple.start_server 相同的 partial 绑定方式验证键名。
+        """
+        import functools
+        import inspect
+
+        import pproxy
+
+        listen = self.server._server  # 真实 ProxySimple（URI 解析，无网络）
+        args = dict(rserver=[], verbose=lambda *a: None,
+                    salgorithm=self.server._salgorithm, modstat=self.server._make_modstat())
+        handler = functools.partial(pproxy.server.stream_handler, **vars(listen), **args)
+        bound = inspect.signature(pproxy.server.stream_handler).bind_partial(**handler.keywords)
+        bound.apply_defaults()
+        # salgorithm 必须绑定到实参（否则走默认 'fa'），且 s 不得落入 **kwargs
+        self.assertEqual(bound.arguments.get("salgorithm"), "rc")
+        self.assertNotIn("s", bound.arguments.get("kwargs", {}))
 
 
 class TestPerProxyTraffic(unittest.TestCase):

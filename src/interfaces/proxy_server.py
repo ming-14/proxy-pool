@@ -86,7 +86,9 @@ class PproxyServer:
         self._rserver = [pproxy.Connection(_pproxy_uri(p)) for p in proxies]
         self._uri_index = {_pproxy_uri(p): conn for p, conn in zip(proxies, self._rserver)}
         self._loop = asyncio.get_running_loop()
-        args = dict(rserver=self._rserver, verbose=lambda *a: None, s=self._salgorithm,
+        # 调度参数键名必须为 salgorithm：pproxy stream_handler 只认 salgorithm，
+        # 传 s= 会被 **kwargs 吞掉导致实际恒为 fa（first_available），rc/rr/lc 全部失效
+        args = dict(rserver=self._rserver, verbose=lambda *a: None, salgorithm=self._salgorithm,
                     modstat=self._make_modstat())
         self._handler = await self._server.start_server(args)
         logger.info("代理服务器已启动: %s, 上游 %d 个代理, 调度 %s", self._listen_uri, len(self._rserver), self._salgorithm)
@@ -125,7 +127,7 @@ class PproxyServer:
         if self._handler is not None:
             self._handler.close()
             await self._handler.wait_closed()
-            args = dict(rserver=self._rserver, verbose=lambda *a: None, s=self._salgorithm,
+            args = dict(rserver=self._rserver, verbose=lambda *a: None, salgorithm=self._salgorithm,
                     modstat=self._make_modstat())
             self._handler = await self._server.start_server(args)
             logger.info("调度算法已切换为 %s, 上游 %d 个代理", self._salgorithm, len(self._rserver))

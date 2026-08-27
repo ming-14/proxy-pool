@@ -104,13 +104,36 @@ async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, s
                 raise Exception('Unknown remote protocol')
             m = modstat(user, remote_ip, host_name, roption)
             lchannel = lproto.http_channel if use_http else lproto.channel
-            asyncio.ensure_future(lproto.channel(reader_remote, writer, m(2+roption.direct), m(4+roption.direct)))
-            asyncio.ensure_future(lchannel(reader, writer_remote, m(roption.direct), roption.connection_change))
+            # 会话生命周期以 client 侧为准：client→remote 通道结束（client 断开/空闲
+            # 超时/异常）即代表整个会话结束，立即取消对向通道并关闭两侧连接。
+            # 上游挂死时 remote→client 通道靠 channel 的 SOCKET_TIMEOUT 空闲超时结束
+            # （结束时会关闭 client writer → client 断开 → 本通道自然结束），不会永久
+            # 阻塞，连接与缓冲均可回收（修复：上游挂死 + 僵尸 keep-alive 连接导致的内存泄漏）。
+            client_task = asyncio.ensure_future(
+                lchannel(reader, writer_remote, m(roption.direct), roption.connection_change))
+            remote_task = asyncio.ensure_future(
+                lproto.channel(reader_remote, writer, m(2+roption.direct), m(4+roption.direct)))
+            await asyncio.gather(client_task, return_exceptions=True)
+            remote_task.cancel()
+            await asyncio.gather(remote_task, return_exceptions=True)
+            for w in (writer, writer_remote):
+                try:
+                    if not w.is_closing():
+                        w.close()
+                except Exception:
+                    pass
     except Exception as ex:
         if not isinstance(ex, asyncio.TimeoutError) and not str(ex).startswith('Connection closed'):
             verbose(f'{str(ex) or "Unsupported protocol"} from {remote_ip}')
         try: writer.close()
         except Exception: pass
+        # 上游连接可能已建立但未进入通道阶段（如 prepare_connection 失败），一并关闭
+        if 'writer_remote' in locals():
+            try:
+                if not writer_remote.is_closing():
+                    writer_remote.close()
+            except Exception:
+                pass
         if debug:
             raise
 

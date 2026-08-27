@@ -209,6 +209,7 @@ def cmd_serve(args):
         concurrency=config.HEARTBEAT_CONCURRENCY,
         web_host=args.web_host,
         web_port=args.web_port,
+        web_enabled=config.WEB_ENABLED,
     )
 
 

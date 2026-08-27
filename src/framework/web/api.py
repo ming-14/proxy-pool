@@ -58,7 +58,7 @@ class PanelContext:
     save: Callable[[], None]   # 落盘回调（c.save）
     capacity: int              # 代理服务队列容量
     purity: CheckPurityUseCase           # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
-    geo: object                          # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）
+    geo: object | None                   # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）；geoip.enabled=false 时为 None
 
 
 # ------------------------------------------------------------------ 读取
@@ -134,6 +134,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
     return {
         "groups": groups,
         "available_count": len(available),
+        "geo_enabled": ctx.geo is not None,  # 前端据此隐藏/显示 IP 分布地图区块
         "standby": standby,
         "standby_count": len(standby),
         "locked_proxy": locked_proxy,
@@ -174,17 +175,19 @@ async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
             "source_group": info.get("source_group"),
         })
     # IP 归属：批量查缓存（主线程），缺失的批量定位（executor）+ 写缓存（主线程）
-    ips = [proxy_to_ip(x["proxy"]) for x in proxies]
+    # geoip.enabled=false 时 geo 为 None，跳过归属查询（proxies 不带 geo 字段）
     geo_map: dict[str, dict] = {}
-    try:
-        cached, missing = ctx.geo.query_cache(ips)
-        located: dict[str, dict] = {}
-        if missing:
-            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
-            ctx.geo.save_cache(located)
-        geo_map = {**cached, **located}
-    except Exception:
-        logger.exception("代理组 IP 归属查询失败 group=%s", name)
+    if ctx.geo is not None:
+        ips = [proxy_to_ip(x["proxy"]) for x in proxies]
+        try:
+            cached, missing = ctx.geo.query_cache(ips)
+            located: dict[str, dict] = {}
+            if missing:
+                located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
+                ctx.geo.save_cache(located)
+            geo_map = {**cached, **located}
+        except Exception:
+            logger.exception("代理组 IP 归属查询失败 group=%s", name)
     for x in proxies:
         geo = geo_map.get(proxy_to_ip(x["proxy"]))
         x["geo"] = (
@@ -607,7 +610,9 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/api/proxy/history", _proxy_history)
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
     app.router.add_post("/api/proxy/purity", _do_purity)
-    app.router.add_get("/api/geo/map", _geo_map)
+    # geoip.enabled=false 时不注册地图路由（前端按 /api/status 的 geo_enabled 隐藏区块）
+    if ctx.geo is not None:
+        app.router.add_get("/api/geo/map", _geo_map)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)
     app.router.add_post("/api/proxy/move", _do_proxy_move)

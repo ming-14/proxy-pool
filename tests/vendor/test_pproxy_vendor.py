@@ -17,6 +17,7 @@ import datetime
 import http.server
 import ipaddress
 import os
+import socket
 import ssl
 import subprocess
 import sys
@@ -39,6 +40,48 @@ if VENDOR_DIR not in sys.path:
     sys.path.insert(0, VENDOR_DIR)
 
 import pproxy  # noqa: E402
+
+
+def _free_port() -> int:
+    """获取一个当前可用的本地端口（bind 0 探测后释放，测试串行无竞争）"""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def _wait_port(port: int, host: str = "127.0.0.1", timeout: float = 10.0) -> bool:
+    """轮询 TCP 端口直到可连接（服务就绪）；超时返回 False"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            r, w = await asyncio.open_connection(host, port)
+            w.close()
+            try:
+                await w.wait_closed()
+            except Exception:
+                pass
+            return True
+        except OSError:
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
+
+
+async def _wait_file_marker(path: str, marker: bytes, timeout: float = 10.0) -> str:
+    """轮询文件内容直到包含 marker；返回文件全文（超时返回已读部分）"""
+    deadline = time.time() + timeout
+    data = b""
+    while time.time() < deadline:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            if marker in data:
+                break
+        except OSError:
+            pass
+        await asyncio.sleep(0.1)
+    return data.decode(errors="replace")
 
 
 def _make_self_signed_cert(directory):
@@ -83,19 +126,26 @@ class TestBackwardListenCli(unittest.TestCase):
     """#179 e2e：`python -m pproxy -l http+in://...` 应正常启动，不报 sockets 错误"""
 
     def test_backward_listen_cli_starts(self):
+        port = _free_port()
+        out_fd, out_path = tempfile.mkstemp(prefix="pproxy-test-")
         proc = subprocess.Popen(
-            [sys.executable, "-u", "-m", "pproxy", "-l", "http+in://127.0.0.1:10000", "-v"],
+            [sys.executable, "-u", "-m", "pproxy", "-l", f"http+in://127.0.0.1:{port}", "-v"],
             cwd=VENDOR_DIR,
-            stdout=subprocess.PIPE,
+            stdout=out_fd,
             stderr=subprocess.STDOUT,
         )
+        os.close(out_fd)
         try:
-            time.sleep(2)
+            output = asyncio.run(_wait_file_marker(out_path, b"Serving on"))
             proc.terminate()
-            output = proc.stdout.read().decode(errors="replace")
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
         finally:
             if proc.poll() is None:
                 proc.kill()
+            os.unlink(out_path)
         self.assertNotIn("has no attribute 'sockets'", output, output)
         self.assertNotIn("Start server failed", output, output)
         self.assertIn("Serving on", output, output)
@@ -111,7 +161,7 @@ class TestBackwardTunnelVerbose(unittest.TestCase):
 
     def test_backward_tunnel_verbose_no_leak(self):
         async def run():
-            port_mock, port_public, port_tunnel = 19101, 19102, 19103
+            port_mock, port_public, port_tunnel = _free_port(), _free_port(), _free_port()
             responses = []
 
             async def mock_handle(reader, writer):
@@ -131,46 +181,65 @@ class TestBackwardTunnelVerbose(unittest.TestCase):
                         pass
 
             await asyncio.start_server(mock_handle, "127.0.0.1", port_mock)
-            behind = subprocess.Popen(
-                [sys.executable, "-u", "-m", "pproxy",
-                 "-l", f"http+in://127.0.0.1:{port_tunnel}",
-                 "-r", f"http://127.0.0.1:{port_mock}", "-v"],
-                cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            public = subprocess.Popen(
-                [sys.executable, "-u", "-m", "pproxy",
-                 "-l", f"http://127.0.0.1:{port_public}",
-                 "-r", f"http+in://127.0.0.1:{port_tunnel}", "-v"],
-                cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out_files = []
+            procs = []
             try:
-                await asyncio.sleep(3)
-                for _ in range(3):
+                for cmd in (
+                    [sys.executable, "-u", "-m", "pproxy",
+                     "-l", f"http+in://127.0.0.1:{port_tunnel}",
+                     "-r", f"http://127.0.0.1:{port_mock}", "-v"],
+                    [sys.executable, "-u", "-m", "pproxy",
+                     "-l", f"http://127.0.0.1:{port_public}",
+                     "-r", f"http+in://127.0.0.1:{port_tunnel}", "-v"],
+                ):
+                    fd, path = tempfile.mkstemp(prefix="pproxy-test-")
+                    out_files.append((fd, path))
+                    procs.append(subprocess.Popen(cmd, cwd=VENDOR_DIR, stdout=fd,
+                                                  stderr=subprocess.STDOUT))
+                    os.close(fd)
+                behind, public = procs
+                # 等 public 监听就绪，再重试请求直到隧道可用（behind 连上需要时间）
+                assert await _wait_port(port_public), "public 代理未就绪"
+                for _ in range(40):
                     reader, writer = await asyncio.open_connection("127.0.0.1", port_public)
                     writer.write(b"GET http://target.test/test HTTP/1.1\r\n"
                                  b"Host: target.test\r\nConnection: close\r\n\r\n")
                     await writer.drain()
-                    data = await reader.read(65536)
+                    try:
+                        data = await asyncio.wait_for(reader.read(65536), timeout=2)
+                    except asyncio.TimeoutError:
+                        data = b""
                     responses.append(data)
                     writer.close()
                     try:
                         await writer.wait_closed()
                     except Exception:
                         pass
+                    if b"ok" in data:
+                        break
                     await asyncio.sleep(0.2)
                 await asyncio.sleep(0.5)
             finally:
-                for p in (public, behind):
+                for p in procs:
                     p.terminate()
                 try:
-                    for p in (public, behind):
+                    for p in procs:
                         await asyncio.wait_for(asyncio.to_thread(p.wait, 5), timeout=8)
                 except Exception:
-                    for p in (public, behind):
+                    for p in procs:
                         p.kill()
-                out = (public.stdout.read() + behind.stdout.read()).decode(errors="replace")
+                out = ""
+                for fd, path in out_files:
+                    try:
+                        with open(path, "rb") as f:
+                            out += f.read().decode(errors="replace")
+                    except OSError:
+                        pass
+                    os.unlink(path)
             return responses, out
 
         responses, out = asyncio.run(run())
-        self.assertTrue(all(b"ok" in r for r in responses),
+        self.assertTrue(any(b"ok" in r for r in responses),
                         f"响应应包含 ok: {[r[:30] for r in responses]}\n{out}")
         self.assertNotIn("not subscriptable", out, out)
         self.assertNotIn("Traceback", out, out)
@@ -185,13 +254,18 @@ class TestMainEventLoopCompat(unittest.TestCase):
     """
 
     def test_main_starts_with_verbose(self):
+        port = _free_port()
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "pproxy",
-             "-l", "http://127.0.0.1:10200", "-v"],
+             "-l", f"http://127.0.0.1:{port}", "-v"],
             cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
-            time.sleep(2)
+            self.assertTrue(asyncio.run(_wait_port(port)), "代理服务未就绪")
             proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
             output = proc.stdout.read().decode(errors="replace")
         finally:
             if proc.poll() is None:
@@ -203,10 +277,11 @@ class TestMainEventLoopCompat(unittest.TestCase):
     def test_test_url_branch(self):
         # --test 分支：main() 里 new_event_loop().run_until_complete(test_url(...))
         # 目标端口不监听时也应正常退出，而非 get_event_loop RuntimeError
+        port = _free_port()  # 未监听端口，连接立即被拒
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "pproxy",
-             "--test", "http://127.0.0.1:1/x",
-             "-r", "http://127.0.0.1:1"],
+             "--test", f"http://127.0.0.1:{port}/x",
+             "-r", f"http://127.0.0.1:{port}"],
             cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
             output, _ = proc.communicate(timeout=30)
@@ -295,9 +370,9 @@ class TestHttpSslUpstream(unittest.TestCase):
             def log_message(self, *a):
                 pass
 
-        cls.target_port = 19310
-        cls.tls_port = 19311
-        cls.proxy_port = 19312
+        cls.target_port = _free_port()
+        cls.tls_port = _free_port()
+        cls.proxy_port = _free_port()
         t = threading.Thread(target=lambda: http.server.ThreadingHTTPServer(
             ("127.0.0.1", cls.target_port), Target).serve_forever(), daemon=True)
         t.start()
@@ -346,10 +421,10 @@ class TestHttpSslUpstream(unittest.TestCase):
         tls_srv = await asyncio.start_server(tls_proxy_handle, "127.0.0.1", self.tls_port, ssl=sslctx)
         server = pproxy.Server(f"http://127.0.0.1:{self.proxy_port}")
         args = dict(rserver=[pproxy.Connection(f"http+ssl://127.0.0.1:{self.tls_port}")],
-                    verbose=lambda *a: None, s="fa")
+                    verbose=lambda *a: None, salgorithm="fa")
         handler = await server.start_server(args)
         try:
-            await asyncio.sleep(0.5)
+            assert await _wait_port(self.proxy_port), "代理服务未就绪"
             reader, writer = await asyncio.open_connection("127.0.0.1", self.proxy_port)
             writer.write(b"GET http://127.0.0.1:%d/x HTTP/1.1\r\n"
                          b"Host: 127.0.0.1:%d\r\nConnection: close\r\n\r\n"
@@ -389,13 +464,13 @@ class TestSocks5ErrorReply(unittest.TestCase):
 
     def test_closed_port_returns_connection_refused(self):
         async def run():
-            port_proxy, port_closed = 20301, 20302
+            port_proxy, port_closed = _free_port(), _free_port()
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-m", "pproxy",
                  "-l", f"socks5://127.0.0.1:{port_proxy}", "-v"],
                 cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             try:
-                await asyncio.sleep(2.5)
+                assert await _wait_port(port_proxy), "代理服务未就绪"
                 reader, writer = await asyncio.open_connection("127.0.0.1", port_proxy)
                 writer.write(b"\x05\x01\x00")
                 await writer.drain()
@@ -431,13 +506,13 @@ class TestSocks5AuthReply(unittest.TestCase):
 
     def test_no_auth_method_returns_05ff(self):
         async def run():
-            port_proxy = 20311
+            port_proxy = _free_port()
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-m", "pproxy",
                  "-l", f"socks5://127.0.0.1:{port_proxy}#user:pass", "-v"],
                 cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             try:
-                await asyncio.sleep(2.5)
+                assert await _wait_port(port_proxy), "代理服务未就绪"
                 reader, writer = await asyncio.open_connection("127.0.0.1", port_proxy)
                 # 仅提供 no-auth(0x00) 方法，服务端要求认证 -> 05 FF
                 writer.write(b"\x05\x01\x00")
@@ -460,13 +535,13 @@ class TestSocks5AuthReply(unittest.TestCase):
 
     def test_wrong_credentials_returns_0101(self):
         async def run():
-            port_proxy = 20312
+            port_proxy = _free_port()
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-m", "pproxy",
                  "-l", f"socks5://127.0.0.1:{port_proxy}#user:pass", "-v"],
                 cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             try:
-                await asyncio.sleep(2.5)
+                assert await _wait_port(port_proxy), "代理服务未就绪"
                 reader, writer = await asyncio.open_connection("127.0.0.1", port_proxy)
                 # 提供 user/pass(0x02) + no-auth(0x00) -> 服务端选 0x02
                 writer.write(b"\x05\x02\x02\x00")
@@ -501,13 +576,13 @@ class TestHttpPathOnlyRequest404(unittest.TestCase):
 
     def test_path_only_get_returns_404(self):
         async def run():
-            port_proxy = 20321
+            port_proxy = _free_port()
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-m", "pproxy",
                  "-l", f"http://127.0.0.1:{port_proxy}", "-v"],
                 cwd=VENDOR_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             try:
-                await asyncio.sleep(2.5)
+                assert await _wait_port(port_proxy), "代理服务未就绪"
                 reader, writer = await asyncio.open_connection("127.0.0.1", port_proxy)
                 writer.write(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                 await writer.drain()
