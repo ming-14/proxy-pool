@@ -13,6 +13,13 @@
   var lastRefresh = 0;
   var REFRESH_THROTTLE_MS = 60000;
   var MAP_JSON_URL = '/static/vendor/world.json';
+  // 波纹动画开关：ECharts effectScatter 一旦启用，整张地图（geo 图层 + 全部散点）
+  // 进入动画帧循环按帧全画布重绘——开销与带波纹的点数无关，实测 Top 10 与 Top 3
+  // 均为 renderer ~40% + GPU ~50%（合计约 90%，持续不降）。false 时全量静态
+  // scatter，实测页面进程 2~7%；true 时 count 最大前 RIPPLE_TOP_N 点带波纹
+  // （仅调试/演示用，不建议长期开启）
+  var RIPPLE_ENABLED = false;
+  var RIPPLE_TOP_N = 3;
 
   function getCssVar(name) {
     return getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -55,6 +62,20 @@
       ? ['#1e3a5f', '#3b82f6', '#60a5fa', '#a78bfa']
       : ['#e0f3ff', '#3b82f6', '#1e3a8a', '#7c3aed'];
 
+    // 拆双 series：count 最大的前 RIPPLE_TOP_N 个点用 effectScatter 保留波纹动画，
+    // 其余静态 scatter——波纹动画按帧绘制所有散点计开销，固定少量点开波纹
+    var all = (data.points || []).map(function (p) {
+      return {
+        name: p.name,
+        value: [p.lng, p.lat, p.count],
+        count: p.count,
+        country: p.country,
+      };
+    });
+    var sorted = all.slice().sort(function (a, b) { return b.count - a.count; });
+    var ripplePoints = RIPPLE_ENABLED ? sorted.slice(0, RIPPLE_TOP_N) : [];
+    var staticPoints = RIPPLE_ENABLED ? sorted.slice(RIPPLE_TOP_N) : sorted;
+
     return {
       backgroundColor: 'transparent',
       tooltip: {
@@ -93,29 +114,41 @@
           itemStyle: { areaColor: dark ? '#334155' : '#e2e8f0' },
         },
       },
-      series: [{
-        type: 'effectScatter',
-        coordinateSystem: 'geo',
-        zlevel: 2,
-        rippleEffect: { brushType: 'stroke', scale: 3 },
-        label: { show: false },
-        symbolSize: function (val) {
-          var count = val[2] || 1;
-          return 3 + Math.sqrt(count) * 4;
+      series: [
+        // 密集城市：波纹动画（effectScatter），数量少（count>=10 约 92 点）动画开销可控
+        {
+          type: 'effectScatter',
+          coordinateSystem: 'geo',
+          zlevel: 2,
+          rippleEffect: { brushType: 'stroke', scale: 3 },
+          label: { show: false },
+          symbolSize: function (val) {
+            var count = val[2] || 1;
+            return 3 + Math.sqrt(count) * 4;
+          },
+          data: ripplePoints,
+          itemStyle: {
+            color: dark ? '#60a5fa' : '#3b82f6',
+            opacity: 0.8,
+          },
         },
-        data: (data.points || []).map(function (p) {
-          return {
-            name: p.name,
-            value: [p.lng, p.lat, p.count],
-            count: p.count,
-            country: p.country,
-          };
-        }),
-        itemStyle: {
-          color: dark ? '#60a5fa' : '#3b82f6',
-          opacity: 0.8,
+        // 其余城市：静态散点（无特效渲染管线，CPU 大头所在）
+        {
+          type: 'scatter',
+          coordinateSystem: 'geo',
+          zlevel: 2,
+          label: { show: false },
+          symbolSize: function (val) {
+            var count = val[2] || 1;
+            return 3 + Math.sqrt(count) * 4;
+          },
+          data: staticPoints,
+          itemStyle: {
+            color: dark ? '#60a5fa' : '#3b82f6',
+            opacity: 0.8,
+          },
         },
-      }],
+      ],
     };
   }
 

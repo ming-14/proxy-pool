@@ -67,4 +67,5 @@ logs/
 vendor/geoip/
 
 autoload
-config/apikey.env.playwright-cli
+config/apikey.env
+.playwright-cli
