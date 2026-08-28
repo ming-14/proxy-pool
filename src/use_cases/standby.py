@@ -292,7 +292,7 @@ class StandbyQueueUseCase:
 
         # 锁定状态：只用单一上游，无需补充
         if self.is_locked():
-            logger.info("已锁定单一上游，跳过填充")
+            logger.debug("已锁定单一上游，跳过填充")
             return 0
 
         remaining = capacity - len(self.standby_proxies())
@@ -401,10 +401,10 @@ class StandbyQueueUseCase:
         else:
             proxies = [p for p in self.standby_proxies() if p not in self._retrying]
         if not proxies:
-            logger.warning("代理服务队列无可探测代理，跳过心跳")
+            logger.debug("代理服务队列无可探测代理，跳过心跳")
             return []
 
-        logger.info("心跳探测 %d 个代理 -> %s", len(proxies), probe_url)
+        logger.debug("心跳探测 %d 个代理 -> %s", len(proxies), probe_url)
         results = await self._check_proxies.execute(
             proxies, probe_url, max_concurrent=concurrency, timeout=timeout,
         )
@@ -417,8 +417,8 @@ class StandbyQueueUseCase:
                 self._pool.update_latency(proxy, info.get("elapsed", 0))
                 self._append_per_proxy_latency(proxy, info.get("elapsed", 0))
                 alive.append(proxy)
-                logger.info("代理 %s 心跳成功 (状态码 %s, 耗时 %.2fs)",
-                            proxy, info.get("status_code"), info.get("elapsed", 0))
+                logger.debug("代理 %s 心跳成功 (状态码 %s, 耗时 %.2fs)",
+                             proxy, info.get("status_code"), info.get("elapsed", 0))
             else:
                 reason = info.get("error") if info else "无探测结果"
                 self._record.record_fail(proxy)
@@ -433,8 +433,8 @@ class StandbyQueueUseCase:
                     self._retrying.add(proxy)
                     logger.warning("代理 %s 心跳失败: %s, 进入退避补测", proxy, reason)
 
-        logger.info("心跳完成: %d 存活, %d 待补测 (队列 %d)",
-                    len(alive), len(self._retrying), len(self.standby_proxies()))
+        logger.debug("心跳完成: %d 存活, %d 待补测 (队列 %d)",
+                     len(alive), len(self._retrying), len(self.standby_proxies()))
         self._sample(proxies)
         return alive
 

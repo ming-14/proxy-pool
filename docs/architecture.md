@@ -157,8 +157,8 @@ for attempt in range(max_retries):
 - **固定代理（pin）**：Web 面板可固定队列内代理（`POST /api/standby/pin`，持久化 `pinned`+`pinned_at` 到 `.cache.db`）；固定代理**排队列最前（按固定时间 `pinned_at` 升序），正常心跳正常计数连续失败，但不管怎样都不会被踢出/拉黑/补测**——fill 只踢非固定队尾（全固定时新代理 move trusted），heartbeat 失败只计数不拉黑不补测不移出；**超出 `capacity` 的固定代理忽略**（保留在组内不移出不丢失固定状态，但不参与队列/上游/心跳，用户解固其他代理使固定数 ≤ capacity 后自动重新生效）。
 - **面板展示不截断**：`standby_proxies(truncate=False)` 返回组内全部代理（含超出 capacity 的溢出代理），面板显示实际数量 vs capacity（如 16/15）；`truncate=True`（默认）仅返回 capacity 内的代理，用于 pproxy 上游/心跳/指标采样。
 - **锁定单一上游（lock）**：Web 面板可锁定队列内代理为 pproxy 唯一上游（`POST /api/standby/lock`，move 到内建隐藏组 `LOCKED_GROUP="_proxy-pool-locked"`，不在 config.toml/前端组列表，持久化到 `.cache.db`）。锁定后 `upstream_proxies()` 只返回该代理（pproxy 上游只有它），**fill 跳过**（不补入），**心跳仍探测锁定代理测速**（latency 数据加延迟趋势图，失败只计数不拉黑不移出不补测），无论心跳是否成功都只用该代理；锁定期间采样点带 `locked=True` 标记，**健康率趋势图该点置 null 断开、仪表盘健康率卡片隐藏**（健康率/队列长度无意义），延迟趋势图连续显示测速；其他队列代理保留不动，解锁（`POST /api/standby/unlock`）后 move 回队列恢复原调度。与 pin 的区别：pin 只是不被踢出（rc 调度仍可能选其他代理），lock 是上游**只有**这一个代理。
-- **指标采样（metrics）**：每轮 heartbeat 结束采一次队列指标（avg/min/max 延迟、健康率、队列长度 + `locked` 标记是否锁定期间采集），存内存 `deque`（`StandbySample` NamedTuple 紧凑存储），按 `METRICS_WINDOW` 时间窗口清理过期点；`/api/status` 的 `standby_history` 字段下发完整历史，前端图表无状态重绘——**刷新页面不丢失趋势**（多标签一致），重启清空（仅运行时观测）。**心跳动态调整时采样频率跟着变、旧点按时间自然过期，窗口始终 = `METRICS_WINDOW`**，无需重建缓冲区。
-- **流量统计（traffic）**：pproxy 原生 `modstat` 钩子按方向分发到上行/下行字节计数器（`i∈{0,1}` 上行、`i∈{2,3}` 下行），每轮 heartbeat 后采累计字节存 `TrafficSample` NamedTuple + deque（同 `METRICS_WINDOW` 窗口）；`/api/status` 下发 `traffic_history` + `traffic_total` + `per_proxy_traffic`，前端从累计值序列算速率曲线。注：pproxy `modstat` 只统计 `channel` 转发的 body，请求头在 `connected` 回调里直接写不经计数（GET 请求头不计入上行，POST/CONNECT body 正常计数）。
+- **指标采样（metrics）**：每轮 heartbeat 结束采一次队列指标（avg/min/max 延迟、健康率、队列长度 + `locked` 标记是否锁定期间采集），存内存 `deque`（`StandbySample` NamedTuple 紧凑存储），按 `METRICS_WINDOW` 时间窗口清理过期点；`/api/status/history`（`?since=<ts>` 增量拉取）下发历史，前端累积重绘——**刷新页面不丢失趋势**（多标签一致），重启清空（仅运行时观测）。**心跳动态调整时采样频率跟着变、旧点按时间自然过期，窗口始终 = `METRICS_WINDOW`**，无需重建缓冲区。注：历史数据体量大（窗口 1800s / 2s 采样 ≈ 900 点/序列），已从 `/api/status` 分离（该端点仅返回实时状态 ~6KB），避免 2s 轮询重复传输 200KB 历史。
+- **流量统计（traffic）**：pproxy 原生 `modstat` 钩子按方向分发到上行/下行字节计数器（`i∈{0,1}` 上行、`i∈{2,3}` 下行），每轮 heartbeat 后采累计字节存 `TrafficSample` NamedTuple + deque（同 `METRICS_WINDOW` 窗口）；`/api/status/history` 下发 `traffic_history` + `traffic_total` + `per_proxy_traffic`，前端从累计值序列算速率曲线。注：pproxy `modstat` 只统计 `channel` 转发的 body，请求头在 `connected` 回调里直接写不经计数（GET 请求头不计入上行，POST/CONNECT body 正常计数）。
 - **按代理 IP 流量统计（per-proxy traffic）**：pproxy（vendor/pproxy 本地维护）`stream_handler` 选定上游 `roption` 后调 `modstat(user, remote_ip, host_name, roption)`——原版 pproxy 不传 `roption`，已内化进 vendor 源码（`server.py` stream_handler 签名 + 调用点）。`modstat` 里读 `roption.bind`（上游代理地址，DIRECT 为 `"DIRECT"`）作 key 分发到 per-proxy 计数器 dict；`/api/status` 的 `per_proxy_traffic` 字段下发 `{bind: {"upload": int, "download": int}}`（当前累计值），`/api/proxy/history?bind=` 按需查流量历史（`TrafficSample` 序列，前端差分算速率）。仅内存实时计数，重启清零，不持久化。
 - **按代理 IP 延时历史（per-proxy latency history）**：`heartbeat`/`retry_probe` 探测成功时记一笔 `ProxyLatencySample(ts, latency)` 到 `dict[bind, deque]`（key 为 `bind_of(proxy)` 剥 scheme，与 per-proxy 流量统一 key），按 `METRICS_WINDOW` 窗口清理过期点；`/api/proxy/history?bind=` 按需查询。仅内存，重启清零。
 - **单代理测速（pspeed 集成）**：`POST /api/proxy/speedtest` 端点按 bind 反查完整 proxy URL（standby 队列 + 锁定代理），调 vendor/pspeed 的 `probe_one`（Cloudflare 下载+上传节点，10s `hard_limit`），`asyncio.to_thread` 包装避免阻塞事件循环；返回精简后的 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}`。pspeed 源码在 `vendor/pspeed/src`，通过 `sys.path.insert` 导入，依赖 requests + PySocks（已在 requirements.txt）。测速开始后前端 tooltip **pin**（`tooltipPinned=true`，`scheduleHideProxyTooltip` 直接 return），鼠标移出不自动消失，**鼠标在 tooltip 外部按下（mousedown）即销毁**并解除 pin。
@@ -240,6 +240,16 @@ Web 面板「IP 分布」页用 ECharts 世界地图展示池中代理的地理�
 - **API**：`GET /api/geo/map` 返回 `{total_ips, resolved_ips, unresolved_ips, countries, points}`，points 为城市级（City 库）或国家级（Country 库）坐标点（`{name, country, country_code, lat, lng, count}`）。首次请求全量解析 2400+ IP 约 3 秒，之后纯读缓存毫秒级。
 - **前端**：`map.js` 懒加载 `world.json` 注册 ECharts 地图，`effectScatter` 叠加散点 + `visualMap` 颜色映射密度，暗色模式自适应；ECharts 与地图数据本地 vendor（无外网依赖）。
 
+## 性能与资源占用（serve 长期运行）
+
+serve 长期运行时的资源特征与已落实的优化（避免周期性刷屏式资源消耗）：
+
+- **日志降噪（磁盘写）**：心跳轮次/任务级日志（心跳探测、心跳成功、心跳完成、上游同步、调度器任务成功/失败/重试、锁定跳过填充）均为 DEBUG 级别——每轮心跳不再写文件，仅事件级（补入/替换/拉黑/补测/锁定/解锁）与异常保留 INFO/WARNING。降噪前 3 小时写 ~42MB/30 万行日志，降噪后 INFO 级别下心跳轮次零输出。
+- **状态快照瘦身（带宽/序列化）**：`/api/status` 只返回实时状态（~6KB），历史数据（standby_history/traffic_history，窗口 1800s ≈ 200KB）改走 `/api/status/history`，前端首次全量 + `?since=` 游标增量拉取并本地累积——2s 轮询不再重复传输 200KB 历史（原每 2s 216KB，一天 ~9GB）。
+- **锁定降频（外网请求）**：锁定单一上游时代理不淘汰不拉黑，心跳仅为测速展示，间隔放宽到 `HEARTBEAT_LOCK_INTERVAL`（30s），避免每 2s 打一次外网探测目标。
+- **SQLite 写节流**：`save()` 30 秒节流 + 组级增量（`export_group` ~0.015ms），WAL 写约 9KB/s 级，无需进一步调整。
+- **maxminddb Windows 非 ASCII 路径修复**：`GeoLite2Locator` 显式 `MODE_MMAP`（纯 Python mmap）。Windows 下 maxminddb C 扩展把路径按 UTF-8 字节传给 ANSI fopen，含非 ASCII 字符的路径（如中文目录名）打不开 mmdb；纯 Python 实现走 Python open，Unicode 路径正常，同为内存映射，查询性能差异可忽略。
+
 ## 配置项速查（config/config.toml）
 
 唯一配置数据源为 `config/config.toml`（`src/framework/config.py` 在导入时加载并导出同名常量；`[paths]` 下路径相对项目根解析）。
@@ -270,6 +280,7 @@ Web 面板「IP 分布」页用 ECharts 世界地图展示池中代理的地理�
 | `STANDBY_FILL_GROUPS` | trusted 排最前 + 各可请求组 | 代理服务队列填充候选组（按优先级顺序，靠前优先） |
 | `STANDBY_FILL_PROBE_MULTIPLIER` / `STANDBY_FILL_PROBE_MIN_EXTRA` | 8 / 10 | 填充候选数 = 缺口 × 倍率，至少 缺口 + 增量 |
 | `HEARTBEAT_INTERVAL` | 2 | serve 心跳间隔秒 |
+| `HEARTBEAT_LOCK_INTERVAL` | 30 | 锁定单一上游时的心跳间隔秒（锁定代理不淘汰不拉黑，仅测速展示，降低探测频率与外网请求） |
 | `HEARTBEAT_PROBE_URL` | `https://httpbin.org/ip` | 心跳探测目标 |
 | `HEARTBEAT_CONCURRENCY` | 16 | 心跳探测并发数 |
 | `HEARTBEAT_TIMEOUT` | 3 | 心跳单代理超时秒 |

@@ -117,7 +117,7 @@ class PproxyServer:
             self._uri_index[uri] = conn
             self._rserver.append(conn)
 
-        logger.info("上游同步: %d 个代理", len(self._rserver))
+        logger.debug("上游同步: %d 个代理", len(self._rserver))
 
     async def set_salgorithm(self, salgorithm: str) -> None:
         """运行时切换上游调度算法（Web 面板调整；重启 rserver 生效，保留现有上游列表）"""

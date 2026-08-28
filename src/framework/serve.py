@@ -135,6 +135,9 @@ async def _run(
         事件循环保持响应 pproxy 请求；下一轮最早从「本轮开始时刻 + interval」
         起算（且不小于当前时刻），即两轮间隔 >= interval，轮内耗时超过
         interval 时立即开始下一轮，避免连续探测刷屏，也不累积 sleep 计时误差。
+
+        锁定单一上游时心跳间隔放宽（锁定代理不淘汰不拉黑，仅测速展示用，
+        保持低频率探测即可），避免对锁定代理每 2 秒打一次外网探测。
         """
         next_round = time.monotonic()
         while True:
@@ -163,7 +166,8 @@ async def _run(
             except Exception as e:
                 logger.warning("心跳循环异常: %s", e)
             # 下一轮最早从本轮开始时刻 + interval 起算（间隔至少 interval，绝不重叠）
-            next_round = max(time.monotonic(), round_start + control.interval)
+            interval = max(control.interval, config.HEARTBEAT_LOCK_INTERVAL if standby.is_locked() else 0)
+            next_round = max(time.monotonic(), round_start + interval)
 
     hb_task = asyncio.create_task(heartbeat_loop())
     loop = asyncio.get_running_loop()

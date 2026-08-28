@@ -143,8 +143,24 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "pending_retries": ctx.standby.pending_retries(),
         "sources": sources,
         "settings": ctx.control.to_dict(),
-        "standby_history": [s._asdict() for s in ctx.standby.history()],
-        "traffic_history": [s._asdict() for s in ctx.server.traffic_history()],
+        "traffic_total": {"upload": traffic_upload, "download": traffic_download},
+        "per_proxy_traffic": ctx.server.per_proxy_traffic(),
+    }
+
+
+def _status_history(ctx: PanelContext, since: float | None) -> dict:
+    """队列指标/流量历史（按需拉取，避免全量下发撑大 /api/status）
+
+    since 指定时只返回 ts > since 的采样点（前端增量追加）；缺省返回窗口内全量。
+    历史数据体量大（METRICS_WINDOW=1800s / 2s 采样 ≈ 900 点/序列），2 秒轮询
+    /api/status 不携带，改由前端低频增量拉取。
+    """
+    standby_history = [s._asdict() for s in ctx.standby.history() if since is None or s.ts > since]
+    traffic_history = [s._asdict() for s in ctx.server.traffic_history() if since is None or s.ts > since]
+    traffic_upload, traffic_download = ctx.server.traffic_total()
+    return {
+        "standby_history": standby_history,
+        "traffic_history": traffic_history,
         "traffic_total": {"upload": traffic_upload, "download": traffic_download},
         "per_proxy_traffic": ctx.server.per_proxy_traffic(),
     }
@@ -216,6 +232,14 @@ async def _index(request: web.Request) -> web.Response:
 async def _status(request: web.Request) -> web.Response:
     ctx = request.app[_PANEL_KEY]
     return web.json_response(_status_snapshot(ctx))
+
+
+async def _status_history_route(request: web.Request) -> web.Response:
+    """队列指标/流量历史：?since=<ts> 增量拉取（只返回 ts > since 的点），缺省返回全量"""
+    ctx = request.app[_PANEL_KEY]
+    since_raw = request.query.get("since")
+    since = float(since_raw) if since_raw is not None else None
+    return web.json_response(_status_history(ctx, since))
 
 
 async def _group(request: web.Request) -> web.Response:
@@ -605,6 +629,7 @@ def build_app(ctx: PanelContext) -> web.Application:
     app[_PANEL_KEY] = ctx
     app.router.add_get("/", _index)
     app.router.add_get("/api/status", _status)
+    app.router.add_get("/api/status/history", _status_history_route)
     app.router.add_get("/api/group/{name}", _group)
     app.router.add_post("/api/group/{name}/add", _do_group_add)
     app.router.add_get("/api/proxy/history", _proxy_history)

@@ -39,6 +39,10 @@
     status() {
       return request('/api/status');
     },
+    statusHistory(since) {
+      const q = since ? `?since=${encodeURIComponent(since)}` : '';
+      return request(`/api/status/history${q}`);
+    },
     group(name) {
       return request(`/api/group/${encodeURIComponent(name)}`);
     },

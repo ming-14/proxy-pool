@@ -5,9 +5,12 @@
   'use strict';
 
   const REFRESH_INTERVAL = 2000;
+  // 历史采样点前端保留上限（后端窗口 1800s / 2s 采样 ≈ 900 点，留 10% 余量防抖动）
+  const MAX_HISTORY = 1000;
 
   window.appState = {
     status: null,
+    history: { standby: [], traffic: [] }, // 队列指标/流量历史（后端增量下发，前端累积）
     lastStatusTime: 0,
     paused: false,
     refreshTimer: null,
@@ -15,6 +18,40 @@
     theme: 'light',
     isFirstLoad: true,
   };
+
+  // 合并增量历史：按 ts 追加并裁剪到上限（服务端按时间顺序下发，直接 concat）
+  function mergeHistory(data) {
+    const hist = window.appState.history;
+    if (Array.isArray(data.standby_history) && data.standby_history.length) {
+      hist.standby = hist.standby.concat(data.standby_history);
+      if (hist.standby.length > MAX_HISTORY) hist.standby = hist.standby.slice(-MAX_HISTORY);
+    }
+    if (Array.isArray(data.traffic_history) && data.traffic_history.length) {
+      hist.traffic = hist.traffic.concat(data.traffic_history);
+      if (hist.traffic.length > MAX_HISTORY) hist.traffic = hist.traffic.slice(-MAX_HISTORY);
+    }
+  }
+
+  // 历史数据最后采样时间戳（增量拉取游标；standby/traffic 同窗口同频率，取任一最后点）
+  function historyCursor() {
+    const sh = window.appState.history.standby;
+    const th = window.appState.history.traffic;
+    const s = sh.length ? sh[sh.length - 1].ts : 0;
+    const t = th.length ? th[th.length - 1].ts : 0;
+    return Math.max(s, t);
+  }
+
+  // 增量拉取历史：首次全量，之后只取游标之后的新点（每轮 ~1 个点，约 200B）
+  async function refreshHistory() {
+    try {
+      const cursor = historyCursor();
+      const data = await window.api.statusHistory(cursor || undefined);
+      mergeHistory(data);
+    } catch (err) {
+      // 历史拉取失败不影响状态刷新（图表滞后一拍，下轮重试）
+      console.warn('history refresh failed', err);
+    }
+  }
 
   window.pageHandlers = window.pageHandlers || {};
 
@@ -189,6 +226,7 @@
       window.appState.status = data;
       window.appState.lastStatusTime = Date.now();
       setConnection('online');
+      await refreshHistory(); // 历史与状态分离：状态快照不再携带 200KB 历史，历史增量拉取
 
       const page = window.appState.currentPage;
       if (pageHandlers[page] && pageHandlers[page].onStatus) {

@@ -925,7 +925,7 @@
       const effectiveStandby = freezeOrder ? mergeKeepOrder(currentStandby, standby) : standby;
       renderTable(effectiveStandby);
     }
-    renderStats(standby, status.capacity || '-', !!lockedProxy, status.standby_history || []);
+    renderStats(standby, status.capacity || '-', !!lockedProxy, (window.appState.history || {}).standby || []);
     if (!lockedProxy) renderSettings(status.settings || {});
     renderPending(status.pending_retries || []);
   }

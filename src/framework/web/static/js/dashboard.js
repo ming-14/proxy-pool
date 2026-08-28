@@ -127,9 +127,11 @@
       pendingEl.innerHTML = '';
     }
 
-    window.charts.renderLatency(status.standby_history || []);
-    window.charts.renderHealth(status.standby_history || []);
-    window.charts.renderTraffic(status.traffic_history || [], status.standby_history || []);
+    // 历史数据由 app.js 增量维护（/api/status 不再携带，改按需拉取）
+    const hist = window.appState.history || { standby: [], traffic: [] };
+    window.charts.renderLatency(hist.standby || []);
+    window.charts.renderHealth(hist.standby || []);
+    window.charts.renderTraffic(hist.traffic || [], hist.standby || []);
     renderTrafficKpi(status);
 
     // IP 分布地图（内嵌仪表盘底部，内部 60s 节流，不随 2s 心跳刷）；geo 禁用时跳过
@@ -151,7 +153,8 @@
   function renderTrafficKpi(status) {
     const el = document.getElementById('dash-traffic-kpi');
     if (!el) return;
-    const th = status.traffic_history || [];
+    const hist = window.appState.history || { standby: [], traffic: [] };
+    const th = hist.traffic || [];
     let upRate = 0, downRate = 0;
     if (th.length >= 2) {
       const a = th[th.length - 2], b = th[th.length - 1];
@@ -163,7 +166,7 @@
     }
     const total = status.traffic_total || { upload: 0, download: 0 };
     const totalBytes = (total.upload || 0) + (total.download || 0);
-    const sh = status.standby_history || [];
+    const sh = hist.standby || [];
     const avgLatency = sh.length ? sh[sh.length - 1].avg : null;
     el.innerHTML = `
       <div class="flex justify-between"><span class="text-theme-muted">实时上行</span><span class="font-medium text-theme-accent">${fmtBytes(upRate)}/s</span></div>

@@ -115,9 +115,9 @@ class ProxyScheduler:
                         if on_success:
                             on_success(proxy, task_data, result)
                         if is_success:
-                            logger.info("[%s] %s 任务%s: 成功", phase_name, proxy, task_data)
+                            logger.debug("[%s] %s 任务%s: 成功", phase_name, proxy, task_data)
                         else:
-                            logger.info("[%s] %s 任务%s: 失败", phase_name, proxy, task_data)
+                            logger.debug("[%s] %s 任务%s: 失败", phase_name, proxy, task_data)
                     except Exception as e:
                         self._consecutive_fails[proxy] = self._consecutive_fails.get(proxy, 0) + 1
                         reason = type(e).__name__
@@ -129,7 +129,7 @@ class ProxyScheduler:
                             logger.warning("[%s] %s 任务%s: %s, 代理已丢弃", phase_name, proxy, task_data, reason)
                         else:
                             remaining.append(task)
-                            logger.info("[%s] %s 任务%s: %s, 将重试", phase_name, proxy, task_data, reason)
+                            logger.debug("[%s] %s 任务%s: %s, 将重试", phase_name, proxy, task_data, reason)
         except asyncio.CancelledError:
             # 调度器被取消（如 serve 退出）时，同步取消在途子任务避免泄漏
             for future in in_flight:

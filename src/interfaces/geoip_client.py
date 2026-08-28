@@ -18,6 +18,7 @@ import os
 
 import geoip2.database
 import geoip2.errors
+import maxminddb
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,10 @@ class GeoLite2Locator:
     """
 
     def __init__(self, db_path: str) -> None:
-        self._reader = geoip2.database.Reader(db_path)
+        # MODE_MMAP（纯 Python mmap）：Windows 下 maxminddb C 扩展把路径按 UTF-8 字节
+        # 传给 ANSI fopen，含非 ASCII 字符的路径（如含中文的目录）打不开；纯 Python
+        # 实现走 Python open，Unicode 路径正常，同为内存映射，查询性能差异可忽略。
+        self._reader = geoip2.database.Reader(db_path, mode=maxminddb.MODE_MMAP)
         self._metadata = self._reader.metadata()  # geoip2 5.x 的 metadata 为方法
         # 按库类型选择查询接口与结果字段
         self._is_city = "City" in self._metadata.database_type

@@ -153,9 +153,25 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["settings"]["allowed_types"] == ["http", "socks5"]
         assert any(s["name"] for s in data["sources"])
         assert "Proxy-pool-standby-queue" in data["groups"]
+        # 历史数据已从 status 快照分离（体量大，改走 /api/status/history 增量拉取）
+        assert "standby_history" not in data
+        assert "traffic_history" not in data
+        assert data["traffic_total"] == {"upload": 0, "download": 0}
+
+    async def test_status_history(self):
+        """历史端点：缺省返回全量（空数据时为空数组），since 过滤返回空"""
+        resp = await self.client.get("/api/status/history")
+        assert resp.status == 200
+        data = await resp.json()
         assert data["standby_history"] == []
         assert data["traffic_history"] == []
         assert data["traffic_total"] == {"upload": 0, "download": 0}
+        # since 过滤：无晚于游标的数据返回空
+        resp2 = await self.client.get("/api/status/history?since=9999999999")
+        assert resp2.status == 200
+        data2 = await resp2.json()
+        assert data2["standby_history"] == []
+        assert data2["traffic_history"] == []
 
     async def test_status_with_purity_cache(self):
         """status 快照带 purity 缓存数据（历史有数据时前端直接显示 tag，无需手动点击）"""

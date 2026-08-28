@@ -1,6 +1,6 @@
 /**
  * 图表模块：代理服务队列延迟趋势与心跳健康率趋势。
- * 使用 Chart.js，数据由后端 /api/status 的 standby_history 下发，前端无状态重绘
+ * 使用 Chart.js，数据由 /api/status/history 增量下发（app.js 维护 appState.history），前端无状态重绘
  * （刷新页面不丢失，多标签一致；后端按时间窗口采样，超出窗口的自动清理）。
  */
 (function () {
