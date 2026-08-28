@@ -1,7 +1,10 @@
 /**
  * 图表模块：代理服务队列延迟趋势与心跳健康率趋势。
- * 使用 Chart.js，数据由 /api/status/history 增量下发（app.js 维护 appState.history），前端无状态重绘
- * （刷新页面不丢失，多标签一致；后端按时间窗口采样，超出窗口的自动清理）。
+ * 使用 Chart.js，数据由 /api/status/history 增量下发（app.js 维护 appState.history）。
+ *
+ * 渲染策略：增量追加（每 2s tick 只 push 新点，不再全量重建 labels/data/重算差分），
+ * 避免 900+ 点 × 3 图的每轮 toLocaleTimeString 与全量 update 造成浏览器 CPU 周期高峰。
+ * 全量重建仅发生在：历史被重置（页面刷新重拉全量 / 窗口滚动导致首点变化）。
  */
 (function () {
   'use strict';
@@ -9,6 +12,13 @@
   let latencyChart = null;
   let healthChart = null;
   let trafficChart = null;
+
+  // 各图表的增量渲染状态：len=上次渲染时 history 长度, firstTs=首点时间戳（全量重建判定）
+  const renderState = {
+    latency: { len: 0, firstTs: null, fmt: new Map() },
+    health: { len: 0, firstTs: null, fmt: new Map() },
+    traffic: { len: 0, firstTs: null, fmt: new Map(), prev: null }, // prev=上次差分基准（最后一个累计点）
+  };
 
   function getCssVar(name) {
     return getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -67,10 +77,30 @@
     };
   }
 
-  // 时间戳 → HH:MM:SS（x 轴刻度）
+  // 时间戳 → HH:MM:SS（x 轴刻度）；结果按 ts 缓存，增量渲染时只格式化新点
   function fmtTs(ts) {
     const d = new Date(ts * 1000);
     return d.toLocaleTimeString('zh-CN', { hour12: false });
+  }
+
+  function fmtTsCached(cache, ts) {
+    let s = cache.get(ts);
+    if (s === undefined) {
+      s = fmtTs(ts);
+      cache.set(ts, s);
+    }
+    return s;
+  }
+
+  // 是否需全量重建：history 变短（重置/裁剪）或首点变化（刷新重拉全量）
+  function needsRebuild(st, h) {
+    return h.length < st.len || (h.length > 0 && st.firstTs !== h[0].ts);
+  }
+
+  // 全量重建后记录状态基线
+  function setBaseline(st, h) {
+    st.len = h.length;
+    st.firstTs = h.length > 0 ? h[0].ts : null;
   }
 
   window.charts = {
@@ -178,24 +208,55 @@
       });
     },
 
-    // 用后端下发的完整 history 重绘（无本地累积状态，刷新即恢复）
+    // 增量重绘：history 为完整累积序列（app.js 维护），只追加新点；全量重建仅在重置/刷新时
     renderLatency(history) {
       if (!latencyChart) return;
       const h = history || [];
-      latencyChart.data.labels = h.map((p) => fmtTs(p.ts));
-      latencyChart.data.datasets[0].data = h.map((p) => p.avg);
-      latencyChart.data.datasets[1].data = h.map((p) => p.min);
-      latencyChart.data.datasets[2].data = h.map((p) => p.max);
+      const st = renderState.latency;
+      if (needsRebuild(st, h)) {
+        st.fmt.clear();
+        latencyChart.data.labels = h.map((p) => fmtTsCached(st.fmt, p.ts));
+        latencyChart.data.datasets[0].data = h.map((p) => p.avg);
+        latencyChart.data.datasets[1].data = h.map((p) => p.min);
+        latencyChart.data.datasets[2].data = h.map((p) => p.max);
+        setBaseline(st, h);
+        latencyChart.update('none');
+        return;
+      }
+      if (h.length === st.len) return; // 无新点
+      for (let i = st.len; i < h.length; i++) {
+        const p = h[i];
+        latencyChart.data.labels.push(fmtTsCached(st.fmt, p.ts));
+        latencyChart.data.datasets[0].data.push(p.avg);
+        latencyChart.data.datasets[1].data.push(p.min);
+        latencyChart.data.datasets[2].data.push(p.max);
+      }
+      st.len = h.length;
       latencyChart.update('none');
     },
 
     renderHealth(history) {
       if (!healthChart) return;
       const h = history || [];
-      healthChart.data.labels = h.map((p) => fmtTs(p.ts));
-      // locked 期间采集的点：健康率/队列长度无意义，置 null 断开曲线
-      healthChart.data.datasets[0].data = h.map((p) => p.locked ? null : p.health_rate);
-      healthChart.data.datasets[1].data = h.map((p) => p.locked ? null : p.queue_length);
+      const st = renderState.health;
+      if (needsRebuild(st, h)) {
+        st.fmt.clear();
+        healthChart.data.labels = h.map((p) => fmtTsCached(st.fmt, p.ts));
+        // locked 期间采集的点：健康率/队列长度无意义，置 null 断开曲线
+        healthChart.data.datasets[0].data = h.map((p) => p.locked ? null : p.health_rate);
+        healthChart.data.datasets[1].data = h.map((p) => p.locked ? null : p.queue_length);
+        setBaseline(st, h);
+        healthChart.update('none');
+        return;
+      }
+      if (h.length === st.len) return; // 无新点
+      for (let i = st.len; i < h.length; i++) {
+        const p = h[i];
+        healthChart.data.labels.push(fmtTsCached(st.fmt, p.ts));
+        healthChart.data.datasets[0].data.push(p.locked ? null : p.health_rate);
+        healthChart.data.datasets[1].data.push(p.locked ? null : p.queue_length);
+      }
+      st.len = h.length;
       healthChart.update('none');
     },
 
@@ -262,26 +323,41 @@
       });
     },
 
-    // 从累计字节序列算速率（相邻点差值/时间差），叠加平均延迟（右轴），重绘
+    // 从累计字节序列差分算速率（相邻点差值/时间差），叠加平均延迟（右轴）。
+    // 增量模式：只对新增的累计点差分（prev 记录上次基准），避免每轮全量重算。
     renderTraffic(history, latencyHistory) {
       if (!trafficChart) return;
       const h = history || [];
       const l = latencyHistory || [];
-      const rates = [];
-      for (let i = 1; i < h.length; i++) {
-        const dt = h[i].ts - h[i - 1].ts;
-        if (dt <= 0) continue;
-        rates.push({
-          ts: h[i].ts,
-          up: (h[i].total_upload - h[i - 1].total_upload) / dt,
-          down: (h[i].total_download - h[i - 1].total_download) / dt,
-          latency: l[i] ? l[i].avg : null,
-        });
+      const st = renderState.traffic;
+
+      // 差分基准无效（重置/刷新）时全量重建
+      if (needsRebuild(st, h)) {
+        st.fmt.clear();
+        st.prev = null;
+        trafficChart.data.labels = [];
+        trafficChart.data.datasets[0].data = [];
+        trafficChart.data.datasets[1].data = [];
+        trafficChart.data.datasets[2].data = [];
+        st.len = 0;
+        st.firstTs = h.length > 0 ? h[0].ts : null; // 必须同步基线，否则每轮被判全量重建
       }
-      trafficChart.data.labels = rates.map((r) => fmtTs(r.ts));
-      trafficChart.data.datasets[0].data = rates.map((r) => r.up);
-      trafficChart.data.datasets[1].data = rates.map((r) => r.down);
-      trafficChart.data.datasets[2].data = rates.map((r) => r.latency);
+      if (h.length === st.len) return; // 无新点
+
+      for (let i = st.len; i < h.length; i++) {
+        const cur = h[i];
+        if (st.prev !== null) {
+          const dt = cur.ts - st.prev.ts;
+          if (dt > 0) {
+            trafficChart.data.labels.push(fmtTsCached(st.fmt, cur.ts));
+            trafficChart.data.datasets[0].data.push((cur.total_upload - st.prev.total_upload) / dt);
+            trafficChart.data.datasets[1].data.push((cur.total_download - st.prev.total_download) / dt);
+            trafficChart.data.datasets[2].data.push(l[i] ? l[i].avg : null);
+          }
+        }
+        st.prev = cur;
+      }
+      st.len = h.length;
       trafficChart.update('none');
     },
 

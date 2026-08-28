@@ -114,17 +114,17 @@
     }
 
     const pendingEl = document.getElementById('dash-pending');
-    if (pending.length) {
-      pendingEl.innerHTML = `
-        <div class="card card-body">
-          <div class="flex items-center gap-2 text-sm text-theme-secondary">
-            <span class="badge badge-warning">待补测</span>
-            <span>${pending.map((p) => utils.esc(p.split('://')[1] || p)).join(', ')}</span>
-          </div>
+    // 内容未变化时跳过 innerHTML 重建（2s 轮询反复重建会引发布局抖动与 GC）
+    const pendingHtml = pending.length ? `
+      <div class="card card-body">
+        <div class="flex items-center gap-2 text-sm text-theme-secondary">
+          <span class="badge badge-warning">待补测</span>
+          <span>${pending.map((p) => utils.esc(p.split('://')[1] || p)).join(', ')}</span>
         </div>
-      `;
-    } else if (pendingEl) {
-      pendingEl.innerHTML = '';
+      </div>
+    ` : '';
+    if (pendingEl && pendingEl.innerHTML !== pendingHtml) {
+      pendingEl.innerHTML = pendingHtml;
     }
 
     // 历史数据由 app.js 增量维护（/api/status 不再携带，改按需拉取）

@@ -42,7 +42,10 @@
   }
 
   // 增量拉取历史：首次全量，之后只取游标之后的新点（每轮 ~1 个点，约 200B）
+  // 仅仪表盘/代理服务队列页需要历史数据，其他页面跳过（避免无谓请求与解析）
   async function refreshHistory() {
+    const page = window.appState.currentPage;
+    if (page !== 'dashboard' && page !== 'standby') return;
     try {
       const cursor = historyCursor();
       const data = await window.api.statusHistory(cursor || undefined);
