@@ -1,5 +1,10 @@
 """日志配置：统一格式（含毫秒时间戳），输出到 stderr + logs 目录文件
 
+控制台（stderr）与文件日志级别分开：
+- 控制台默认 DEBUG（周期日志可见，便于观察调度细节；高频轮转日志不打文件）
+- 文件默认 INFO（事件级，避免每 2s 心跳轮次刷屏磁盘）
+- --debug 时文件也降到 DEBUG（完整调试）
+
 文件日志每次启动生成独立文件，文件名精确到毫秒（天然唯一，不覆盖旧日志）。
 仅在 CLI 入口调用。
 """
@@ -34,8 +39,12 @@ def _build_log_file() -> str:
     return os.path.join(config.LOG_DIR, filename)
 
 
-def setup_logging(level=logging.INFO):
-    """配置根日志器：stderr + 文件（文件名精确到毫秒），仅初始化一次"""
+def setup_logging(file_level=logging.INFO):
+    """配置根日志器：控制台 DEBUG + 文件 file_level（仅初始化一次）
+
+    Args:
+        file_level: 文件日志级别（默认 INFO；--debug 时传 DEBUG 全量落盘）
+    """
     global _initialized
     if _initialized:
         return
@@ -45,12 +54,14 @@ def setup_logging(level=logging.INFO):
     log_file = _build_log_file()
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(_MsecFormatter(LOG_FORMAT))
+    file_handler.setLevel(file_level)
 
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(_MsecFormatter(LOG_FORMAT))
+    stream_handler.setLevel(logging.DEBUG)  # 控制台默认 DEBUG，观察周期调度细节
 
     root = logging.getLogger()
-    root.setLevel(level)
+    root.setLevel(logging.DEBUG)  # 根级别取最低，handler 各自过滤
     root.addHandler(stream_handler)
     root.addHandler(file_handler)
     logging.getLogger("urllib3").setLevel(logging.WARNING)

@@ -277,7 +277,8 @@ def main():
     args = parser.parse_args()
 
     if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
+        # 完整调试：文件日志也降为 DEBUG（控制台本就默认 DEBUG）
+        setup_logging(file_level=logging.DEBUG)
     else:
         setup_logging()
 

@@ -598,11 +598,20 @@ class TestMainArgParsing(unittest.TestCase):
         self.assertEqual(args.url, "http://example.com")
 
     def test_debug_flag(self):
+        # --debug 时文件日志也降为 DEBUG（控制台本就默认 DEBUG）
         with patch.object(cli, "cmd_fetch"), \
-             patch.object(cli.logging, "getLogger") as mock_logger:
+             patch.object(cli, "setup_logging") as mock_setup:
             with patch("sys.argv", ["cli.py", "--debug", "fetch"]):
                 cli.main()
-        mock_logger.assert_called()
+        mock_setup.assert_called_once_with(file_level=logging.DEBUG)
+
+    def test_default_logging_file_level(self):
+        # 默认：控制台 DEBUG + 文件 INFO（setup_logging 缺省 file_level）
+        with patch.object(cli, "cmd_fetch"), \
+             patch.object(cli, "setup_logging") as mock_setup:
+            with patch("sys.argv", ["cli.py", "fetch"]):
+                cli.main()
+        mock_setup.assert_called_once_with()
 
     def test_list_group_option(self):
         with patch.object(cli, "cmd_list") as mock_cmd:
