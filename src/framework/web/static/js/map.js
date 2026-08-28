@@ -13,13 +13,16 @@
   var lastRefresh = 0;
   var REFRESH_THROTTLE_MS = 60000;
   var MAP_JSON_URL = '/static/vendor/world.json';
-  // 波纹动画开关：ECharts effectScatter 一旦启用，整张地图（geo 图层 + 全部散点）
-  // 进入动画帧循环按帧全画布重绘——开销与带波纹的点数无关，实测 Top 10 与 Top 3
-  // 均为 renderer ~40% + GPU ~50%（合计约 90%，持续不降）。false 时全量静态
-  // scatter，实测页面进程 2~7%；true 时 count 最大前 RIPPLE_TOP_N 点带波纹
-  // （仅调试/演示用，不建议长期开启）
+  // 波纹动画开关（默认关闭）。ECharts 一旦有动画元素，每帧都要重绘整张世界地图
+  // （geo 图层多边形是光栅化热点，CDP profile 显示 JS 主线程 82% 空闲、开销全在
+  // 渲染管线）。实测：波纹全开 ~90%；zlevel 分层 ~65%；散点降采样到 100 点
+  // 50~70%；SVG 渲染器 50~70%——均不可接受。关闭后静态一次性绘制，实测 2~7%。
+  // 需要演示时置 true（仅短期，CPU 显著升高）。
   var RIPPLE_ENABLED = false;
   var RIPPLE_TOP_N = 3;
+  // 散点渲染上限：仅动画场景有意义（减少每帧元素数），静态渲染无明显收益，
+  // 默认 0 不限制以保留完整地理分布信息
+  var MAP_MAX_POINTS = 0;
 
   function getCssVar(name) {
     return getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -73,6 +76,10 @@
       };
     });
     var sorted = all.slice().sort(function (a, b) { return b.count - a.count; });
+    // 只渲染 IP 数最大的前 MAP_MAX_POINTS 个城市，控制画布元素规模（动画帧光栅化开销）
+    if (MAP_MAX_POINTS > 0 && sorted.length > MAP_MAX_POINTS) {
+      sorted = sorted.slice(0, MAP_MAX_POINTS);
+    }
     var ripplePoints = RIPPLE_ENABLED ? sorted.slice(0, RIPPLE_TOP_N) : [];
     var staticPoints = RIPPLE_ENABLED ? sorted.slice(RIPPLE_TOP_N) : sorted;
 
@@ -132,11 +139,12 @@
             opacity: 0.8,
           },
         },
-        // 其余城市：静态散点（无特效渲染管线，CPU 大头所在）
+        // 其余城市：静态散点。独立 zlevel（画布层）：ECharts 按层重绘，与波纹层
+        // 分层后动画帧只重绘波纹层（少量点），静态层不参与每帧绘制
         {
           type: 'scatter',
           coordinateSystem: 'geo',
-          zlevel: 2,
+          zlevel: 1,
           label: { show: false },
           symbolSize: function (val) {
             var count = val[2] || 1;
@@ -200,6 +208,8 @@
       return false;
     }
     if (!mapChart) {
+      // canvas 渲染：SVG 渲染器实测对动画开销无改善（同为 50~70%，且 998 点
+      // 生成庞大 DOM），静态渲染下 canvas 更优
       mapChart = echarts.init(mapContainerEl());
     }
     return true;
