@@ -50,7 +50,7 @@ class Container:
     proxy_server: PproxyServer
     standby: StandbyQueueUseCase
     async_getter: AsyncHttpGetter
-    purity: CheckPurityUseCase          # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
+    purity: CheckPurityUseCase | None   # IP 纯洁度检查；缺 API key 时为 None（功能禁用）
     geo: IpGeoUseCase | None          # IP 归属地图（GeoLite2 定位 + 缓存 + 聚合）；geoip.enabled=false 时为 None
 
     def save(self) -> None:
@@ -167,34 +167,51 @@ def build_container(cache_db: str | None = None) -> Container:
         metrics_window=config.METRICS_WINDOW,
     )
     # IP 纯洁度检查：单源，由 config.PURITY_SOURCE 决定（ipok / abuseipdb）
+    purity_checker: IpPurityChecker | None = None
     if config.PURITY_SOURCE == "ipok":
-        purity_checker: IpPurityChecker = IpokClient(proxy=config.IPOK_PROXY)
+        purity_checker = IpokClient(proxy=config.IPOK_PROXY)
     elif config.PURITY_SOURCE == "abuseipdb":
-        if not config.ABUSEIPDB_API_KEY:
-            raise ValueError("purity.source='abuseipdb' 但未配置 ABUSEIPDB_API_KEY（config/apikey.env）")
-        purity_checker = AbuseIpDbClient(api_key=config.ABUSEIPDB_API_KEY, proxy=config.ABUSEIPDB_PROXY)
+        if config.ABUSEIPDB_API_KEY:
+            purity_checker = AbuseIpDbClient(api_key=config.ABUSEIPDB_API_KEY, proxy=config.ABUSEIPDB_PROXY)
+        else:
+            # 缺 key 只禁用纯洁度检查，不阻断启动（缺失原因见 config 的 WARNING）
+            logger.warning("纯洁度检查已禁用：缺少 ABUSEIPDB_API_KEY（config/apikey.env）")
     else:
         raise ValueError(f"未知 purity.source: {config.PURITY_SOURCE!r}（应为 ipok 或 abuseipdb）")
-    purity = CheckPurityUseCase(
-        checker=purity_checker,
-        cache=store,
-        max_age_in_days=config.ABUSEIPDB_MAX_AGE_DAYS,
-        cache_ttl=config.ABUSEIPDB_CACHE_TTL,
-    )
+    purity: CheckPurityUseCase | None = None
+    if purity_checker is not None:
+        purity = CheckPurityUseCase(
+            checker=purity_checker,
+            cache=store,
+            max_age_in_days=config.ABUSEIPDB_MAX_AGE_DAYS,
+            cache_ttl=config.ABUSEIPDB_CACHE_TTL,
+        )
     # IP 归属地图：GeoLite2 离线定位 + SQLite 缓存（Web 面板地图页面按需懒查）
     # geoip.enabled=false 时不构造定位器（不加载 mmdb，省内存），Container.geo 为 None
     # 定位库切换（City/Country 或版本升级）时指纹变化，清空旧缓存防止粒度不一致数据复用
     if config.GEOIP_ENABLED:
-        geo_locator = GeoLite2Locator(config.GEOIP_DB_FILE)
-        if store.get_geo_cache_fingerprint() != geo_locator.fingerprint:
-            store.clear_geo_cache()
-            store.set_geo_cache_fingerprint(geo_locator.fingerprint)
-            logger.info("GeoLite2 定位库变化，已清空 geo 缓存")
-        geo = IpGeoUseCase(
-            locator=geo_locator,
-            cache=store,
-            cache_ttl=config.GEOIP_CACHE_TTL,
-        )
+        try:
+            geo_locator = GeoLite2Locator(config.GEOIP_DB_FILE)
+        except Exception as exc:
+            # 库不随仓库分发：缺失/损坏时只禁用地图，serve 仍可运行。
+            # 下载 GeoLite2-City/Country.mmdb 放到 vendor/geoip/，或在
+            # config.toml 里把 geoip.db_file 指向实际位置
+            logger.warning(
+                "GeoLite2 加载失败，IP 归属地图禁用 path=%s err=%s",
+                config.GEOIP_DB_FILE,
+                exc,
+            )
+            geo = None
+        else:
+            if store.get_geo_cache_fingerprint() != geo_locator.fingerprint:
+                store.clear_geo_cache()
+                store.set_geo_cache_fingerprint(geo_locator.fingerprint)
+                logger.info("GeoLite2 定位库变化，已清空 geo 缓存")
+            geo = IpGeoUseCase(
+                locator=geo_locator,
+                cache=store,
+                cache_ttl=config.GEOIP_CACHE_TTL,
+            )
     else:
         geo = None
     return Container(

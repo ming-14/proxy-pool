@@ -57,7 +57,7 @@ class PanelContext:
     server: PproxyServer
     save: Callable[[], None]   # 落盘回调（c.save）
     capacity: int              # 代理服务队列容量
-    purity: CheckPurityUseCase           # IP 纯洁度检查（多源聚合：AbuseIPDB + ipok.io）
+    purity: CheckPurityUseCase | None    # IP 纯洁度检查；禁用时为 None
     geo: object | None                   # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）；geoip.enabled=false 时为 None
 
 
@@ -66,8 +66,10 @@ def _purity_cached(ctx: PanelContext, proxy: str) -> dict | None:
     """查纯洁度缓存（30 天内有数据则返回 score+usage_type，否则 None）
 
     在 _status_snapshot 中调用（主线程，SQLite 安全）。只取 tag 需要的字段，
-    避免快照 payload 膨胀。query_cache 异常时不影响整体快照。
+    避免快照 payload 膨胀。纯洁度禁用或 query_cache 异常时不影响整体快照。
     """
+    if ctx.purity is None:
+        return None
     try:
         cached = ctx.purity.query_cache(proxy)
     except Exception:
@@ -373,6 +375,8 @@ async def _do_purity(request: web.Request) -> web.Response:
       3. save_cache 在事件循环线程（主线程 SQLite 写）
     """
     ctx = request.app[_PANEL_KEY]
+    if ctx.purity is None:
+        return web.json_response({"error": "纯洁度检查未启用"}, status=404)
     body = await _json_body(request)
     bind = body.get("bind")
     if not bind:

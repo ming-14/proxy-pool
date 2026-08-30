@@ -13,8 +13,11 @@ CACHE_DB/LOG_DIR 为框架层路径。
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+
+_logger = logging.getLogger(__name__)
 
 try:
     import tomllib  # Python 3.11+
@@ -172,6 +175,12 @@ _purity_cfg = _toml.get("purity", {})
 PURITY_SOURCE = _purity_cfg.get("source", "ipok")   # 检查源：ipok / abuseipdb
 IPOK_PROXY = _purity_cfg.get("ipok_proxy", "")
 ABUSEIPDB_PROXY = _purity_cfg.get("abuseipdb_proxy", "")
+# key 缺失只警告：由组合根禁用纯洁度检查，不阻断启动（非 abuseipdb 源无需该文件，保持静默）
+if PURITY_SOURCE == "abuseipdb" and not ABUSEIPDB_API_KEY:
+    _logger.warning(
+        "未读取到 ABUSEIPDB_API_KEY（%s 缺失或未配置该键），纯洁度检查将禁用",
+        _APIKEY_FILE,
+    )
 
 # ---------------------------------------------------------------- IP 归属地（Web 地图）
 _geoip_cfg = _toml.get("geoip", {})
