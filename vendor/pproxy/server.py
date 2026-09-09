@@ -104,15 +104,21 @@ async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, s
                 raise Exception('Unknown remote protocol')
             m = modstat(user, remote_ip, host_name, roption)
             lchannel = lproto.http_channel if use_http else lproto.channel
-            # 会话生命周期以 client 侧为准：client→remote 通道结束（client 断开/空闲
-            # 超时/异常）即代表整个会话结束，立即取消对向通道并关闭两侧连接。
-            # 上游挂死时 remote→client 通道靠 channel 的 SOCKET_TIMEOUT 空闲超时结束
-            # （结束时会关闭 client writer → client 断开 → 本通道自然结束），不会永久
-            # 阻塞，连接与缓冲均可回收（修复：上游挂死 + 僵尸 keep-alive 连接导致的内存泄漏）。
+            # 会话双向活动时间戳：两条通道任一方向收到字节都刷新。通道读的单向
+            # 空闲超时只有整会话（双向）静默满 SOCKET_TIMEOUT 才结束通道（proto.
+            # SessionActivity），流式下载/SSE 期间 client 方向长期静默不再被误杀。
+            activity = proto.SessionActivity()
+            # 会话生命周期以 client 侧为准：client→remote 通道结束（client 断开/
+            # 整会话空闲超时/写上游卡死）即代表整个会话结束，立即取消对向通道并
+            # 关闭两侧连接。上游挂死且 client 也不再发送时，双向静默由 read_session
+            # 的会话空闲判定结束（保留僵尸 keep-alive/挂死上游的回收，修复内存泄漏
+            # 的语义不回退）；上游不收数据导致写侧缓冲写满时由 drain 超时兜底。
             client_task = asyncio.ensure_future(
-                lchannel(reader, writer_remote, m(roption.direct), roption.connection_change))
+                lchannel(reader, writer_remote, m(roption.direct), roption.connection_change,
+                         activity=activity))
             remote_task = asyncio.ensure_future(
-                lproto.channel(reader_remote, writer, m(2+roption.direct), m(4+roption.direct)))
+                lproto.channel(reader_remote, writer, m(2+roption.direct), m(4+roption.direct),
+                               activity=activity))
             await asyncio.gather(client_task, return_exceptions=True)
             remote_task.cancel()
             await asyncio.gather(remote_task, return_exceptions=True)

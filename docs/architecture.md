@@ -144,6 +144,7 @@ for attempt in range(max_retries):
 - 池内代理字符串 → pproxy 上游 URI：`https://` 前缀（HTTPS 代理，代理本身走 TLS）转换为 `http+ssl://`；http/socks5 原样传递；
 - **rserver 动态同步**：`sync(proxies)` 对上游列表做集合差集增删，rserver 是同一列表引用，运行中增删对 pproxy schedule 实时生效；
 - 调度算法 `salgorithm="rc"`（随机）：每次请求随机选存活代理，坏代理有概率被跳过；不用 `fa`（first_available）是因为 fa 会固定命中第一个坏代理导致持续失败。
+- **长连接空闲回收（会话双向活动）**：上游 pproxy 的转发通道按**单向** `read` 空闲超时（`SOCKET_TIMEOUT=60s`）结束通道，而流式下载/SSE/长轮询期间 client→upstream 方向天然长期静默——超过 60s 的响应必然被误杀（表现为"长连接进行到约 1 分钟时直接断开"）。vendor 内化修复：`stream_handler` 为每次转发创建 `SessionActivity`（单调时间戳），client/remote 两条通道**任一方向**收到字节即 `touch()`；通道读改为 `proto.read_session`——本方向空闲超时不再终止会话，仅当**双向共同静默满 `SOCKET_TIMEOUT`** 才结束通道（僵尸 keep-alive / 上游挂死的回收语义保持不变，无轮询开销：空闲方向每窗口至多醒一次）；写侧 `drain` 超时保留（对端停读、缓冲写满属真死，掐断合理）。回归测试：`tests/vendor/test_pproxy_vendor.py::TestSessionIdleReclaim`（patch 两处 SOCKET_TIMEOUT=2s 控时，验证流式会话完整存活 + 双向僵尸会话仍在窗口内回收）。
 
 ### 代理服务队列（Proxy-pool-standby-queue）
 

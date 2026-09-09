@@ -1,7 +1,7 @@
 import asyncio, socket, urllib.parse, time, re, base64, hmac, struct, hashlib, io, os
 
-# channel/http_channel 的读写空闲超时（server.py 同值）。上游挂死/keep-alive
-# 僵尸连接时靠它回收，避免通道永久阻塞。
+# 转发通道/握手/drain 的空闲超时基准（server.py 同值）。转发通道读空闲仅
+# 在整会话双向静默满此值时回收（SessionActivity），握手与 drain 按单向超时。
 SOCKET_TIMEOUT = 60
 
 HTTP_LINE = re.compile('([^ ]+) +(.+?) +(HTTP/[^ ]+)$')
@@ -39,6 +39,50 @@ def socks_address(reader, n):
            socket.inet_ntop(socket.AF_INET6, reader.read(16)), \
            int.from_bytes(reader.read(2), 'big')
 
+class SessionActivity:
+    """一次转发的会话双向活动时间戳（stream_handler 创建，两条通道共享）。
+
+    任一方向通道收到字节即 touch()；idle() 为整个会话的双向静默时长。
+    转发通道的单向 read 空闲超时不再直接判定会话死亡——流式下载/SSE/长轮询中
+    client→upstream 方向长期静默是完全正常的（旧语义下这类连接必然在
+    SOCKET_TIMEOUT 处被误杀）；只有双向同时静默满 SOCKET_TIMEOUT（真僵尸
+    keep-alive / 上游挂死）才回收会话，原有的内存/连接回收语义不变。
+    """
+    __slots__ = ("_last",)
+
+    def __init__(self):
+        self._last = time.monotonic()
+
+    def touch(self):
+        self._last = time.monotonic()
+
+    def idle(self):
+        return time.monotonic() - self._last
+
+
+async def read_session(reader, activity, n=65536):
+    """转发通道专用读：本方向空闲超时时按「整会话静默时长」决定是否回收。
+
+    返回 b'' 表示通道应结束（对端 EOF 或双向共同静默满 SOCKET_TIMEOUT）。
+    activity=None 时保持旧语义（单向空闲即结束，供 echo/empty 等特殊通道用）。
+    StreamReader.read 被取消时数据仍留在内部缓冲，重试无丢失。
+    """
+    while True:
+        try:
+            # 与 read_w 同值的单向空闲节拍；asyncio.timeout(3.11+) 取消语义
+            # 正确（同 drain 处注释），且空闲方向每 SOCKET_TIMEOUT 才醒一次，
+            # 无轮询开销
+            async with asyncio.timeout(SOCKET_TIMEOUT):
+                data = await reader.read(n)
+        except TimeoutError:
+            if activity is None or activity.idle() >= SOCKET_TIMEOUT:
+                return b''
+            continue
+        if data and activity is not None:
+            activity.touch()
+        return data
+
+
 class BaseProtocol:
     def __init__(self, param):
         self.param = param
@@ -57,13 +101,13 @@ class BaseProtocol:
         return data
     async def connect(self, reader_remote, writer_remote, rauth, host_name, port, **kw):
         raise Exception(f'{self.name} don\'t support client')
-    async def channel(self, reader, writer, stat_bytes, stat_conn):
+    async def channel(self, reader, writer, stat_bytes, stat_conn, activity=None):
         try:
             stat_conn(1)
             while not reader.at_eof() and not writer.is_closing():
-                # read_w/drain 超时：SOCKET_TIMEOUT 内无数据（空闲）即抛超时回收连接，
-                # 防止客户端/上游挂死时通道永久阻塞导致连接与缓冲无法回收（内存泄漏）
-                data = await reader.read_w(65536)
+                # 读用 read_session：本方向空闲仅在整会话双向静默超时后才结束通道，
+                # 保住流式长连接；僵尸回收语义不变（见 SessionActivity）
+                data = await read_session(reader, activity)
                 if not data:
                     break
                 if stat_bytes is None:
@@ -429,12 +473,13 @@ class HTTP(BaseProtocol):
         writer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
         await writer.drain()
 
-    async def http_channel(self, reader, writer, stat_bytes, stat_conn):
+    async def http_channel(self, reader, writer, stat_bytes, stat_conn, activity=None):
         try:
             stat_conn(1)
             while not reader.at_eof() and not writer.is_closing():
-                # 同 channel：read/drain 加 SOCKET_TIMEOUT 空闲超时，回收 keep-alive 僵尸连接
-                data = await reader.read_w(65536)
+                # 同 channel：读用 read_session（会话双向活动判定），流式响应期间
+                # client 方向静默不再误杀会话，僵尸回收语义不变
+                data = await read_session(reader, activity)
                 if not data:
                     break
                 if b'\r\n' in data and HTTP_LINE.match(data.split(b'\r\n', 1)[0].decode()):

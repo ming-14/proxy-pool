@@ -20,7 +20,8 @@ from typing import NamedTuple
 #   - proto.sslwrap：verbose=None 时静默（原退化为 print 刷 stdout）
 #   - server.sslcontexts：弱引用容器（原全局 list 只 append 不清理 → SSLContext 泄漏）
 #   - server.stream_handler：modstat 钩子签名加 roption（原不传选中上游 → 无法按代理统计流量）
-# 其余协议层修复（SOCKS5 认证应答/UDP ASSOCIATE、HTTP 404、WebSocket 握手等）见 docs/filestree.md。
+# 其余协议层修复（SOCKS5 认证应答/UDP ASSOCIATE、HTTP 404、WebSocket 握手、
+# 通道空闲回收改会话双向静默——修复流式长连接被单向 60s 读超时误杀 等）见 docs/filestree.md。
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _VENDOR_DIR = os.path.join(_PROJECT_ROOT, "vendor")
 if _VENDOR_DIR not in sys.path:

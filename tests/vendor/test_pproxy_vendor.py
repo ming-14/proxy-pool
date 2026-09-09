@@ -10,6 +10,9 @@
   导致已建立的 writer_remote 不关闭 → CLOSE_WAIT 泄漏）
 - #161: Python 3.11 起 SSLProtocol 变 BufferedProtocol，http+ssl:// 上游
   TLS 握手需 get_buffer/buffer_updated（PR #163 已内化，本测试防回归）
+- 流式长连接误杀：转发通道单向读空闲超时（SOCKET_TIMEOUT）即结束会话，
+  流式响应期间 client→upstream 天然静默 → 超过窗口的连接必被掐。
+  修复后会话回收以「双向共同静默满窗口」（proto.SessionActivity）为准（本测试防回归）
 """
 
 import asyncio
@@ -25,6 +28,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 try:
     from cryptography import x509
@@ -38,8 +42,12 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor")
 if VENDOR_DIR not in sys.path:
     sys.path.insert(0, VENDOR_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 import pproxy  # noqa: E402
+
+from src.interfaces.proxy_server import PproxyServer  # noqa: E402
 
 
 def _free_port() -> int:
@@ -681,6 +689,105 @@ class TestHttpPathOnlyRequest404(unittest.TestCase):
 
         data = asyncio.run(run())
         self.assertIn(b"HTTP/1.1 404 Not Found", data, data)
+
+
+class TestSessionIdleReclaim(unittest.TestCase):
+    """转发通道空闲回收以「会话双向静默」为准（流式长连接误杀修复）
+
+    旧行为（上游 pproxy 语义）：通道每次读套单向 SOCKET_TIMEOUT，流式下载/SSE
+    期间 client→upstream 方向天然长期静默 → 超过窗口的响应必在超时点整会话掐断。
+    修复：stream_handler 建 proto.SessionActivity 双向共享，任一方向有字节即刷新；
+    通道单向读空闲仅在整会话静默满窗口时才结束（僵尸 keep-alive/上游挂死仍回收）。
+    窗口 patch 为 2s 压缩测试耗时。
+    """
+
+    WINDOW = 2  # patch 后的空闲窗口（秒）
+
+    async def _drive(self, mode: str, total_deadline: float):
+        """mode: stream 慢速流式 / hang 收下请求永不响应 / quick 立即完整响应
+
+        与 serve 相同的 PproxyServer 路径；无上游 → DIRECT，只验证通道空闲语义。
+        """
+        async def origin_handler(reader, writer):
+            await reader.read_until(b"\r\n\r\n")
+            if mode == "quick":
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
+                             b"Connection: close\r\n\r\nok")
+                await writer.drain()
+                writer.close()
+                return
+            if mode == "hang":
+                await asyncio.sleep(60)  # 永不响应，等代理侧空闲回收
+                writer.close()
+                return
+            # stream：chunked 流 10 帧共 ~4s（跨 2 个窗口），client 方向此时必然静默
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                         b"Transfer-Encoding: chunked\r\n\r\n")
+            await writer.drain()
+            for i in range(10):
+                payload = f"data: tick {i}\n\n".encode()
+                writer.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n")
+                await asyncio.sleep(0.4)
+            writer.write(b"0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        from src.interfaces.proxy_server import PproxyServer
+
+        origin = await asyncio.start_server(lambda r, w: origin_handler(r, w), "127.0.0.1", 0)
+        origin_port = origin.sockets[0].getsockname()[1]
+        proxy_port = _free_port()
+        server = PproxyServer(f"http://127.0.0.1:{proxy_port}")
+        await server.start([])  # 空上游 → schedule 返回 None → DIRECT
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
+            writer.write(f"GET http://127.0.0.1:{origin_port}/ HTTP/1.1\r\n"
+                         f"Host: 127.0.0.1:{origin_port}\r\n\r\n".encode())
+            await writer.drain()
+            t0 = time.monotonic()
+            buf = bytearray()
+            while True:
+                try:
+                    data = await asyncio.wait_for(reader.read(65536), timeout=total_deadline)
+                except asyncio.TimeoutError:
+                    break
+                if not data:
+                    break
+                buf.extend(data)
+            closed_at = time.monotonic() - t0
+            writer.close()
+            return bytes(buf), closed_at
+        finally:
+            origin.close()
+            await server.close()
+
+    def _run(self, mode: str, total_deadline: float):
+        # 两处 SOCKET_TIMEOUT 都必须 patch：pproxy.proto（read_session/drain 取值）
+        # 与 pproxy.server（read_w 等猴子补丁方法按 server.py 全局取值——旧代码通道
+        # 走 server.SOCKET_TIMEOUT，漏 patch 会让 stream 用例对旧代码失效）
+        with mock.patch.object(pproxy.proto, "SOCKET_TIMEOUT", self.WINDOW), \
+             mock.patch.object(pproxy.server, "SOCKET_TIMEOUT", self.WINDOW):
+            return asyncio.run(self._drive(mode, total_deadline))
+
+    def test_streaming_long_connection_survives(self):
+        """流式响应期间 client 方向静默不得误杀会话（旧行为：t≈窗口处掐断）"""
+        buf, _ = self._run("stream", total_deadline=30)
+        self.assertIn(b"tick 9", buf, f"流被提前掐断，只收到 {len(buf)} 字节")
+        self.assertTrue(buf.endswith(b"0\r\n\r\n"), "chunked 终止块缺失（响应不完整）")
+
+    def test_zombie_session_still_reclaimed(self):
+        """双向全静默（上游挂死不响应）仍在空闲窗口内回收——僵尸修复不回退"""
+        buf, closed_at = self._run("hang", total_deadline=15)
+        self.assertEqual(buf, b"", "hang 源站不应有任何响应字节")
+        self.assertGreater(closed_at, 0.5, "回收过快会误伤刚建立的会话")
+        self.assertLessEqual(closed_at, 4 * self.WINDOW,
+                             f"僵尸会话未在空闲窗口内回收: {closed_at}s")
+
+    def test_quick_request_unaffected(self):
+        """普通短请求不受会话活动改造影响"""
+        buf, _ = self._run("quick", total_deadline=10)
+        self.assertIn(b"200 OK", buf)
+        self.assertTrue(buf.endswith(b"ok"))
 
 
 if __name__ == "__main__":
