@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -96,6 +97,12 @@ def panel():
     后 3 个进 staging（非可请求组不被清空，供代理组页测试）。
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="proxy-pool-e2e-"))
+    # 防呆：Windows SO_REUSEADDR 允许后起进程绑同端口并劫持连接，若面板/代理端口
+    # 已被占用（如手动跑着的 serve），测试结果会指向错误实例且极难排查——直接失败
+    for port in (SERVER_PORT, WEB_PORT):
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                pytest.fail(f"端口 {port} 已被占用：请先停止手动运行的 serve，e2e 需独占 8082/8083")
     mocks = _MockProxyLoop(count=6)
     mocks.start()
     config_path = _make_config(tmpdir, mocks.ports[0])

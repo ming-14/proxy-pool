@@ -56,9 +56,13 @@ export interface LineChartCfg {
 
 export function lineChartOption(cfg: LineChartCfg, theme: LineTheme): EChartsOption {
   const axes = cfg.axes.length ? cfg.axes : [{ type: 'value' as const }];
+  // 空数据兜底：ECharts 类目轴零类目时整轴不渲染（旧 Chart.js 仍画坐标框架）。
+  // 占位空类目 + 显式轴界让空图保留网格骨架，与旧版观感一致。
+  const empty = cfg.labels.length === 0;
   return {
     animation: false,
-    grid: { left: 6, right: 6, top: cfg.legend === false ? 8 : 34, bottom: 2, containLabel: true },
+    // containLabel 为 echarts 6 legacy 选项（模块化构建未注册，仅产生告警），布局由默认 outerBounds 处理
+    grid: { left: 6, right: 6, top: cfg.legend === false ? 8 : 34, bottom: 2 },
     legend: {
       show: cfg.legend !== false,
       top: 0,
@@ -90,14 +94,14 @@ export function lineChartOption(cfg: LineChartCfg, theme: LineTheme): EChartsOpt
     },
     xAxis: {
       type: 'category',
-      data: cfg.labels,
+      data: empty ? [''] : cfg.labels,
       boundaryGap: false,
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: { color: theme.text, fontSize: 11 },
       splitLine: { show: true, lineStyle: { color: theme.grid } },
     },
-    yAxis: axes.map((ax) => buildAxis(ax, theme)),
+    yAxis: axes.map((ax) => buildAxis(ax, theme, empty)),
     series: cfg.series.map((s) => ({
       name: s.name,
       type: 'line' as const,
@@ -114,8 +118,10 @@ export function lineChartOption(cfg: LineChartCfg, theme: LineTheme): EChartsOpt
   };
 }
 
-function buildAxis(ax: AxisCfg, theme: LineTheme) {
+function buildAxis(ax: AxisCfg, theme: LineTheme, empty = false) {
   const isRight = ax.position === 'right';
+  // 空数据时 ECharts 无法从序列推界（value 轴只剩 min 也出不来刻度）→ 显式兜底区间
+  const fallback = empty ? (ax.type === 'log' ? { min: 0.01, max: 10 } : { min: 0, max: 1 }) : null;
   return {
     type: ax.type,
     position: isRight ? ('right' as const) : ('left' as const),
@@ -125,8 +131,8 @@ function buildAxis(ax: AxisCfg, theme: LineTheme) {
     nameRotate: ax.name ? (isRight ? -90 : 90) : 0,
     nameTextStyle: { color: theme.text, fontSize: 11 },
     // 线性左轴默认 0 起点（Chart.js beginAtZero），log 轴不强制
-    min: ax.min ?? (ax.type === 'value' && !isRight ? 0 : undefined),
-    max: ax.max,
+    min: ax.min ?? fallback?.min ?? (ax.type === 'value' && !isRight ? 0 : undefined),
+    max: ax.max ?? fallback?.max,
     // Chart.js 对数轴刻度带千分位（1,000 / 50,000）
     axisLabel: {
       color: theme.text,

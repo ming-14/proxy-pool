@@ -244,6 +244,12 @@ class TestStandby:
         tip.wait_for(state="visible", timeout=5000)
         assert tip.locator("canvas").count() == 2
         assert "测速" in tip.inner_text()
+        # 定位必须在视口内（曾因 left/top 拼出非法值 "258px}" 被浏览器忽略，
+        # 浮窗落回静态位置；mock 行数少恰好可见，真实数据下移出屏幕）
+        box = tip.bounding_box()
+        vp = page.evaluate("[innerWidth, innerHeight]")
+        assert 0 <= box["x"] and box["x"] + box["width"] <= vp[0]
+        assert 0 <= box["y"] and box["y"] + box["height"] <= vp[1]
         shot("tooltip-dark")
         page.mouse.move(5, 5)
         tip.wait_for(state="hidden", timeout=5000)

@@ -376,11 +376,13 @@ function geoFull(p: GroupProxyEntry): string {
   return [displayCountryName(geo.country || '未知'), geo.province, geo.city].filter(Boolean).join(' · ');
 }
 
+// 与旧版逐字一致：空列表也显示范围（“共 0 条 · 显示第 1-0 条”）
 const infoText = computed(() => {
   const total = rows.value.length;
   const items = virtualItems.value;
-  if (!total || !items.length) return `共 ${total} 条`;
-  return `共 ${total} 条 · 显示第 ${items[0].index + 1}-${items[items.length - 1].index + 1} 条`;
+  const first = items.length ? items[0].index + 1 : 1;
+  const last = items.length ? items[items.length - 1].index + 1 : 0;
+  return `共 ${total} 条 · 显示第 ${first}-${last} 条`;
 });
 </script>
 

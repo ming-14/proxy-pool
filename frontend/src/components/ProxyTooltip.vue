@@ -3,7 +3,7 @@
  * 代理统计浮窗：延时趋势 + 流量速率（ECharts）+ CF 测速。
  * 状态全部来自 useProxyTooltip 模块级单例；位置优先鼠标右侧，放不下翻转左侧。
  */
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import ChartBox from '@/components/charts/ChartBox.vue';
 import { lineChartOption } from '@/components/charts/chartOptions';
 import { useLineTheme } from '@/components/charts/useLineTheme';
@@ -70,19 +70,21 @@ const statsText = computed(() => {
   return `延迟 ${lastLat != null ? lastLat.toFixed(3) + 's' : '-'} · ↑${fmtBytes(totalUp)} ↓${fmtBytes(totalDown)}`;
 });
 
-async function place() {
+/**
+ * 同步定位：watch flush:'post' 保证 paint 前执行，浏览器不会画出中间态，
+ * 无需旧式 visibility:hidden→测量→恢复（该模式的 visibility 翻转经 .btn 的
+ * transition:all 继承产生 ~150ms 按钮隐藏闪烁，innerText 会剔除不可见子树）。
+ */
+function place() {
   const node = el.value;
   if (!node) return;
-  node.style.visibility = 'hidden';
-  await nextTick();
   const rect = node.getBoundingClientRect();
   const maxX = window.innerWidth - rect.width - 8;
   const maxY = window.innerHeight - rect.height - 8;
   let x = tooltipState.x + 14;
   if (x + rect.width > window.innerWidth - 8) x = tooltipState.x - 14 - rect.width;
-  node.style.left = `${Math.min(Math.max(x, 8), maxX)}px}`;
-  node.style.top = `${Math.min(Math.max(tooltipState.y + 14, 8), maxY)}px}`;
-  node.style.visibility = '';
+  node.style.left = `${Math.min(Math.max(x, 8), maxX)}px`;
+  node.style.top = `${Math.min(Math.max(tooltipState.y + 14, 8), maxY)}px`;
 }
 
 watch(

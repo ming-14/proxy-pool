@@ -2,7 +2,12 @@
  * 组件类：度量逐值照搬旧 components.css/layout.css（视觉不变约束）。
  * 颜色引用 theme.css 的 --color-* 令牌；已删除旧版死代码（pagination、
  * sort-asc/desc、sidebar.collapsed、conn-dot.polling、bg-theme-* 工具类）。
+ *
+ * 必须置于 @layer components：Tailwind 4 工具类在 @layer utilities 中，
+ * 未分层样式在级联中恒赢分层样式——不包层时 td{text-align:left} 会压过
+ * .text-center/.text-right（旧版 v3 无层且 CDN 样式后注入，工具类天然赢）。
  */
+@layer components {
 
 /* ---------------- 按钮 ---------------- */
 .btn {
@@ -687,3 +692,5 @@ tr.row-paused {
     transform: translateY(0);
   }
 }
+
+} /* @layer components end */
