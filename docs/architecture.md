@@ -41,7 +41,7 @@ blacklist 黑名单 ◀───────┘
 
 ### 2. 分组与 TTL
 
-`PROXY_GROUPS`（见 `config/config.toml` 的 `[groups]`，组语义由配置决定，代码不硬编码组名）：
+`PROXY_GROUPS`（见 `config/pool.toml` 的 `[groups]`，组语义由配置决定，代码不硬编码组名）：
 
 | 组 | TTL | 说明 |
 |---|---|---|
@@ -156,7 +156,7 @@ for attempt in range(max_retries):
 - **类型限制**：默认 `SERVE_PROXY_TYPES = ("http", "socks5")`，**不含 https**——HTTPS 代理在 pproxy 中是 TLS 终结（`http+ssl://` 上游），浏览器访问 https 目标会拿到上游证书导致 `ERR_CERT_AUTHORITY_INVALID`；http/socks5 均为透传无此问题。
 - **固定代理（pin）**：Web 面板可固定队列内代理（`POST /api/standby/pin`，持久化 `pinned`+`pinned_at` 到 `.cache.db`）；固定代理**排队列最前（按固定时间 `pinned_at` 升序），正常心跳正常计数连续失败，但不管怎样都不会被踢出/拉黑/补测**——fill 只踢非固定队尾（全固定时新代理 move trusted），heartbeat 失败只计数不拉黑不补测不移出；**超出 `capacity` 的固定代理忽略**（保留在组内不移出不丢失固定状态，但不参与队列/上游/心跳，用户解固其他代理使固定数 ≤ capacity 后自动重新生效）。
 - **面板展示不截断**：`standby_proxies(truncate=False)` 返回组内全部代理（含超出 capacity 的溢出代理），面板显示实际数量 vs capacity（如 16/15）；`truncate=True`（默认）仅返回 capacity 内的代理，用于 pproxy 上游/心跳/指标采样。
-- **锁定单一上游（lock）**：Web 面板可锁定队列内代理为 pproxy 唯一上游（`POST /api/standby/lock`，move 到内建隐藏组 `LOCKED_GROUP="_proxy-pool-locked"`，不在 config.toml/前端组列表，持久化到 `.cache.db`）。锁定后 `upstream_proxies()` 只返回该代理（pproxy 上游只有它），**fill 跳过**（不补入），**心跳仍探测锁定代理测速**（latency 数据加延迟趋势图，失败只计数不拉黑不移出不补测），无论心跳是否成功都只用该代理；锁定期间采样点带 `locked=True` 标记，**健康率趋势图该点置 null 断开、仪表盘健康率卡片隐藏**（健康率/队列长度无意义），延迟趋势图连续显示测速；其他队列代理保留不动，解锁（`POST /api/standby/unlock`）后 move 回队列恢复原调度。与 pin 的区别：pin 只是不被踢出（rc 调度仍可能选其他代理），lock 是上游**只有**这一个代理。
+- **锁定单一上游（lock）**：Web 面板可锁定队列内代理为 pproxy 唯一上游（`POST /api/standby/lock`，move 到内建隐藏组 `LOCKED_GROUP="_proxy-pool-locked"`，不在配置文件/前端组列表，持久化到 `.cache.db`）。锁定后 `upstream_proxies()` 只返回该代理（pproxy 上游只有它），**fill 跳过**（不补入），**心跳仍探测锁定代理测速**（latency 数据加延迟趋势图，失败只计数不拉黑不移出不补测），无论心跳是否成功都只用该代理；锁定期间采样点带 `locked=True` 标记，**健康率趋势图该点置 null 断开、仪表盘健康率卡片隐藏**（健康率/队列长度无意义），延迟趋势图连续显示测速；其他队列代理保留不动，解锁（`POST /api/standby/unlock`）后 move 回队列恢复原调度。与 pin 的区别：pin 只是不被踢出（rc 调度仍可能选其他代理），lock 是上游**只有**这一个代理。
 - **指标采样（metrics）**：每轮 heartbeat 结束采一次队列指标（avg/min/max 延迟、健康率、队列长度 + `locked` 标记是否锁定期间采集），存内存 `deque`（`StandbySample` NamedTuple 紧凑存储），按 `METRICS_WINDOW` 时间窗口清理过期点；`/api/status/history`（`?since=<ts>` 增量拉取）下发历史，前端累积重绘——**刷新页面不丢失趋势**（多标签一致），重启清空（仅运行时观测）。**心跳动态调整时采样频率跟着变、旧点按时间自然过期，窗口始终 = `METRICS_WINDOW`**，无需重建缓冲区。注：历史数据体量大（窗口 1800s / 2s 采样 ≈ 900 点/序列），已从 `/api/status` 分离（该端点仅返回实时状态 ~6KB），避免 2s 轮询重复传输 200KB 历史。
 - **图表渲染（浏览器 CPU）**：仪表盘 3 个趋势图（延迟/健康率/流量）为 ECharts 实例，`animation:false` + option 全量 `setOption`（数据 ≤1000 点/序列，2s 一次），组件 `ChartBox.vue` 统一 init/resize/dispose；历史由 statusStore 增量合并（`/api/status/history?since=`），option 为纯 computed——旧手写前端的增量渲染状态机与全量重建 CPU 高峰问题随架构消失。
 - **流量统计（traffic）**：pproxy 原生 `modstat` 钩子按方向分发到上行/下行字节计数器（`i∈{0,1}` 上行、`i∈{2,3}` 下行），每轮 heartbeat 后采累计字节存 `TrafficSample` NamedTuple + deque（同 `METRICS_WINDOW` 窗口）；`/api/status/history` 下发 `traffic_history` + `traffic_total`，前端从累计值序列差分算速率曲线。注：pproxy `modstat` 只统计 `channel` 转发的 body，请求头在 `connected` 回调里直接写不经计数（GET 请求头不计入上行，POST/CONNECT body 正常计数）。
@@ -200,12 +200,12 @@ for attempt in range(max_retries):
 - 验证过的中转 HTTPS 代理（working + unused）连同三类爬取结果一起去重返回（带 scheme 前缀），由拉取用例按 scheme 分拣入 `freeproxy-world-{scheme}` 组；
 - 页面有效性校验：含 `<td style="font-weight: 500;">` 才算有效页（CF 墙/空页返回失败）；
 - 走代理时用 requests（HTTPS 代理需 TLS 到代理）；直连用 `http_client`；
-- 并发/限流/超时/请求头参数：`FPW_MAX_CONCURRENT=16`、`FPW_PROXY_RETRY=1`、`FPW_TASK_INTERVAL=2`、`FPW_REQUEST_TIMEOUT=15`、`FPW_ACCEPT_LANGUAGE="en-US,en;q=0.9"`，均由 `config/config.toml` 的 `[fetch.freeproxy_world]` 注入；
+- 并发/限流/超时/请求头参数：`FPW_MAX_CONCURRENT=16`、`FPW_PROXY_RETRY=1`、`FPW_TASK_INTERVAL=2`、`FPW_REQUEST_TIMEOUT=15`、`FPW_ACCEPT_LANGUAGE="en-US,en;q=0.9"`，均由 `config/sources.toml` 的 `[fetch.freeproxy_world]` 注入；
 - 该源产出的**端口 80 代理是 Cloudflare 假代理**（CONNECT 400），拉取时直接入黑名单（`DISABLED_PORTS={80}`）。
 
 ### 源启用/禁用
 
-在 `config/config.toml` 的 `[[sources]]` 列表中配置；`name` 为模块导入路径（同时是源暂停记录 key），`group` 为入组名，`group_by_protocol` 决定是否按 scheme 分拣，`pause_ttl` 为拉取后强制暂停时长。
+在 `config/sources.toml` 的 `[[sources]]` 列表中配置；`name` 为模块导入路径（同时是源暂停记录 key），`group` 为入组名，`group_by_protocol` 决定是否按 scheme 分拣，`pause_ttl` 为拉取后强制暂停时长。
 
 ## 数据持久化
 
@@ -251,9 +251,18 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 - **SQLite 写节流**：`save()` 30 秒节流 + 组级增量（`export_group` ~0.015ms），WAL 写约 9KB/s 级，无需进一步调整。
 - **maxminddb Windows 非 ASCII 路径修复**：`GeoLite2Locator` 显式 `MODE_MMAP`（纯 Python mmap）。Windows 下 maxminddb C 扩展把路径按 UTF-8 字节传给 ANSI fopen，含非 ASCII 字符的路径（如中文目录名）打不开 mmdb；纯 Python 实现走 Python open，Unicode 路径正常，同为内存映射，查询性能差异可忽略。
 
-## 配置项速查（config/config.toml）
+## 配置项速查（config/ 目录，按领域拆分）
 
-唯一配置数据源为 `config/config.toml`（`src/framework/config.py` 在导入时加载并导出同名常量；`[paths]` 下路径相对项目根解析）。
+配置按领域拆为多个 TOML（`src/framework/config.py` 导入时按固定文件名加载并导出同名常量；`[paths]` 下路径相对项目根解析；每个顶层节固定归属一个文件，放错文件/缺文件直接报错，无 include/合并机制）：
+
+- `config.toml`：`[paths]` 路径 + `[web]` 面板开关/端口
+- `pool.toml`：`[pool]` 阈值/语义组/可请求组 + `[groups]` 分组定义
+- `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]`
+- `serve.toml`：`[server]` 端口/队列/心跳/网络门控/metrics/代理类型
+- `panel.toml`：`[purity]` 纯洁度 + `[geoip]` 归属地图
+- `apikey.env`：密钥（git 忽略）
+
+环境变量 `PROXY_POOL_CONFIG` 指向替代配置**目录**（e2e 隔离用）。
 
 **组抽象化**：所有组在 `[groups]` 定义（组名 → `{ ttl }`，仅声明 ttl），代码不硬编码组名。特殊语义组与可请求组均显式声明：
 - `[pool].trusted_group` / `blacklist_group`：信任池 / 黑名单组名
@@ -272,17 +281,17 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 | `REQUESTABLE_GROUPS` | `[pool].requestable_groups` | `request`/`get` 可从中取代理的组（显式列表声明） |
 | `TRUSTED_GROUP` / `BLACKLIST_GROUP` | `[pool]` 指定 | 信任池 / 黑名单组名 |
 | `STANDBY_GROUP` | `[server]` 指定 | serve 代理服务队列组名 |
-| `MAX_CONSECUTIVE_FAILS` | 2 | 普通组连续失败淘汰阈值 |
-| `TRUSTED_MAX_CONSECUTIVE_FAILS` | 3 | 信任池组连续失败上限 |
+| `MAX_CONSECUTIVE_FAILS` | 5 | 普通组连续失败淘汰阈值 |
+| `TRUSTED_MAX_CONSECUTIVE_FAILS` | 10 | 信任池组连续失败上限 |
 | `SOURCE_PAUSE_TTL` | 1200 | 去重率过高时的源暂停时长 |
 | `SOURCE_DEDUP_THRESHOLD` | 0.92 | 源去重率阈值 |
 | `FETCH_PROXY_RETRIES` | 3 | 每源拉取重试次数 |
-| `STANDBY_QUEUE_CAPACITY` | 10 | serve 代理服务队列容量 |
+| `STANDBY_QUEUE_CAPACITY` | 30 | serve 代理服务队列容量 |
 | `STANDBY_FILL_GROUPS` | trusted 排最前 + 各可请求组 | 代理服务队列填充候选组（按优先级顺序，靠前优先） |
-| `STANDBY_FILL_PROBE_MULTIPLIER` / `STANDBY_FILL_PROBE_MIN_EXTRA` | 8 / 10 | 填充候选数 = 缺口 × 倍率，至少 缺口 + 增量 |
+| `STANDBY_FILL_PROBE_MULTIPLIER` / `STANDBY_FILL_PROBE_MIN_EXTRA` | 2 / 5 | 填充候选数 = 缺口 × 倍率，至少 缺口 + 增量 |
 | `HEARTBEAT_INTERVAL` | 2 | serve 心跳间隔秒 |
 | `HEARTBEAT_LOCK_INTERVAL` | 30 | 锁定单一上游时的心跳间隔秒（锁定代理不淘汰不拉黑，仅测速展示，降低探测频率与外网请求） |
-| `HEARTBEAT_PROBE_URL` | `https://httpbin.org/ip` | 心跳探测目标 |
+| `HEARTBEAT_PROBE_URL` | `https://cp.cloudflare.com/generate_204` | 心跳探测目标 |
 | `HEARTBEAT_CONCURRENCY` | 16 | 心跳探测并发数 |
 | `HEARTBEAT_TIMEOUT` | 3 | 心跳单代理超时秒 |
 | `METRICS_WINDOW` | 1800 | 队列指标采样存储时长秒（窗口）；超出窗口的自动清理，心跳动态调整时窗口始终不变 |

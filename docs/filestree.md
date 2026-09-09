@@ -7,8 +7,13 @@ proxy-pool/
 ├── AGENTS.md                      # 工程规范（干净架构、测试规范、用户交互规则）
 ├── requirements.txt               # 项目依赖（requests / PySocks / fake-useragent / aiohttp；pproxy 已 vendor 化）
 ├── pytest.ini                     # pytest 配置（testpaths=tests）
-├── config/                        # 配置文件目录
-│   └── config.toml                # 唯一配置数据源（分组/源/超时/路径等）
+├── config/                        # 配置文件目录（按领域拆分，节固定归属单文件，见 src/framework/config.py）
+│   ├── config.toml                # [paths] 路径 + [web] 面板开关/端口
+│   ├── pool.toml                  # [pool] 阈值/语义组/可请求组 + [groups] 分组定义
+│   ├── sources.toml               # [fetch] 拉取调度（含 freeproxy_world）+ [[sources]] 源列表
+│   ├── serve.toml                 # [server] serve 端口/队列/心跳/网络门控/metrics
+│   ├── panel.toml                 # [purity] 纯洁度 + [geoip] IP 归属地图
+│   └── apikey.env                 # 密钥（ABUSEIPDB_API_KEY 等，git 忽略）
 ├── src/                           # 主包（干净架构四层）
 │   ├── __init__.py
 │   ├── domain/                    # 实体层：纯业务规则，零第三方依赖、无 IO
@@ -42,7 +47,7 @@ proxy-pool/
 │   │       └── freeproxy_world.py # FreeProxy.World 源（多阶段爬取，异步实现）
 │   └── framework/                 # 框架与驱动层：具体技术实现
 │       ├── __init__.py
-│       ├── config.py              # 配置加载（唯一数据源 config/config.toml）
+│       ├── config.py              # 配置加载（config/ 领域拆分多文件，固定节归属）
 │       ├── container.py           # 组合根（依赖组装）
 │       ├── cli.py                 # argparse 命令处理
 │       ├── serve.py               # serve 主循环（调度 fill/heartbeat/补测 + 上游同步）

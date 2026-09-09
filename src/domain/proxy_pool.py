@@ -17,7 +17,7 @@ consecutive_fails 为连续失败计数：每次失败 +1，任何成功（请�
     - 所有组:        joined_at + ttl < now 自动过期移除（ttl=None 永不过期）
 
 特殊组名（信任池/黑名单）由配置指定，经构造参数注入，本模块不硬编码。
-LOCKED_GROUP 为内建隐藏组（不在 config.toml，运行时承载锁定代理），
+LOCKED_GROUP 为内建隐藏组（不在配置文件，运行时承载锁定代理），
 serve lock 时代理 move 到该组作为 pproxy 唯一上游。
 """
 
@@ -28,7 +28,7 @@ from typing import Any
 
 from src.domain.models import normalize_proxy
 
-# 内建锁定组（不在 config.toml，ProxyPool.__init__ 自动创建，ttl=never 永不过期）。
+# 内建锁定组（不在配置文件，ProxyPool.__init__ 自动创建，ttl=never 永不过期）。
 # serve lock 时代理 move 到该组，standby_proxies 只返回该组代理作为 pproxy 唯一上游；
 # unlock 时代理 move 回代理服务队列。对前端/组列表隐藏。
 LOCKED_GROUP = "_proxy-pool-locked"
@@ -71,7 +71,7 @@ class ProxyPool:
         self._dirty_groups: set[str] = set()
         self._source_paused_dirty: bool = False
         self._init_groups(groups)
-        # 内建锁定组（不在 config.toml，运行时承载锁定代理，永不过期）
+        # 内建锁定组（不在配置文件，运行时承载锁定代理，永不过期）
         if LOCKED_GROUP not in self.proxy_groups:
             self.proxy_groups[LOCKED_GROUP] = {"ttl": None, "proxies": {}}
 

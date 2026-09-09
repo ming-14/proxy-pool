@@ -1,0 +1,21 @@
+# 面板功能：IP 纯洁度检查与 IP 归属地图（加载器见 src/framework/config.py）
+
+# ---------------------------------------------------------------- IP 纯洁度检查
+[purity]
+source = "abuseipdb"                            # 检查源：ipok / abuseipdb
+# 各源代理（被墙时用），空字符串表示直连
+ipok_proxy = ""  # ipok.io 代理
+abuseipdb_proxy = ""                        # AbuseIPDB 代理（空=直连）
+# AbuseIPDB API key 在 config/apikey.env（不入 TOML）
+
+# ---------------------------------------------------------------- IP 归属地（Web 地图）
+[geoip]
+enabled = true                     # 地图/归属定位开关；false 时不加载 mmdb 定位器（省内存）
+# GeoLite2 离线数据库（相对项目根，MaxMind GeoLite2 或 P3TERX/GeoLite.mmdb 构建版）。
+# 支持 City / Country 两种库，按库的 database_type 自动识别：
+#   GeoLite2-City.mmdb    城市级（省/市/经纬度，地图散点精度高，约 60MB）
+#   GeoLite2-Country.mmdb 国家级（仅国家，地图散点用内置国家中心坐标兜底，约 5MB）
+# 切换只需改 db_file 指向对应文件。
+db_file = "vendor/geoip/GeoLite2-City.mmdb"
+# 定位结果缓存有效期秒：IP 段归属变化以月计，90 天内不重复解析 mmdb
+cache_ttl = 7776000

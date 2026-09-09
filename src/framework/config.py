@@ -1,11 +1,18 @@
-"""应用配置：唯一数据源为 config/config.toml（项目根下）
+"""应用配置：config/ 目录下按领域拆分的多个 TOML（固定文件名，无 include/合并机制）
 
-本模块在导入时加载 TOML，并导出模块级常量（PROXY_GROUPS/TRUSTED_GROUP/
-MAX_CONSECUTIVE_FAILS/SOURCES/SERVER_* 等），组合根与各框架层模块只从这里导入，
-不直接接触 TOML。组全部由 [groups] 定义（仅 ttl），可请求组由
-[pool].requestable_groups 显式声明，特殊语义组（trusted/blacklist/standby）
-由 [pool] 与 [server] 显式指定组名，代码不硬编码组名。路径类配置
-（cache_file/log_dir）相对项目根解析。
+    config.toml   [paths] [web]        路径与面板开关
+    pool.toml     [pool] [groups]      池策略与分组定义
+    sources.toml  [fetch] [[sources]]  代理源与拉取调度
+    serve.toml    [server]             serve 端口/队列/心跳/网络门控/metrics
+    panel.toml    [purity] [geoip]     面板功能（纯洁度/归属地图）
+    apikey.env    密钥（KEY=VALUE，git 忽略）
+
+每个顶层节固定归属一个文件：节放错文件直接报错（防静默失效），缺文件报错。
+本模块在导入时加载并导出模块级常量（PROXY_GROUPS/TRUSTED_GROUP/SOURCES/
+SERVER_* 等），组合根与各框架层模块只从这里导入，不直接接触 TOML。
+组全部由 pool.toml [groups] 定义（仅 ttl），可请求组由 [pool].requestable_groups
+显式声明，特殊语义组（trusted/blacklist/standby）由 [pool] 与 [server] 显式
+指定组名，代码不硬编码组名。路径类配置相对项目根解析。
 
 领域规则常量经组合根（container.py）注入到 ProxyPool 与各用例；
 CACHE_DB/LOG_DIR 为框架层路径。
@@ -26,15 +33,35 @@ except ModuleNotFoundError:  # pragma: no cover
 
 # config.py 位于 src/framework/，上溯 3 级到项目根
 _PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-# PROXY_POOL_CONFIG 环境变量可指向替代配置文件（e2e 测试隔离用：临时 cache_db、
-# 本地 mock 探测 URL、独立端口）；缺省为项目 config/config.toml
-CONFIG_FILE = Path(os.environ.get("PROXY_POOL_CONFIG") or (_PROJECT_ROOT / "config" / "config.toml"))
+# PROXY_POOL_CONFIG 环境变量指向替代配置目录（e2e 测试隔离用：临时 cache_db、
+# 本地 mock 探测 URL、独立端口）；缺省为项目 config/。目录内文件须齐全（固定清单，无回退）
+CONFIG_DIR = Path(os.environ.get("PROXY_POOL_CONFIG") or (_PROJECT_ROOT / "config"))
+
+# 文件名 -> 该文件允许的顶层节。节跨文件放置视为配置错误（避免"放错文件静默失效"）。
+_SECTION_OWNERSHIP: dict[str, set[str]] = {
+    "config.toml": {"paths", "web"},
+    "pool.toml": {"pool", "groups"},
+    "sources.toml": {"fetch", "sources"},
+    "serve.toml": {"server"},
+    "panel.toml": {"purity", "geoip"},
+}
 
 
-def _load_toml() -> dict:
-    """读取 TOML 配置；文件缺失或解析失败直接报错（配置是硬性要求）"""
-    with open(CONFIG_FILE, "rb") as f:
-        return tomllib.load(f)
+def _load_all() -> dict:
+    """加载全部领域配置文件，合并为单一节字典；缺失/解析失败/节越界直接报错"""
+    merged: dict = {}
+    for filename, allowed in _SECTION_OWNERSHIP.items():
+        path = CONFIG_DIR / filename
+        with open(path, "rb") as f:  # 缺文件 FileNotFoundError 即快速失败
+            data = tomllib.load(f)
+        misplaced = set(data) - allowed
+        if misplaced:
+            raise ValueError(
+                f"{filename} 含不属于本文件的节 {sorted(misplaced)}；"
+                f"各节归属：{_SECTION_OWNERSHIP}"
+            )
+        merged.update(data)
+    return merged
 
 
 def _parse_ttl(value) -> int | None:
@@ -46,7 +73,7 @@ def _parse_ttl(value) -> int | None:
     return int(value)
 
 
-_toml = _load_toml()
+_toml = _load_all()
 
 # ---------------------------------------------------------------- 代理分组
 # 组全部由 [groups] 定义（组名 -> {ttl}），仅声明 ttl：
@@ -101,7 +128,7 @@ SOURCE_DEDUP_THRESHOLD = float(_toml["fetch"]["source_dedup_threshold"])  # 源�
 FETCH_PROXY_RETRIES = int(_toml["fetch"]["fetch_proxy_retries"])  # 每个代理源拉取时的最大重试次数
 
 # ---------------------------------------------------------------- FreeProxy.World 源专属参数
-# 多阶段爬取的并发/限流/超时/请求头，仅该源使用（置于全局配置以遵循唯一配置数据源原则）。
+# 多阶段爬取的并发/限流/超时/请求头，仅该源使用（置于 sources.toml，遵循领域配置归属）。
 # 框架层导出，组合根（container._source_loader）组装为 interfaces 层的 FpwConfig 注入源工厂，
 # interfaces 层不直接依赖本模块。
 _fpw = _toml["fetch"]["freeproxy_world"]
@@ -154,9 +181,9 @@ LOG_DIR = str(_PROJECT_ROOT / _toml["paths"]["log_dir"])         # 日志目录�
 AUTOLOAD_FILE = str(_PROJECT_ROOT / _toml["paths"]["autoload"])  # 启动时自动加载的代理清单文件（一行一个，# 注释；不存在则跳过）
 
 # ---------------------------------------------------------------- AbuseIPDB（IP 纯洁度检查）
-# API key 从 config/apikey.env 加载（敏感信息不入 TOML，避免 git 追踪）。
+# API key 从配置目录的 apikey.env 加载（敏感信息不入 TOML，避免 git 追踪）。
 # 文件格式：KEY=VALUE 每行一个，# 开头为注释。key 缺失时纯洁度检查功能禁用。
-_APIKEY_FILE = _PROJECT_ROOT / "config" / "apikey.env"
+_APIKEY_FILE = CONFIG_DIR / "apikey.env"
 ABUSEIPDB_API_KEY: str | None = None
 if _APIKEY_FILE.exists():
     with open(_APIKEY_FILE, "r", encoding="utf-8") as _f:

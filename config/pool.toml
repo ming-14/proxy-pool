@@ -1,0 +1,38 @@
+# 代理池策略：分组定义与晋级/淘汰阈值（加载器见 src/framework/config.py）
+
+# ---------------------------------------------------------------- 代理池
+[pool]
+max_consecutive_fails = 5        # 普通组代理连续失败次数 >= 该值后不再参与可用集合
+trusted_max_consecutive_fails = 10  # 信任池组代理的连续失败上限（容错更高）
+# 特殊语义组（显式指定组名，组须在 [groups] 定义）：
+#   trusted_group:    信任池：请求成功代理的晋级目标，永不过期
+#   blacklist_group:  黑名单：失败淘汰代理的归属，不可请求
+trusted_group = "trusted"
+blacklist_group = "blacklist"
+# 可请求组（参与可用集合，request/get 命令与 serve 队列填充从中取代理）。
+# 显式列表声明，未列出的组（如 blacklist）不参与可用集合。
+requestable_groups = [
+    "default-http",
+    "default-https",
+    "default-socks5",
+    "freeproxy-world-http",
+    "freeproxy-world-https",
+    "freeproxy-world-socks5",
+    "Proxy-pool-standby-queue",
+    "trusted",
+]
+
+# ---------------------------------------------------------------- 代理分组（组全部在此定义）
+# 组名 -> { ttl }
+# - ttl: 整数秒数，超过自动清除（见 ProxyPool._cleanup_all_expired）；"never" 永不过期
+[groups]
+"default-http" = { ttl = 3600 }              # API 源的 HTTP 代理
+"default-https" = { ttl = 3600 }             # API 源的 HTTPS 代理
+"default-socks5" = { ttl = 3600 }            # API 源的 SOCKS5 代理
+"freeproxy-world-http" = { ttl = 1800000 }     # FreeProxy.World 的 HTTP 代理
+"freeproxy-world-https" = { ttl = 1800000 }    # FreeProxy.World 的 HTTPS 代理
+"freeproxy-world-socks5" = { ttl = 1800000 }   # FreeProxy.World 的 SOCKS5 代理
+"Proxy-pool-standby-queue" = { ttl = "never" }   # serve 代理服务队列（pproxy 上游），由心跳探测维护
+"trusted" = { ttl = "never" }   # 成功使用过的代理，永不过期
+"blacklist" = { ttl = 10800 }                # 失败过多的代理，3 小时后过期可重新入池
+"staging" = { ttl = "never" }                # 暂存组：手动暂存的代理，永不过期

@@ -195,7 +195,7 @@ def build_container(cache_db: str | None = None) -> Container:
         except Exception as exc:
             # 库不随仓库分发：缺失/损坏时只禁用地图，serve 仍可运行。
             # 下载 GeoLite2-City/Country.mmdb 放到 vendor/geoip/，或在
-            # config.toml 里把 geoip.db_file 指向实际位置
+            # panel.toml 里把 geoip.db_file 指向实际位置
             logger.warning(
                 "GeoLite2 加载失败，IP 归属地图禁用 path=%s err=%s",
                 config.GEOIP_DB_FILE,

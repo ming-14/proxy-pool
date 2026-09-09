@@ -1,7 +1,7 @@
 """Web 面板 e2e 共享设施
 
 隔离策略：
-- PROXY_POOL_CONFIG 指向临时 config.toml：独立 cache_db / 日志目录 / 本地 mock 探测 URL
+- PROXY_POOL_CONFIG 指向临时配置目录（复制自 config/，补丁 cache_db / 日志目录 / 本地 mock 探测 URL）
 - 代理端口 8082、面板端口 8083（用户指定，避开 8080/8081）
 - 队列数据来自本地 mock 上游代理（复用 tests/e2e/mock_upstream），不依赖外网
 - serve 以子进程运行（真实 aiohttp 面板 + Vue 前端构建产物）
@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -32,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tests.e2e.mock_upstream import start_mock_upstream  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-REAL_CONFIG = PROJECT_ROOT / "config" / "config.toml"
+CONFIG_SRC = PROJECT_ROOT / "config"
 SERVER_PORT = 8082
 WEB_PORT = 8083
 BASE_URL = f"http://127.0.0.1:{WEB_PORT}"
@@ -72,20 +73,26 @@ class _MockProxyLoop:
         self.thread.join(timeout=5)
 
 
-def _make_config(tmpdir: Path, probe_port: int) -> Path:
-    """由真实配置派生 e2e 配置：仅改路径/探测 URL，其余（组/源/geoip）保持一致"""
-    text = REAL_CONFIG.read_text(encoding="utf-8")
+def _make_config_dir(tmpdir: Path, probe_port: int) -> Path:
+    """复制真实配置目录并定向补丁：config.toml 改独立 cache_db/日志路径，
+    serve.toml 改本地 mock 探测 URL；其余（组/源/geoip/apikey）与真实语义一致"""
+    dst = tmpdir / "config"
+    shutil.copytree(CONFIG_SRC, dst)
+    cfg = dst / "config.toml"
+    text = cfg.read_text(encoding="utf-8")
     text = text.replace('cache_db = ".cache.db"', f'cache_db = "{(tmpdir / "e2e.cache.db").as_posix()}"')
     text = text.replace('log_dir = "logs"', f'log_dir = "{(tmpdir / "logs").as_posix()}"')
+    cfg.write_text(text, encoding="utf-8")
+    serve = dst / "serve.toml"
+    text = serve.read_text(encoding="utf-8")
     text = re.sub(r'heartbeat_probe_url = "[^"]+"', f'heartbeat_probe_url = "http://127.0.0.1:{probe_port}/"', text)
     text = re.sub(
         r'network_probe_urls = \[[^\]]*\]',
         f'network_probe_urls = [\n    "http://127.0.0.1:{probe_port}/",\n]',
         text,
     )
-    path = tmpdir / "config.toml"
-    path.write_text(text, encoding="utf-8")
-    return path
+    serve.write_text(text, encoding="utf-8")
+    return dst
 
 
 @pytest.fixture(scope="session")
@@ -105,9 +112,9 @@ def panel():
                 pytest.fail(f"端口 {port} 已被占用：请先停止手动运行的 serve，e2e 需独占 8082/8083")
     mocks = _MockProxyLoop(count=6)
     mocks.start()
-    config_path = _make_config(tmpdir, mocks.ports[0])
+    config_dir = _make_config_dir(tmpdir, mocks.ports[0])
 
-    env = dict(os.environ, PROXY_POOL_CONFIG=str(config_path))
+    env = dict(os.environ, PROXY_POOL_CONFIG=str(config_dir))
     proc = subprocess.Popen(
         [sys.executable, "cli.py", "serve", "--port", str(SERVER_PORT), "--web-port", str(WEB_PORT)],
         cwd=str(PROJECT_ROOT), env=env,

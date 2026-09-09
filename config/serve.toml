@@ -1,0 +1,43 @@
+# 本地代理服务器与调度（serve 命令；加载器见 src/framework/config.py）
+[server]
+host = "127.0.0.1"                # 监听地址
+port = 8082                       # 监听端口
+standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
+standby_queue_capacity = 30       # 代理服务队列容量上限（serve 探测补入）
+
+# 代理服务队列填充候选数公式：缺口 × standby_fill_probe_multiplier，且至少 缺口 + standby_fill_probe_min_extra。
+standby_fill_probe_multiplier = 2
+standby_fill_probe_min_extra = 5
+
+# 代理服务队列填充候选组（按优先级顺序，靠前优先；应从可请求组中选择）。
+# trusted 排最前保证已验证代理优先入队，不足再按序从其它组补。
+standby_fill_groups = [
+    "trusted",
+    "freeproxy-world-http",
+    "freeproxy-world-https",
+    "freeproxy-world-socks5",
+    "default-http",
+    "default-https",
+    "default-socks5",
+]
+heartbeat_interval = 2            # 心跳间隔秒：定时探测代理服务队列内代理
+heartbeat_lock_interval = 30      # 锁定单一上游时的心跳间隔秒（锁定时代理不淘汰不拉黑，仅测速展示，降低探测频率）
+heartbeat_probe_url = "https://cp.cloudflare.com/generate_204"  # 心跳探测目标 URL（204 端点，Cloudflare 高可用）
+heartbeat_concurrency = 16        # 心跳探测并发数
+heartbeat_timeout = 3             # 心跳探测单个代理超时秒数
+
+metrics_window = 1800 # 队列指标采样存储时长秒
+
+# 允许的代理类型。不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），
+# 浏览器访问 https 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；
+# http/socks5 均为透传，无此问题。
+serve_proxy_types = ["http", "socks5"]
+
+network_probe_urls = [ # 本地网络门控，直连探测目标判定本地网络是否可用
+    "https://cp.cloudflare.com/generate_204",
+    "https://httpbin.org/ip",
+    "https://www.gstatic.com/generate_204",
+]
+network_check_cache_ok = 5          # 网络正常时缓存秒数（期内复用结果，不重复直连）
+network_check_backoff_initial = 2   # 网络异常时退避重检起始间隔秒
+network_check_backoff_max = 30      # 退避间隔上限秒（异常越久探测越稀疏）

@@ -28,7 +28,7 @@ Web 面板「IP 分布」页面依赖 MaxMind **GeoLite2-City** 离线数据库�
 - 官方：https://www.maxmind.com/en/accounts/current/geoip/downloads（免费注册）
 - 或社区构建版（如 `P3TERX/GeoLite.mmdb` 的 GitHub Releases）
 
-未放置时 serve 启动会报错（GeoLocator 加载失败）；放置后首次打开地图页面自动全量解析并缓存到 `.cache.db` 的 `ip_geo_cache` 表（后续毫秒级返回）。路径与缓存 TTL 见 `config.toml` 的 `[geoip]` 节。
+未放置时 serve 启动会报错（GeoLocator 加载失败）；放置后首次打开地图页面自动全量解析并缓存到 `.cache.db` 的 `ip_geo_cache` 表（后续毫秒级返回）。路径与缓存 TTL 见 `config/panel.toml` 的 `[geoip]` 节。
 
 ## 快速开始
 

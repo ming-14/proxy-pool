@@ -1,0 +1,54 @@
+# 代理源与拉取调度（加载器见 src/framework/config.py）
+# 说明：sources 中 pause_ttl 省略表示不主动暂停该源（仅去重率过高时暂停）
+
+# ---------------------------------------------------------------- 拉取调度
+[fetch]
+source_pause_ttl = 1200        # 源暂停默认时长（去重率过高时使用），秒
+source_dedup_threshold = 0.92  # 源去重率阈值，超过则暂停该源
+fetch_proxy_retries = 3        # 每个代理源拉取时的最大重试次数
+
+# FreeProxy.World 源专属参数（多阶段爬取的并发/限流/超时/请求头）
+[fetch.freeproxy_world]
+max_concurrent = 16            # 并发爬取页面的最大并发数
+proxy_retry = 1                # 单代理连续失败上限（超过丢弃）
+task_interval = 2              # 任务间隔秒（限流，避免触发反爬）
+request_timeout = 15           # 单页面请求超时秒
+accept_language = "en-US,en;q=0.9"  # Accept-Language 头（中性值，不暴露地理线索）
+
+# ---------------------------------------------------------------- 代理源
+# name:            源模块导入路径（同时是源暂停记录 key）
+# group:           拉取到的代理入组名
+# enabled:         是否启用
+# pause_ttl:       每次拉取后暂停该源的时长（秒），省略表示不主动暂停
+# group_by_protocol: 按代理 scheme 前缀分拣入组（组名 = group + "-" + scheme），
+#                   多协议源（freeproxy_world 产出 http/https/socks5）置 true
+[[sources]]
+name = "src.interfaces.sources.proxy_scdn"
+group = "default"
+enabled = true
+group_by_protocol = true
+
+[[sources]]
+name = "src.interfaces.sources.ip89"
+group = "default"
+enabled = true
+group_by_protocol = true
+
+[[sources]]
+name = "src.interfaces.sources.goodips"
+group = "default"
+enabled = true
+group_by_protocol = true
+
+[[sources]]
+name = "src.interfaces.sources.geonode"
+group = "default"
+enabled = true
+group_by_protocol = true
+
+[[sources]]
+name = "src.interfaces.sources.freeproxy_world"
+group = "freeproxy-world"
+enabled = true
+pause_ttl = 1800000             # 多阶段爬取较重
+group_by_protocol = true

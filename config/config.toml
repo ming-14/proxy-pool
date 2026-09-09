@@ -1,8 +1,14 @@
-# proxy-pool 应用配置（唯一配置数据源，由 src/framework/config.py 加载）
+# proxy-pool 全局配置：路径与 Web 面板
+# 配置按领域拆分（均由 src/framework/config.py 固定文件名加载，节不可跨文件放置）：
+#   config.toml   本节：[paths] 路径 + [web] 面板开关/端口
+#   pool.toml     池策略：[pool] 晋级/淘汰阈值 + [groups] 分组定义
+#   sources.toml  代理源：[fetch] 拉取调度 + [[sources]] 源列表
+#   serve.toml    serve 调度：[server] 端口/队列/心跳/网络门控/metrics
+#   panel.toml    面板功能：[purity] 纯洁度 + [geoip] IP 归属地图
 # 说明：
 # - [paths] 下路径相对项目根（config/ 所在目录的上一级）解析
-# - 组全部在 [groups] 定义（组语义由配置决定，代码不硬编码组名）
-# - sources 中 pause_ttl 省略表示不主动暂停该源（仅去重率过高时暂停）
+# - 组全部在 pool.toml [groups] 定义（组语义由配置决定，代码不硬编码组名）
+# - 密钥不入 TOML：config/apikey.env（git 忽略）
 
 # ---------------------------------------------------------------- 缓存与日志路径
 [paths]
@@ -10,160 +16,8 @@ cache_db = ".cache.db"        # 代理池状态持久化 SQLite 数据库（相�
 log_dir = "logs"             # 日志目录（相对项目根）
 autoload = "autoload"        # 启动时自动加载的代理清单文件（相对项目根，一行一个，# 注释）
 
-# ---------------------------------------------------------------- 代理池
-[pool]
-max_consecutive_fails = 5        # 普通组代理连续失败次数 >= 该值后不再参与可用集合
-trusted_max_consecutive_fails = 10  # 信任池组代理的连续失败上限（容错更高）
-# 特殊语义组（显式指定组名，组须在 [groups] 定义）：
-#   trusted_group:    信任池：请求成功代理的晋级目标，永不过期
-#   blacklist_group:  黑名单：失败淘汰代理的归属，不可请求
-trusted_group = "trusted"
-blacklist_group = "blacklist"
-# 可请求组（参与可用集合，request/get 命令与 standby fill 从中取代理）。
-# 显式列表声明，未列出的组（如 blacklist）不参与可用集合。
-requestable_groups = [
-    "default-http",
-    "default-https",
-    "default-socks5",
-    "freeproxy-world-http",
-    "freeproxy-world-https",
-    "freeproxy-world-socks5",
-    "Proxy-pool-standby-queue",
-    "trusted",
-]
-
-# ---------------------------------------------------------------- 代理分组（组全部在此定义）
-# 组名 -> { ttl }
-# - ttl: 整数秒数，超过自动清除（见 ProxyPool._cleanup_all_expired）；"never" 永不过期
-[groups]
-"default-http" = { ttl = 3600 }              # API 源的 HTTP 代理
-"default-https" = { ttl = 3600 }             # API 源的 HTTPS 代理
-"default-socks5" = { ttl = 3600 }            # API 源的 SOCKS5 代理
-"freeproxy-world-http" = { ttl = 1800000 }     # FreeProxy.World 的 HTTP 代理
-"freeproxy-world-https" = { ttl = 1800000 }    # FreeProxy.World 的 HTTPS 代理
-"freeproxy-world-socks5" = { ttl = 1800000 }   # FreeProxy.World 的 SOCKS5 代理
-"Proxy-pool-standby-queue" = { ttl = "never" }   # serve 代理服务队列（pproxy 上游），由心跳探测维护
-"trusted" = { ttl = "never" }   # 成功使用过的代理，永不过期
-"blacklist" = { ttl = 10800 }                # 失败过多的代理，3 小时后过期可重新入池
-"staging" = { ttl = "never" }                # 暂存组：手动暂存的代理，永不过期
-
-# ---------------------------------------------------------------- 拉取调度
-[fetch]
-source_pause_ttl = 1200        # 源暂停默认时长（去重率过高时使用），秒
-source_dedup_threshold = 0.92  # 源去重率阈值，超过则暂停该源
-fetch_proxy_retries = 3        # 每个代理源拉取时的最大重试次数
-
-# FreeProxy.World 源专属参数（多阶段爬取的并发/限流/超时/请求头）
-[fetch.freeproxy_world]
-max_concurrent = 16            # 并发爬取页面的最大并发数
-proxy_retry = 1                # 单代理连续失败上限（超过丢弃）
-task_interval = 2              # 任务间隔秒（限流，避免触发反爬）
-request_timeout = 15           # 单页面请求超时秒
-accept_language = "en-US,en;q=0.9"  # Accept-Language 头（中性值，不暴露地理线索）
-
-# ---------------------------------------------------------------- 代理源
-# name:            源模块导入路径（同时是源暂停记录 key）
-# group:           拉取到的代理入组名
-# enabled:         是否启用
-# pause_ttl:       每次拉取后暂停该源的时长（秒），省略表示不主动暂停
-# group_by_protocol: 按代理 scheme 前缀分拣入组（组名 = group + "-" + scheme），
-#                   多协议源（freeproxy_world 产出 http/https/socks5）置 true
-[[sources]]
-name = "src.interfaces.sources.proxy_scdn"
-group = "default"
-enabled = true
-group_by_protocol = true
-
-[[sources]]
-name = "src.interfaces.sources.ip89"
-group = "default"
-enabled = true
-group_by_protocol = true
-
-[[sources]]
-name = "src.interfaces.sources.goodips"
-group = "default"
-enabled = true
-group_by_protocol = true
-
-[[sources]]
-name = "src.interfaces.sources.geonode"
-group = "default"
-enabled = true
-group_by_protocol = true
-
-[[sources]]
-name = "src.interfaces.sources.freeproxy_world"
-group = "freeproxy-world"
-enabled = true
-pause_ttl = 1800000             # 多阶段爬取较重
-group_by_protocol = true
-
-# ---------------------------------------------------------------- 本地代理服务器（serve 命令）
-[server]
-host = "127.0.0.1"                # 监听地址
-port = 8082                       # 监听端口
-standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
-standby_queue_capacity = 30       # 代理服务队列组容量上限（serve 探测补入）
-
-# 代理服务队列填充候选数公式：缺口 × standby_fill_probe_multiplier，且至少 缺口 + standby_fill_probe_min_extra。
-standby_fill_probe_multiplier = 2
-standby_fill_probe_min_extra = 5
-
-# 代理服务队列填充候选组（按优先级顺序，靠前优先；应从可请求组中选择）。
-# trusted 排最前保证已验证代理优先入队，不足再按序从其它组补。
-standby_fill_groups = [
-    "trusted",
-    "freeproxy-world-http",
-    "freeproxy-world-https",
-    "freeproxy-world-socks5",
-    "default-http",
-    "default-https",
-    "default-socks5",
-]
-heartbeat_interval = 2            # 心跳间隔秒：定时探测代理服务队列内代理
-heartbeat_lock_interval = 30      # 锁定单一上游时的心跳间隔秒（锁定时代理不淘汰不拉黑，仅测速展示，降低探测频率）
-heartbeat_probe_url = "https://cp.cloudflare.com/generate_204"  # 心跳探测目标 URL（204 端点，Cloudflare 高可用）
-heartbeat_concurrency = 16        # 心跳探测并发数
-heartbeat_timeout = 3             # 心跳探测单个代理超时秒数
-
-metrics_window = 1800 # 队列指标采样存储时长秒
-
-# 允许的代理类型。不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），
-# 浏览器访问 https 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；
-# http/socks5 均为透传，无此问题。
-serve_proxy_types = ["http", "socks5"]
-
-network_probe_urls = [ # 本地网络门控，直连探测目标判定本地网络是否可用
-    "https://cp.cloudflare.com/generate_204",
-    "https://httpbin.org/ip",
-    "https://www.gstatic.com/generate_204",
-]
-network_check_cache_ok = 5          # 网络正常时缓存秒数（期内复用结果，不重复直连）
-network_check_backoff_initial = 2   # 网络异常时退避重检起始间隔秒
-network_check_backoff_max = 30      # 退避间隔上限秒（异常越久探测越稀疏）
-
 # ---------------------------------------------------------------- Web 控制面板（serve 模式）
 [web]
 enabled = true                     # 面板总开关；false 时不构造/启动 aiohttp 面板
 host = "127.0.0.1"                # 面板监听地址（默认仅本机）
 port = 8083                       # 面板监听端口
-
-# ---------------------------------------------------------------- IP 纯洁度检查
-[purity]
-source = "abuseipdb"                            # 检查源：ipok / abuseipdb
-# 各源代理（被墙时用），空字符串表示直连
-ipok_proxy = ""  # ipok.io 代理
-abuseipdb_proxy = ""                        # AbuseIPDB 代理（空=直连）
-
-# ---------------------------------------------------------------- IP 归属地（Web 地图）
-[geoip]
-enabled = true                     # 地图/归属定位开关；false 时不加载 mmdb 定位器（省内存）
-# GeoLite2 离线数据库（相对项目根，MaxMind GeoLite2 或 P3TERX/GeoLite.mmdb 构建版）。
-# 支持 City / Country 两种库，按库类型自动识别：
-#   GeoLite2-City.mmdb    城市级（省/市/经纬度，地图散点精度高，约 60MB）
-#   GeoLite2-Country.mmdb 国家级（仅国家，地图散点用内置国家中心坐标兜底，约 5MB）
-# 切换只需改 db_file 指向对应文件。
-db_file = "vendor/geoip/GeoLite2-City.mmdb"
-# 定位结果缓存有效期秒：IP 段归属变化以月计，90 天内不重复解析 mmdb
-cache_ttl = 7776000
