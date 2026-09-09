@@ -1,0 +1,14 @@
+# 日志配置（src/framework/logging.py 读取；级别：DEBUG / INFO / WARNING / ERROR / CRITICAL）
+# 控制台与文件级别独立配置；serve 的 --debug 会忽略本节，双通道强制 DEBUG（完整调试）
+
+[logging]
+console_level = "DEBUG"   # stderr 控制台：默认 DEBUG，周期调度细节实时可见
+file_level = "INFO"       # logs/ 文件：默认 INFO 事件级，避免高频轮转日志刷盘
+
+# 逐 logger 级别覆盖（同时作用于控制台与文件，未列出的 logger 走上面两档）
+# 注意：带点的 logger 名必须加引号，否则 TOML 会解析成嵌套表
+[logging.loggers]
+urllib3 = "WARNING"
+requests = "WARNING"
+"aiohttp.access" = "WARNING"   # 面板轮询访问日志：浏览器开着约 1.4 行/秒，INFO 落盘纯属噪音
+"asyncio" = "WARNING"          # Proactor 连接复位等 asyncio 内部噪音（代码内已有过滤器，此处兜底）

@@ -1,9 +1,9 @@
-"""日志配置：统一格式（含毫秒时间戳），输出到 stderr + logs 目录文件
+"""日志配置：统一格式（毫秒时间戳），双通道输出，级别由 config/logging.toml 决定
 
-控制台（stderr）与文件日志级别分开：
-- 控制台默认 DEBUG（周期日志可见，便于观察调度细节；高频轮转日志不打文件）
-- 文件默认 INFO（事件级，避免每 2s 心跳轮次刷屏磁盘）
-- --debug 时文件也降到 DEBUG（完整调试）
+- 控制台（stderr）与文件（logs/）级别独立分档（默认 DEBUG / INFO）：
+  周期调度细节控制台实时可见，文件只留事件级避免刷盘
+- [logging.loggers] 逐 logger 覆盖（如 aiohttp.access=WARNING 抑制面板轮询访问日志）
+- --debug 忽略配置文件，双通道强制 DEBUG（完整调试落盘）
 
 文件日志每次启动生成独立文件，文件名精确到毫秒（天然唯一，不覆盖旧日志）。
 仅在 CLI 入口调用。
@@ -39,16 +39,20 @@ def _build_log_file() -> str:
     return os.path.join(config.LOG_DIR, filename)
 
 
-def setup_logging(file_level=logging.INFO):
-    """配置根日志器：控制台 DEBUG + 文件 file_level（仅初始化一次）
+def setup_logging(debug: bool = False):
+    """配置根日志器（仅初始化一次）
 
     Args:
-        file_level: 文件日志级别（默认 INFO；--debug 时传 DEBUG 全量落盘）
+        debug: True 时控制台与文件均强制 DEBUG；否则按 logging.toml 的
+               console_level / file_level 分档，loggers 表逐 logger 覆盖。
     """
     global _initialized
     if _initialized:
         return
     _initialized = True
+
+    console_level = logging.DEBUG if debug else config.LOG_CONSOLE_LEVEL
+    file_level = logging.DEBUG if debug else config.LOG_FILE_LEVEL
 
     os.makedirs(config.LOG_DIR, exist_ok=True)
     log_file = _build_log_file()
@@ -58,11 +62,13 @@ def setup_logging(file_level=logging.INFO):
 
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(_MsecFormatter(LOG_FORMAT))
-    stream_handler.setLevel(logging.DEBUG)  # 控制台默认 DEBUG，观察周期调度细节
+    stream_handler.setLevel(console_level)
 
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)  # 根级别取最低，handler 各自过滤
     root.addHandler(stream_handler)
     root.addHandler(file_handler)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("requests").setLevel(logging.WARNING)
+
+    # 逐 logger 覆盖：logger 级过滤与 handler 级取交集（两边都放行才输出）
+    for name, level in config.LOG_LOGGERS.items():
+        logging.getLogger(name).setLevel(level)

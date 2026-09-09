@@ -13,6 +13,7 @@ proxy-pool/
 │   ├── sources.toml               # [fetch] 拉取调度（含 freeproxy_world）+ [[sources]] 源列表
 │   ├── serve.toml                 # [server] serve 端口/队列/心跳/网络门控/metrics
 │   ├── panel.toml                 # [purity] 纯洁度 + [geoip] IP 归属地图
+│   ├── logging.toml               # [logging] 控制台/文件级别分档 + 逐 logger 覆盖
 │   └── apikey.env                 # 密钥（ABUSEIPDB_API_KEY 等，git 忽略）
 ├── src/                           # 主包（干净架构四层）
 │   ├── __init__.py

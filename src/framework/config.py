@@ -5,6 +5,7 @@
     sources.toml  [fetch] [[sources]]  代理源与拉取调度
     serve.toml    [server]             serve 端口/队列/心跳/网络门控/metrics
     panel.toml    [purity] [geoip]     面板功能（纯洁度/归属地图）
+    logging.toml  [logging]            日志双通道级别分档 + 逐 logger 覆盖
     apikey.env    密钥（KEY=VALUE，git 忽略）
 
 每个顶层节固定归属一个文件：节放错文件直接报错（防静默失效），缺文件报错。
@@ -44,6 +45,7 @@ _SECTION_OWNERSHIP: dict[str, set[str]] = {
     "sources.toml": {"fetch", "sources"},
     "serve.toml": {"server"},
     "panel.toml": {"purity", "geoip"},
+    "logging.toml": {"logging"},
 }
 
 
@@ -179,6 +181,27 @@ WEB_PORT = int(_toml["web"]["port"])  # 面板监听端口
 CACHE_DB = str(_PROJECT_ROOT / _toml["paths"]["cache_db"])     # 代理池状态持久化 SQLite 数据库（WAL 模式，组级增量 upsert）
 LOG_DIR = str(_PROJECT_ROOT / _toml["paths"]["log_dir"])         # 日志目录（文件名为 proxy-pool-{时间戳}.log，毫秒精度）
 AUTOLOAD_FILE = str(_PROJECT_ROOT / _toml["paths"]["autoload"])  # 启动时自动加载的代理清单文件（一行一个，# 注释；不存在则跳过）
+
+# ---------------------------------------------------------------- 日志级别（logging.toml）
+# 控制台与文件独立分档；loggers 表为逐 logger 覆盖（两通道同时生效）。
+_LOGGING_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+def _log_level(name: str, value: str, where: str) -> int:
+    key = str(value).upper()
+    if key not in _LOGGING_LEVELS:
+        raise ValueError(f"logging.toml {where} 非法级别 {value!r}（可选 {sorted(_LOGGING_LEVELS)}）")
+    return getattr(logging, key)
+
+
+_logging_cfg = _toml["logging"]
+LOG_CONSOLE_LEVEL = _log_level("console_level", _logging_cfg.get("console_level", "DEBUG"), "console_level")
+LOG_FILE_LEVEL = _log_level("file_level", _logging_cfg.get("file_level", "INFO"), "file_level")
+# logger 名 -> 级别（如 aiohttp.access=WARNING 抑制面板轮询访问日志刷盘）
+LOG_LOGGERS: dict[str, int] = {
+    name: _log_level(name, level, f"loggers.{name}")
+    for name, level in _logging_cfg.get("loggers", {}).items()
+}
 
 # ---------------------------------------------------------------- AbuseIPDB（IP 纯洁度检查）
 # API key 从配置目录的 apikey.env 加载（敏感信息不入 TOML，避免 git 追踪）。

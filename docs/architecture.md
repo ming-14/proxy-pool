@@ -245,7 +245,7 @@ Web 面板「IP 分布」页用 ECharts 世界地图展示池中代理的地理�
 
 serve 长期运行时的资源特征与已落实的优化（避免周期性刷屏式资源消耗）：
 
-- **日志降噪（磁盘写）**：心跳轮次/任务级日志（心跳探测、心跳成功、心跳完成、上游同步、调度器任务成功/失败/重试、锁定跳过填充）均为 DEBUG 级别——文件日志不再每轮写盘，仅事件级（补入/替换/拉黑/补测/锁定/解锁）与异常保留 INFO/WARNING。降噪前 3 小时写 ~42MB/30 万行日志，降噪后文件仅事件级输出。**控制台与文件分级**：控制台（stderr）默认 DEBUG（周期调度细节实时可见，便于观察），文件默认 INFO（避免刷盘）；`--debug` 时文件也降为 DEBUG 全量落盘。
+- **日志降噪（磁盘写）**：心跳轮次/任务级日志（心跳探测、心跳成功、心跳完成、上游同步、调度器任务成功/失败/重试、锁定跳过填充）均为 DEBUG 级别——文件日志不再每轮写盘，仅事件级（补入/替换/拉黑/补测/锁定/解锁）与异常保留 INFO/WARNING。降噪前 3 小时写 ~42MB/30 万行日志，降噪后文件仅事件级输出。**控制台与文件分级**：级别由 `config/logging.toml` 决定（默认控制台 DEBUG 观察周期调度、文件 INFO 不刷盘），`[logging.loggers]` 可按 logger 覆盖（如 `aiohttp.access = "WARNING"` 抑制面板轮询访问日志落盘）；`--debug` 忽略配置、双通道强制 DEBUG 全量落盘。
 - **状态快照瘦身（带宽/序列化）**：`/api/status` 只返回实时状态（~6KB），历史数据（standby_history/traffic_history，窗口 1800s ≈ 200KB）改走 `/api/status/history`，前端首次全量 + `?since=` 游标增量拉取并本地累积——2s 轮询不再重复传输 200KB 历史（原每 2s 216KB，一天 ~9GB）。
 - **锁定降频（外网请求）**：锁定单一上游时代理不淘汰不拉黑，心跳仅为测速展示，间隔放宽到 `HEARTBEAT_LOCK_INTERVAL`（30s），避免每 2s 打一次外网探测目标。
 - **SQLite 写节流**：`save()` 30 秒节流 + 组级增量（`export_group` ~0.015ms），WAL 写约 9KB/s 级，无需进一步调整。
@@ -260,6 +260,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 - `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]`
 - `serve.toml`：`[server]` 端口/队列/心跳/网络门控/metrics/代理类型
 - `panel.toml`：`[purity]` 纯洁度 + `[geoip]` 归属地图
+- `logging.toml`：`[logging]` 控制台/文件级别分档 + `[logging.loggers]` 逐 logger 覆盖
 - `apikey.env`：密钥（git 忽略）
 
 环境变量 `PROXY_POOL_CONFIG` 指向替代配置**目录**（e2e 隔离用）。

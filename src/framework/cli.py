@@ -276,11 +276,8 @@ def main():
 
     args = parser.parse_args()
 
-    if args.debug:
-        # 完整调试：文件日志也降为 DEBUG（控制台本就默认 DEBUG）
-        setup_logging(file_level=logging.DEBUG)
-    else:
-        setup_logging()
+    # 级别分档由 config/logging.toml 决定；--debug 双通道强制 DEBUG 完整落盘
+    setup_logging(debug=args.debug)
 
     cmd_map = {
         "fetch": cmd_fetch,
