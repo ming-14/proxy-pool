@@ -1,9 +1,8 @@
-项目更新时，**必须同步更新此文档**和`GUIDE.md`，`tests\GUIDE.md`和web端
+项目更新时，**必须同步更新此文档**、`docs/`（cli / architecture / filestree）和 web 端（`frontend/`）
 请检查：
 - [ ] `README.md`更新了吗
-- [ ] `GUIDE.md`更新了吗
-- [ ] `tests\GUIDE.md`
-- [ ] web端
+- [ ] `docs/cli.md` / `docs/architecture.md` / `docs/filestree.md` 更新了吗
+- [ ] web 端（`frontend/` 源码 + `npm run build` 产物）更新了吗
 
 
 ---
@@ -47,7 +46,7 @@ python cli.py request https://httpbin.org/ip
 python cli.py test https://httpbin.org/ip -c 20
 
 # 启动本地代理服务器（HTTP/SOCKS4/SOCKS5），自动心跳 + 无缝切换
-python cli.py serve --port 8080
+python cli.py serve --port 8082
 
 # 查看 .cache.db 的可视化只读查看器（tkinter 界面）
 python view.py
@@ -56,14 +55,37 @@ python view.py
 ## 详细文档
 
 - **架构文档**：[docs/architecture.md](docs/architecture.md) - 架构设计、核心机制、serve 机制、代理源、数据持久化
+- **前端重构设计**：[docs/design/FE-Refactor-Vue3.md](docs/design/FE-Refactor-Vue3.md) - Web 面板前端架构（Vue 3 + Vite + TS + Tailwind 4）
 - **CLI 文档**：[docs/cli.md](docs/cli.md) - 所有命令的详细使用说明
-- **文件树**：[GUIDE.md](GUIDE.md) - 项目文件结构说明
+- **文件树**：[docs/filestree.md](docs/filestree.md) - 项目文件结构说明
+
+## 前端开发（Web 面板）
+
+面板源码在 `frontend/`（Vue 3 + Vite + TypeScript + Tailwind CSS 4 + ECharts + Pinia）：
+
+```bash
+cd frontend
+npm install
+npm run build     # 类型检查 + 构建，产物输出到 src/framework/web/static/（提交入库）
+npm run test      # Vitest 单测（纯逻辑）
+npm run dev       # 开发模式（HMR，/api 代理到 127.0.0.1:8083，需先 serve）
+```
 
 ## 测试
 
 ```bash
 python -m pytest -v
 ```
+
+Web 面板浏览器 e2e（`tests/e2e/web/`，Playwright + Chromium，自动起 serve 于 8082/8083、
+mock 上游代理、独立临时 cache_db，不依赖外网）需先安装：
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+未安装 playwright 时相关用例自动跳过（不影响其余测试）。前端单测：`cd frontend && npm run test`。
 
 ## 作为库使用
 

@@ -104,7 +104,6 @@ def make_ctx(pool):
     server.set_salgorithm = AsyncMock()
     server.traffic_history = MagicMock(return_value=[])
     server.traffic_total = MagicMock(return_value=(0, 0))
-    server.per_proxy_traffic = MagicMock(return_value={})
     server.per_proxy_traffic_history = MagicMock(return_value=[])
     control = ServeControl(
         interval=60, concurrency=4, timeout=5, probe_url="https://probe.local/ip",

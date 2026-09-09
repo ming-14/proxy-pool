@@ -102,7 +102,7 @@ group_by_protocol = true
 # ---------------------------------------------------------------- 本地代理服务器（serve 命令）
 [server]
 host = "127.0.0.1"                # 监听地址
-port = 8080                       # 监听端口
+port = 8082                       # 监听端口
 standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
 standby_queue_capacity = 30       # 代理服务队列组容量上限（serve 探测补入）
 
@@ -147,7 +147,7 @@ network_check_backoff_max = 30      # 退避间隔上限秒（异常越久探测
 [web]
 enabled = true                     # 面板总开关；false 时不构造/启动 aiohttp 面板
 host = "127.0.0.1"                # 面板监听地址（默认仅本机）
-port = 8081                       # 面板监听端口
+port = 8083                       # 面板监听端口
 
 # ---------------------------------------------------------------- IP 纯洁度检查
 [purity]

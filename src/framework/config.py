@@ -26,7 +26,9 @@ except ModuleNotFoundError:  # pragma: no cover
 
 # config.py 位于 src/framework/，上溯 3 级到项目根
 _PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-CONFIG_FILE = _PROJECT_ROOT / "config" / "config.toml"
+# PROXY_POOL_CONFIG 环境变量可指向替代配置文件（e2e 测试隔离用：临时 cache_db、
+# 本地 mock 探测 URL、独立端口）；缺省为项目 config/config.toml
+CONFIG_FILE = Path(os.environ.get("PROXY_POOL_CONFIG") or (_PROJECT_ROOT / "config" / "config.toml"))
 
 
 def _load_toml() -> dict:

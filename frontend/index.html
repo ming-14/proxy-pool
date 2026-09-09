@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proxy Pool 控制面板</title>
+  <script>
+    // 首帧前应用保存的主题，避免暗色用户看到浅色闪屏
+    (function () {
+      if (localStorage.getItem('proxy-pool-theme') === 'dark') {
+        document.documentElement.classList.add('dark');
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+</head>
+<body class="h-screen flex overflow-hidden antialiased">
+  <!-- #app 承接 body 的 flex 行布局：min-w-0 允许主区收缩，overflow-hidden 使 main 成为滚动容器 -->
+  <div id="app" class="flex-1 flex min-w-0 overflow-hidden"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

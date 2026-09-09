@@ -67,6 +67,9 @@ desktop.ini
 .cache.db-shm
 .cache.db-wal
 logs/
+# e2e 截图 / 本地构建中间产物
+build-artifacts/
+node_modules/
 
 # ---- 用户自行下载的离线数据库（体积大，不随仓库分发）----
 vendor/geoip/

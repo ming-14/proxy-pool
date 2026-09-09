@@ -49,25 +49,32 @@ proxy-pool/
 │       ├── logging.py             # 日志模块
 │       └── web/                   # Web 控制面板（serve 模式）
 │           ├── __init__.py
-│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加）
+│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加）+ Vite 产物静态服务
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── server.py          # aiohttp 服务器启动
-│           └── static/
-│               ├── index.html     # 单页原生 JS 控制面板（定时轮询 /api/status）
-│               ├── css/
-│               │   ├── base.css       # 基础样式（reset / 变量 / 通用类）
-│               │   ├── layout.css     # 布局样式（侧栏 / #main-content overflow-anchor:none / 页面切换）
-│               │   └── components.css # 组件样式（card / table / btn / chart / tooltip / back-to-top-btn）
-│               └── js/
-│                   ├── app.js         # 主入口（路由 / 轮询 / 主题切换）
-│                   ├── api.js         # API 封装（fetch 包装 / 各端点方法）
-│                   ├── selection.js   # 通用行选择模块（Windows 资源管理器式框选/多选：蓝色矩形、表头/空白拖拽、Ctrl/Shift、Ctrl+A、Esc、外部点击清空、边缘自动滚动）
-│                   ├── dashboard.js   # 仪表盘页（KPI / 图表）
-│                   ├── groups.js      # 代理组页（双向虚拟滚动 / 懒加载 / 排序 / 过滤 / 导出 / 框选 / 右键批量菜单）
-│                   ├── standby.js     # 代理服务队列页（hover tooltip / 测速 pin / 点击 IP pin / 拖选隐藏 / 框选 / 右键批量菜单 / lock）
-│                   ├── sources.js     # 代理源页
-│                   └── charts.js      # Chart.js 封装
-├── tests/                         # 测试目录（复刻 src 结构）
+│           └── static/            # 前端构建产物（frontend/ npm run build 输出，提交入库，勿手改）
+│               ├── index.html     # Vite 入口（hash 路由单页）
+│               ├── world.json     # 世界地图 GeoJSON（ECharts registerMap，懒加载）
+│               └── assets/        # 带内容 hash 的 JS/CSS（immutable 缓存）
+├── frontend/                      # Web 面板前端工程（Vue 3 + Vite + TypeScript + Tailwind CSS 4 + ECharts + Pinia）
+│   ├── package.json               # 依赖与脚本（dev/build/test）
+│   ├── vite.config.ts             # 构建（outDir=src/framework/web/static）+ dev 代理 /api→8083
+│   ├── index.html                 # 入口模板（主题防闪屏内联脚本）
+│   ├── public/world.json          # 地图数据源文件
+│   ├── tests/unit/                # Vitest 单测（format/merge/csv/status-store）
+│   └── src/
+│       ├── main.ts                # 应用装配（pinia/router/轮询启动）
+│       ├── App.vue                # 壳：侧边栏 + 顶栏（暂停/连接态/主题）+ 路由视图 + Toast
+│       ├── router.ts              # hash 路由（dashboard/groups/standby/sources）+ 历史拉取开关
+│       ├── types/                 # API DTO（与 api.py 契约对应）与 UI 类型
+│       ├── api/client.ts          # 类型化 API 客户端（fetch 封装 + ApiError）
+│       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
+│       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）
+│       ├── composables/           # useRowSelection（框选）/ useProxyTooltip（浮窗+测速）/ usePurity（纯洁度）
+│       ├── components/            # ui（ToastHost/ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、ProxyTooltip、PurityTags、ScheduleSettingsCard、AddProxyModal
+│       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage
+│       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
+├── tests/                         # 测试目录（复刻 src 结构；tests/e2e/web/ 为面板 Playwright e2e）
 ├── vendor/
 │   ├── pproxy/                    # pproxy 代理库（fork 自 pproxy 2.7.9，本地维护: sslwrap 静默 / sslcontexts 弱引用 / modstat 传 roption / SOCKS5 认证应答与 UDP ASSOCIATE / HTTP 404 / WebSocket 握手修复 等内化进源码；proxy_server.py 通过 sys.path 导入）
 │   └── pspeed/                    # 代理测速工具（TCP/IP/下载/上传带宽，JSON 输出；api.py 通过 sys.path 导入 probe_one）

@@ -1,0 +1,32 @@
+{
+  "name": "proxy-pool-frontend",
+  "private": true,
+  "version": "7.0.0",
+  "type": "module",
+  "description": "proxy-pool Web 控制面板前端（Vue 3 + Vite + TS + Tailwind 4 + ECharts）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tanstack/vue-virtual": "^3.13.37",
+    "echarts": "^6.1.0",
+    "pinia": "^4.0.3",
+    "vue": "^3.5.42",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.5.0",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^3.3.11"
+  }
+}

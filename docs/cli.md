@@ -5,21 +5,21 @@
 ## serve — 本地代理服务器
 
 ```bash
-python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
+python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
                    [--interval 2] [--probe-url URL] [--type http|https|socks5]
-                   [--web-host 127.0.0.1] [--web-port 8081]
+                   [--web-host 127.0.0.1] [--web-port 8083]
 ```
 
 ### 参数说明
 
-- `--port`：监听端口（默认 8080）
+- `--port`：监听端口（默认 8082）
 - `--host`：监听地址（默认 127.0.0.1）
 - `--queue-size`：代理服务队列容量（默认配置中的 STANDBY_QUEUE_CAPACITY）
 - `--interval`：心跳间隔秒（默认配置中的 HEARTBEAT_INTERVAL）
 - `--probe-url`：心跳探测目标 URL（默认配置中的 HEARTBEAT_PROBE_URL）
 - `--type`：允许的代理类型，可多次指定（默认配置中的 SERVE_PROXY_TYPES）
 - `--web-host`：Web 控制面板监听地址（默认 127.0.0.1）
-- `--web-port`：Web 控制面板监听端口（默认 8081）
+- `--web-port`：Web 控制面板监听端口（默认 8083）
 
 ### 运行机制
 
@@ -29,16 +29,16 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
 
 ### Web 控制面板
 
-`--web-host`/`--web-port`：启用 Web 控制面板（默认 `127.0.0.1:8081`，仅本机，无鉴权）。浏览器打开面板地址进行监控与控制：
+`--web-host`/`--web-port`：启用 Web 控制面板（默认 `127.0.0.1:8083`，仅本机，无鉴权）。浏览器打开面板地址进行监控与控制：
 
 #### 监控功能
 
 - **总览**：各代理组存量/活跃数/TTL、可用代理数、代理服务队列（latency 排序）
-- **组明细**：选择任一组查看每个代理的连续失败数、响应时间、过期倒计时（支持关键字过滤、列排序）；**双向虚拟滚动**——一次渲染 50 行，滚动到底部自动懒加载下一批，超过 150 行时销毁远离视口的行（top/bottom spacer 保持滚动条高度），拖滚动条跳到远处自动定位到对应行；右下角悬浮回到顶部按钮
+- **组明细**：选择任一组查看每个代理的连续失败数、响应时间、过期倒计时（支持关键字过滤、列排序）；**虚拟滚动**（@tanstack/vue-virtual，动态测高 + overscan）——只渲染视口附近行，上下 spacer 保持滚动条比例，拖滚动条跳到远处自动定位；右下角悬浮回到顶部按钮
 - **Windows 资源管理器式框选**：代理组页与代理服务队列页的代理列表支持鼠标框选/多选——空白处、表头或行上按住拖拽出现蓝色矩形框选，矩形覆盖的行被选中（从表头向下拖拽也可框选）；单击行单选、Ctrl+单击切换、Shift+单击锚点范围选择、Ctrl+拖拽切换框内行、Ctrl+A 全选当前列表、Esc 清空、点击列表外部空白清空选中、拖到视口边缘自动滚动（框选可跨未渲染区域）；选中态行高亮（左缘蓝色指示条），列表重绘后选中保持
 - **右键批量操作**：选中多行后右键弹出上下文菜单，菜单项作用于**整个选中集**——代理组页：移动（子菜单选目标组，批量）/ 拉黑（批量）/ 删除（批量）/ 还原（黑名单组批量）；代理服务队列页：移出（批量）/ 拉黑（批量）/ 测速（**多选时菜单不展示测速项**，仅单选可用）。右键目标行不在选中集内时先单选该行（对齐资源管理器）
 - **代理源**：启用状态、暂停剩余时间；代理服务队列待补测代理一览
-- **单代理 hover 图表**：代理服务队列页面鼠标悬浮代理 IP（表格行或锁定卡片）时弹出 tooltip，展示该代理的延时趋势 + 流量速率图表（Chart.js 独立实例），数据来自 `/api/proxy/history?bind=`，2s 定时刷新；tooltip 可交互（鼠标可移入查看图表），离开后 100ms 延迟销毁
+- **单代理 hover 图表**：代理服务队列页面鼠标悬浮代理 IP（表格行或锁定卡片）时弹出 tooltip，展示该代理的延时趋势 + 流量速率图表（ECharts 独立实例），数据来自 `/api/proxy/history?bind=`，2s 定时刷新；tooltip 可交互（鼠标可移入查看图表），离开后 100ms 延迟销毁
 - **单代理测速**：tooltip 底部「测速 (CF 10s)」按钮，点击后调 `/api/proxy/speedtest`（POST `{"bind": "..."}`），后端用 vendor/pspeed 对该代理做 Cloudflare 下载+上传 10s 测速（`asyncio.to_thread` 避免阻塞），返回 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}` 展示在按钮下方；测速开始后 tooltip **pin**（鼠标移出不自动消失，鼠标在 tooltip 外部按下即销毁），解除 pin 后恢复正常 mouseleave 行为
 - **右键上下文菜单**：代理服务队列页面右键代理行弹出菜单——「移出」（hover 展开子菜单，列出所有组及其存量，点击调 `/api/proxy/move` 将代理移到目标组并同步 pproxy 上游）、「拉黑」（调 `/api/blacklist`，从所有组移除并加入黑名单）、「测速」（显示 tooltip 并立即触发测速）
 - **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」；黑名单组：「还原」（移到代理队列）+「删除」
@@ -62,11 +62,11 @@ python cli.py serve [--port 8080] [--host 127.0.0.1] [--queue-size 10]
   - 填充倍率/增量、允许的代理类型
   - 调度算法（`salgorithm`：fa/rr/rc/lc）切换会重启 pproxy 调度器（保留现有上游），其余参数 serve 下一轮即生效
 
-仪表盘的「代理服务队列延迟趋势」「健康率趋势」图表由**后端采样**驱动：每轮 heartbeat 结束采一次队列指标，存内存按 `METRICS_WINDOW` 时间窗口保留（超出自动清理），`/api/status` 的 `standby_history` 字段下发完整历史，前端无状态重绘——**刷新页面不丢失趋势**（多标签一致），重启清空。心跳动态调整时窗口始终不变。
+仪表盘的「代理服务队列延迟趋势」「健康率趋势」图表由**后端采样**驱动：每轮 heartbeat 结束采一次队列指标，存内存按 `METRICS_WINDOW` 时间窗口保留（超出自动清理），`/api/status/history` 增量下发（`?since=<ts>` 只回新点），前端 store 合并裁剪——**刷新页面不丢失趋势**（多标签一致），重启清空。心跳动态调整时窗口始终不变。
 
-「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，每轮 heartbeat 采累计值存历史（同窗口），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。`/api/status` 另返回 `per_proxy_traffic`（按上游代理地址的累计上下行字节，`{bind: {"upload": int, "download": int}}`），通过 vendor/pproxy 内化的 `modstat(user, remote_ip, host_name, roption)` 钩子拿到选中上游代理实现，仅内存实时计数不持久化。`/api/proxy/history?bind=` 按需查单代理的延时历史（`ProxyLatencySample`）+ 流量历史（`TrafficSample`），两种历史统一用 bind（地址，不含 scheme）作 key。
+「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，每轮 heartbeat 采累计值存历史（同窗口），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。按上游代理的累计/历史流量（`per_proxy_traffic`，`{bind: {"upload": int, "download": int}}`）通过 vendor/pproxy 内化的 `modstat(user, remote_ip, host_name, roption)` 钩子实现，仅内存实时计数不持久化，经 `/api/proxy/history?bind=` 按需查单代理的延时历史（`ProxyLatencySample`）+ 流量历史（`TrafficSample`），两种历史统一用 bind（地址，不含 scheme）作 key。
 
-面板为单页原生 JS，定时轮询 `/api/status`（2s），无前端构建链；数据通过 REST API 交互。
+面板为 Vue 3 + Vite + TypeScript + Tailwind CSS 4 单页应用（源码 `frontend/`，构建产物提交在 `src/framework/web/static/`，由 aiohttp 直接 serve；图表统一 ECharts）。定时轮询 `/api/status`（2s），数据全部通过 REST API 交互。
 
 ## fetch — 拉取代理
 

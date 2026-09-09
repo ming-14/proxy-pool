@@ -146,7 +146,6 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "sources": sources,
         "settings": ctx.control.to_dict(),
         "traffic_total": {"upload": traffic_upload, "download": traffic_download},
-        "per_proxy_traffic": ctx.server.per_proxy_traffic(),
     }
 
 
@@ -164,7 +163,6 @@ def _status_history(ctx: PanelContext, since: float | None) -> dict:
         "standby_history": standby_history,
         "traffic_history": traffic_history,
         "traffic_total": {"upload": traffic_upload, "download": traffic_download},
-        "per_proxy_traffic": ctx.server.per_proxy_traffic(),
     }
 
 
@@ -217,18 +215,33 @@ async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
 
 
 # ------------------------------------------------------------------ 路由
+# static/ 为 Vite 构建产物目录（frontend/ 工程 npm run build 输出，
+# emptyOutDir 整体替换）：index.html + /assets/*（文件名带内容 hash）+ world.json。
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+_ASSETS_DIR = os.path.join(_STATIC_DIR, "assets")
+_WORLD_JSON = os.path.join(_STATIC_DIR, "world.json")
+
+_index_cache: tuple[float, str] | None = None  # (mtime, 内容)：按 mtime 失效，免每请求读盘
 
 
 def _load_index() -> str:
-    """加载静态 index.html（前端页面；数据全部通过 /api/* 获取）"""
+    """加载 Vite 构建的 index.html（前端页面；数据全部通过 /api/* 获取）"""
+    global _index_cache
     path = os.path.join(_STATIC_DIR, "index.html")
-    with open(path, "r", encoding="utf-8") as _f:
-        return _f.read()
+    mtime = os.path.getmtime(path)
+    if _index_cache is None or _index_cache[0] != mtime:
+        with open(path, "r", encoding="utf-8") as f:
+            _index_cache = (mtime, f.read())
+    return _index_cache[1]
 
 
 async def _index(request: web.Request) -> web.Response:
     return web.Response(text=_load_index(), content_type="text/html", charset="utf-8")
+
+
+async def _world_json(request: web.Request) -> web.StreamResponse:
+    """世界地图 GeoJSON（ECharts registerMap 数据，约 1MB，前端懒加载一次）"""
+    return web.FileResponse(_WORLD_JSON)
 
 
 async def _status(request: web.Request) -> web.Response:
@@ -613,23 +626,26 @@ async def _do_settings(request: web.Request) -> web.Response:
 
 
 @web.middleware
-async def _no_cache_static_middleware(request: web.Request, handler: Callable) -> web.StreamResponse:
-    """静态资源中间件：禁用缓存，避免前端更新后浏览器仍使用旧文件。"""
+async def _static_cache_middleware(request: web.Request, handler: Callable) -> web.StreamResponse:
+    """静态缓存策略：index.html 禁缓存（入口即时生效）；/assets/* 文件名带内容
+    hash，可永久缓存（immutable），无需每次协商。"""
     response = await handler(request)
-    if request.path.startswith("/static") or request.path == "/":
+    if request.path == "/":
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    elif request.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 
 def build_app(ctx: PanelContext) -> web.Application:
     """构造 aiohttp 应用并注册路由（serve 通过 WebPanel 挂载到事件循环）
 
-    除 API 路由外，注册 /static 静态文件服务以支持拆分后的 CSS/JS/图标资源；
-    通过中间件禁用静态资源缓存，保证前端更新即时生效。
+    前端为 Vite 构建产物：/ 返回 index.html，/assets/* 为带 hash 的 JS/CSS，
+    /world.json 为地图数据；API 路由与前端解耦，契约见 frontend/src/types/api.ts。
     """
-    app = web.Application(middlewares=[_no_cache_static_middleware])
+    app = web.Application(middlewares=[_static_cache_middleware])
     app[_PANEL_KEY] = ctx
     app.router.add_get("/", _index)
     app.router.add_get("/api/status", _status)
@@ -654,5 +670,6 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_post("/api/standby/lock", _do_standby_lock)
     app.router.add_post("/api/standby/unlock", _do_standby_unlock)
     app.router.add_post("/api/settings", _do_settings)
-    app.router.add_static("/static", _STATIC_DIR, name="static")
+    app.router.add_get("/world.json", _world_json)
+    app.router.add_static("/assets", _ASSETS_DIR, name="assets")
     return app
