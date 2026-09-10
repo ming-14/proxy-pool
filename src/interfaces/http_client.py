@@ -22,25 +22,39 @@ from __future__ import annotations
 import logging
 import socket
 import threading
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse, urlunparse
 
-import requests as py_requests
-import urllib3
-
-# 抑制 verify=False 的 SSL 警告（每次请求都触发，warnings 缓存累积泄漏内存）
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+if TYPE_CHECKING:  # 仅类型标注引用，运行时不导入
+    import requests as _requests_mod
 
 logger = logging.getLogger(__name__)
+
+# requests 链惰性加载：serve 稳态（心跳/门控/补测）全走 aiohttp，requests 仅
+# fetch/purity/CLI request 用到——顶层导入会让 web-off serve 白载 ~4.5MB 边际内存。
+# disable_warnings 副作用（抑制 verify=False 刷屏）必须随导入同处执行。
+_requests = None
+
+
+def _load_requests():
+    global _requests
+    if _requests is None:
+        import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        _requests = requests
+    return _requests
+
 
 # 线程级 Session：每个线程独立 Session（线程安全），复用 SSLContext（避免 C 层泄漏）
 _local = threading.local()
 
 
-def _get_session() -> py_requests.Session:
+def _get_session() -> _requests_mod.Session:
     """获取当前线程的 Session（没有则创建，线程池线程不退出故 Session 只创建一次）"""
     s = getattr(_local, "session", None)
     if s is None:
-        s = py_requests.Session()
+        s = _load_requests().Session()
         _local.session = s
     return s
 

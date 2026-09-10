@@ -1,23 +1,37 @@
-"""组合根降级行为：可选资源缺失时只禁用对应功能，不抛异常中断启动
+"""组合根降级行为与惰性导入守卫
 
 覆盖点与 Go 版一致（internal/framework/container_test.go）：
 - purity.source=abuseipdb 但缺 API key → purity 为 None
 - geoip 库缺失/损坏 → geo 为 None
 - 未知 purity.source 仍视为配置错误，保留抛错
+- web.enabled=false → purity/geo 均不构造（仅面板消费）
+- 惰性导入：import container 不得拉起 requests/geoip2/fake_useragent（子进程隔离验证）
 """
 
 from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from src.framework import config
 from src.framework.container import build_container
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 @pytest.fixture
 def cache_db(tmp_path) -> str:
     """每个用例用独立 SQLite 文件，避免污染项目库"""
     return str(tmp_path / "cache.db")
+
+
+@pytest.fixture(autouse=True)
+def _web_enabled(monkeypatch) -> None:
+    """purity/geo 构造以 WEB_ENABLED 为前提——显式固定，不依赖本机配置状态"""
+    monkeypatch.setattr(config, "WEB_ENABLED", True)
 
 
 def test_missing_apikey_disables_purity(cache_db, monkeypatch) -> None:
@@ -53,3 +67,33 @@ def test_unknown_purity_source_still_raises(cache_db, monkeypatch) -> None:
 
     with pytest.raises(ValueError):
         build_container(cache_db=cache_db)
+
+
+def test_web_disabled_skips_purity_and_geo(cache_db, monkeypatch) -> None:
+    """web 关闭：purity/geo 仅面板消费，不构造也不 import 依赖链"""
+    monkeypatch.setattr(config, "WEB_ENABLED", False)
+    monkeypatch.setattr(config, "PURITY_SOURCE", "abuseipdb")
+    monkeypatch.setattr(config, "ABUSEIPDB_API_KEY", "test-key")
+    monkeypatch.setattr(config, "GEOIP_ENABLED", True)
+
+    container = build_container(cache_db=cache_db)
+
+    assert container.purity is None
+    assert container.geo is None
+
+
+def test_container_import_is_lazy() -> None:
+    """惰性导入守卫（子进程干净解释器）：import container 不拉起三方重依赖链
+
+    回归即失败——这些链一旦被顶层 import 拉回，serve/CLI 白载 ~7MB 边际内存。
+    """
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]);"
+        "import src.framework.container;"
+        "bad = [m for m in ('requests', 'geoip2', 'fake_useragent', 'maxminddb')"
+        " if m in sys.modules];"
+        "print(bad); sys.exit(1 if bad else 0)"  # 注意 sys.exit('') 空字符串同样返回 1，必须显式码
+    )
+    r = subprocess.run([sys.executable, "-c", code, str(PROJECT_ROOT)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, f"container 顶层导入拉起重依赖: {r.stdout.strip()}"

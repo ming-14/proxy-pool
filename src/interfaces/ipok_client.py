@@ -11,9 +11,6 @@ from __future__ import annotations
 
 import logging
 
-import requests
-import urllib3
-
 logger = logging.getLogger(__name__)
 
 _API_URL = "https://ipok.io/api/ip"
@@ -24,6 +21,7 @@ class IpokClient:
 
     返回字段与 AbuseIpDbClient 对齐（snake_case），供 CheckPurityUseCase 统一合并。
     proxy 非空时通过代理访问（ipok.io 可能被墙）；代理证书常不匹配 IP，禁用验证。
+    requests 方法级导入：客户端构造零成本，依赖链延迟到首次真实查询。
     """
 
     def __init__(self, *, timeout: float = 10.0, proxy: str = ""):
@@ -32,6 +30,7 @@ class IpokClient:
         # 有代理时禁用 SSL 验证（代理证书常为自签/IP 证书不匹配）
         self._verify = not bool(proxy)
         if proxy:
+            import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     def check(self, ip: str, *, max_age_in_days: int = 90) -> dict:
@@ -47,6 +46,7 @@ class IpokClient:
             requests.HTTPError: API 返回非 2xx
         """
         logger.info("ipok.io 查询: ip=%s proxy=%s", ip, self._proxies is not None)
+        import requests
         resp = requests.get(_API_URL, params={"ip": ip}, timeout=self._timeout,
                             proxies=self._proxies, verify=self._verify)
         resp.raise_for_status()

@@ -1,7 +1,8 @@
-项目更新时，**必须同步更新此文档**、`docs/`（cli / architecture / filestree）和 web 端（`frontend/`）
+项目更新时，**必须同步更新此文档**、`docs/`（cli / architecture / filestree）、`src/GUIDE.md`（测试目录树）和 web 端（`frontend/`）
 请检查：
 - [ ] `README.md`更新了吗
 - [ ] `docs/cli.md` / `docs/architecture.md` / `docs/filestree.md` 更新了吗
+- [ ] `src/GUIDE.md`（测试树）更新了吗
 - [ ] web 端（`frontend/` 源码 + `npm run build` 产物）更新了吗
 
 
@@ -28,7 +29,7 @@ Web 面板「IP 分布」页面依赖 MaxMind **GeoLite2-City** 离线数据库�
 - 官方：https://www.maxmind.com/en/accounts/current/geoip/downloads（免费注册）
 - 或社区构建版（如 `P3TERX/GeoLite.mmdb` 的 GitHub Releases）
 
-未放置时 serve 启动会报错（GeoLocator 加载失败）；放置后首次打开地图页面自动全量解析并缓存到 `.cache.db` 的 `ip_geo_cache` 表（后续毫秒级返回）。路径与缓存 TTL 见 `config/panel.toml` 的 `[geoip]` 节。
+未放置时启动仅 WARNING 并禁用地图（serve 正常运行；`[web].enabled=false` 或 `[geoip].enabled=false` 时连 geoip2 依赖链都不加载）；放置后首次打开地图页面自动全量解析并缓存到 `.cache.db` 的 `ip_geo_cache` 表（后续毫秒级返回）。路径与缓存 TTL 见 `config/panel.toml` 的 `[geoip]` 节。
 
 ## 快速开始
 

@@ -12,9 +12,6 @@ from __future__ import annotations
 
 import logging
 
-import requests
-import urllib3
-
 logger = logging.getLogger(__name__)
 
 _CHECK_URL = "https://api.abuseipdb.com/api/v2/check"
@@ -25,6 +22,7 @@ class AbuseIpDbClient:
 
     返回字段经 snake_case 转换，抹平 API 的 camelCase，供用例层与前端统一消费。
     proxy 非空时通过代理访问；代理证书常不匹配 IP，禁用验证。
+    requests 方法级导入：客户端构造零成本，依赖链延迟到首次真实查询（面板按钮触发）。
     """
 
     def __init__(self, api_key: str, *, timeout: float = 10.0, proxy: str = ""):
@@ -33,6 +31,7 @@ class AbuseIpDbClient:
         self._proxies = {"http": proxy, "https": proxy} if proxy else None
         self._verify = not bool(proxy)
         if proxy:
+            import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     def check(self, ip: str, *, max_age_in_days: int = 90) -> dict:
@@ -51,6 +50,7 @@ class AbuseIpDbClient:
         headers = {"Accept": "application/json", "Key": self._api_key}
         params = {"ipAddress": ip, "maxAgeInDays": max_age_in_days}
         logger.info("AbuseIPDB 查询: ip=%s maxAge=%d proxy=%s", ip, max_age_in_days, self._proxies is not None)
+        import requests
         resp = requests.get(_CHECK_URL, headers=headers, params=params, timeout=self._timeout,
                             proxies=self._proxies, verify=self._verify)
         resp.raise_for_status()

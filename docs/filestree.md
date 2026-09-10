@@ -17,10 +17,11 @@ proxy-pool/
 │   └── apikey.env                 # 密钥（ABUSEIPDB_API_KEY 等，git 忽略）
 ├── src/                           # 主包（干净架构四层）
 │   ├── __init__.py
+│   ├── GUIDE.md                   # 测试目录结构树（tests/ 全量说明，测试增删时同步）
 │   ├── domain/                    # 实体层：纯业务规则，零第三方依赖、无 IO
 │   │   ├── __init__.py
 │   │   ├── proxy_pool.py          # ProxyPool（分组/TTL/晋级/淘汰/源暂停/序列化）
-│   │   ├── models.py              # SourceSpec 值对象、normalize_proxy/to_proxy_dict
+│   │   ├── models.py              # 值对象：SourceSpec/FpwConfig、normalize_proxy/to_proxy_dict
 │   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/TaskScheduler
 │   ├── use_cases/                 # 用例层：应用业务逻辑，构造注入
 │   │   ├── __init__.py
@@ -34,7 +35,7 @@ proxy-pool/
 │   ├── interfaces/                # 接口适配器层：实现 domain 端口
 │   │   ├── __init__.py
 │   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert）
-│   │   ├── http_client.py         # RequestsHttpGetter（不校验证书 + 多 IP 重试）
+│   │   ├── http_client.py         # HttpGetter（requests，函数级惰性导入，不校验证书 + 多 IP 重试）+ AsyncHttpGetter（aiohttp，心跳/门控高频路径）
 │   │   ├── scheduler.py           # ProxyScheduler 异步调度器（asyncio）
 │   │   ├── proxy_server.py        # PproxyServer（rserver 动态同步 + rc 调度 + 全局/per-proxy 流量计数 + per-proxy 流量历史）
 │   │   ├── ua_generator.py         # 确定性 UA 生成器（基于 fake-useragent）
@@ -49,7 +50,7 @@ proxy-pool/
 │   └── framework/                 # 框架与驱动层：具体技术实现
 │       ├── __init__.py
 │       ├── config.py              # 配置加载（config/ 领域拆分多文件，固定节归属）
-│       ├── container.py           # 组合根（依赖组装）
+│       ├── container.py           # 组合根（依赖组装；purity/geo 按 WEB_ENABLED 门控构造、重依赖分支内惰性导入）
 │       ├── cli.py                 # argparse 命令处理
 │       ├── serve.py               # serve 主循环（调度 fill/heartbeat/补测 + 上游同步）
 │       ├── logging.py             # 日志模块

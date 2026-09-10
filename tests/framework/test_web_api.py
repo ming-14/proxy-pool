@@ -423,7 +423,7 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
                        "ms": 5000.0, "node": "cloudflare", "err": None},
             "error": None,
         }
-        with patch("src.framework.web.api._pspeed_probe", return_value=fake_result):
+        with patch("pspeed.probe.probe_one", return_value=fake_result):
             r = await self.client.post("/api/proxy/speedtest", json={"bind": "1.2.3.4:8080"})
         assert r.status == 200
         data = await r.json()

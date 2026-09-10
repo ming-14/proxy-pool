@@ -61,3 +61,20 @@ class SourceSpec:
     enabled: bool
     pause_ttl: int | None
     group_by_protocol: bool = False
+
+
+@dataclass(frozen=True)
+class FpwConfig:
+    """FreeProxy.World 源运行参数（组合根从 config 组装，经 create_source 注入）
+
+    置于领域层值对象而非源模块：组合根只需类型定义即可组装，避免为 import
+    FpwConfig 拉起整个源模块的重依赖链（requests/fake_useragent）。
+    默认值与 config [fetch.freeproxy_world] 一致，仅作兜底：
+    生产路径（container._source_loader）总是传入配置实际值。
+    """
+
+    accept_language: str = "en-US,en;q=0.9"
+    max_concurrent: int = 16
+    proxy_retry: int = 1
+    request_timeout: int = 15
+    task_interval: int = 2

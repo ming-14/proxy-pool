@@ -2,6 +2,10 @@
 
 依赖方向：framework 层 import 所有内层（interfaces/use_cases/domain），
 内层不 import 本模块。
+
+重依赖惰性导入：纯洁度客户端（requests 链）与 GeoLite2 定位器（geoip2 链）
+仅在对应功能启用的分支内 import——serve 稳态（心跳/门控走 aiohttp）与
+geoip.enabled=false 场景不加载这些依赖树（边际 ~5.6MB，调研见会话记录）。
 """
 
 from __future__ import annotations
@@ -13,17 +17,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from src.domain.models import SourceSpec
+from src.domain.models import SourceSpec, FpwConfig
 from src.domain.ports import ProxySource, IpPurityChecker
 from src.domain.proxy_pool import ProxyPool
-from src.interfaces.abuseipdb_client import AbuseIpDbClient
-from src.interfaces.geoip_client import GeoLite2Locator
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
-from src.interfaces.ipok_client import IpokClient
 from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.proxy_server import PproxyServer
 from src.interfaces.scheduler import ProxyScheduler
-from src.interfaces.sources.freeproxy_world import FpwConfig
 from src.use_cases.autoload import AutoloadUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
@@ -166,18 +166,21 @@ def build_container(cache_db: str | None = None) -> Container:
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
         metrics_window=config.METRICS_WINDOW,
     )
-    # IP 纯洁度检查：单源，由 config.PURITY_SOURCE 决定（ipok / abuseipdb）
+    # IP 纯洁度 / IP 归属：仅 Web 面板消费（api.py）——web 关闭时不构造也不
+    # import 依赖链（requests/geoip2 客户端模块均分支内惰性导入）
+    if config.PURITY_SOURCE not in ("ipok", "abuseipdb"):
+        raise ValueError(f"未知 purity.source: {config.PURITY_SOURCE!r}（应为 ipok 或 abuseipdb）")
     purity_checker: IpPurityChecker | None = None
-    if config.PURITY_SOURCE == "ipok":
-        purity_checker = IpokClient(proxy=config.IPOK_PROXY)
-    elif config.PURITY_SOURCE == "abuseipdb":
-        if config.ABUSEIPDB_API_KEY:
+    if config.WEB_ENABLED:
+        if config.PURITY_SOURCE == "ipok":
+            from src.interfaces.ipok_client import IpokClient
+            purity_checker = IpokClient(proxy=config.IPOK_PROXY)
+        elif config.ABUSEIPDB_API_KEY:
+            from src.interfaces.abuseipdb_client import AbuseIpDbClient
             purity_checker = AbuseIpDbClient(api_key=config.ABUSEIPDB_API_KEY, proxy=config.ABUSEIPDB_PROXY)
         else:
             # 缺 key 只禁用纯洁度检查，不阻断启动（缺失原因见 config 的 WARNING）
             logger.warning("纯洁度检查已禁用：缺少 ABUSEIPDB_API_KEY（config/apikey.env）")
-    else:
-        raise ValueError(f"未知 purity.source: {config.PURITY_SOURCE!r}（应为 ipok 或 abuseipdb）")
     purity: CheckPurityUseCase | None = None
     if purity_checker is not None:
         purity = CheckPurityUseCase(
@@ -187,9 +190,11 @@ def build_container(cache_db: str | None = None) -> Container:
             cache_ttl=config.ABUSEIPDB_CACHE_TTL,
         )
     # IP 归属地图：GeoLite2 离线定位 + SQLite 缓存（Web 面板地图页面按需懒查）
-    # geoip.enabled=false 时不构造定位器（不加载 mmdb，省内存），Container.geo 为 None
+    # geoip.enabled=false 或 web 关闭时不构造（不 import geoip2 链、不加载 mmdb）
     # 定位库切换（City/Country 或版本升级）时指纹变化，清空旧缓存防止粒度不一致数据复用
-    if config.GEOIP_ENABLED:
+    geo: IpGeoUseCase | None = None
+    if config.GEOIP_ENABLED and config.WEB_ENABLED:
+        from src.interfaces.geoip_client import GeoLite2Locator
         try:
             geo_locator = GeoLite2Locator(config.GEOIP_DB_FILE)
         except Exception as exc:
@@ -201,7 +206,6 @@ def build_container(cache_db: str | None = None) -> Container:
                 config.GEOIP_DB_FILE,
                 exc,
             )
-            geo = None
         else:
             if store.get_geo_cache_fingerprint() != geo_locator.fingerprint:
                 store.clear_geo_cache()
@@ -212,8 +216,6 @@ def build_container(cache_db: str | None = None) -> Container:
                 cache=store,
                 cache_ttl=config.GEOIP_CACHE_TTL,
             )
-    else:
-        geo = None
     return Container(
         pool=pool,
         store=store,

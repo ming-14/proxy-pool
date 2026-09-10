@@ -28,15 +28,14 @@ from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
 
-# pspeed 测速工具（vendor 目录，加入 sys.path 后 import）
+# pspeed 测速工具（vendor 目录）：sys.path 注册留在模块级（stdlib，零成本），
+# 实际 import 下沉到 _run_speedtest——测速是低频面板动作，不为其常驻加载
+# requests+PySocks 依赖链（调研实测边际 ~0.1MB/27ms，主要是隔离 vendor 导入面）
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_WEB_DIR)))
 _PSPEED_SRC = os.path.join(_PROJECT_ROOT, "vendor", "pspeed", "src")
 if _PSPEED_SRC not in sys.path:
     sys.path.insert(0, _PSPEED_SRC)
-from pspeed.probe import probe_one as _pspeed_probe
-from pspeed.proxy import parse_one as _pspeed_parse
-from pspeed.nodes import get_download_nodes as _pspeed_dl_nodes, get_upload_nodes as _pspeed_ul_nodes
 
 logger = logging.getLogger(__name__)
 
@@ -336,12 +335,17 @@ def _simplify_speed_result(d: dict | None) -> dict | None:
 def _run_speedtest(proxy: str) -> dict:
     """同步调 pspeed probe_one：Cloudflare 下载+上传，10s 时限
 
-    在 asyncio.to_thread 中执行，避免阻塞事件循环。
+    在 asyncio.to_thread 中执行，避免阻塞事件循环。pspeed 及其 requests/PySocks
+    依赖在此惰性导入（首次测速点击时，~27ms）。
     """
-    px = _pspeed_parse(proxy)
-    dl_nodes = _pspeed_dl_nodes(["cloudflare"])
-    ul_nodes = _pspeed_ul_nodes(["cloudflare"])
-    result = _pspeed_probe(
+    from pspeed.probe import probe_one
+    from pspeed.proxy import parse_one
+    from pspeed.nodes import get_download_nodes, get_upload_nodes
+
+    px = parse_one(proxy)
+    dl_nodes = get_download_nodes(["cloudflare"])
+    ul_nodes = get_upload_nodes(["cloudflare"])
+    result = probe_one(
         px, ["download", "upload"],
         dl_nodes=dl_nodes, ul_nodes=ul_nodes,
         dl_bytes=100 * 1024 * 1024,

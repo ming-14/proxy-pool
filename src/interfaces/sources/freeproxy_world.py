@@ -25,13 +25,13 @@ import logging
 import re
 import sys
 import time
-from dataclasses import dataclass
 from functools import partial
 
 import urllib3
 
 import requests as py_requests
 
+from src.domain.models import FpwConfig
 from src.domain.ports import ProxySource
 from src.interfaces import http_client
 from src.interfaces.scheduler import ProxyScheduler
@@ -43,21 +43,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BASE_URL = "https://www.freeproxy.world/"
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class FpwConfig:
-    """FreeProxy.World 源运行参数（组合根从 config.toml 组装，经 create_source 注入）
-
-    默认值与 config.toml [fetch.freeproxy_world] 一致，仅作兜底：
-    生产路径（container._source_loader）总是传入配置实际值。
-    """
-
-    accept_language: str = "en-US,en;q=0.9"
-    max_concurrent: int = 16
-    proxy_retry: int = 1
-    request_timeout: int = 15
-    task_interval: int = 2
 
 
 def _build_headers(ua_gen, seed, config: FpwConfig):
