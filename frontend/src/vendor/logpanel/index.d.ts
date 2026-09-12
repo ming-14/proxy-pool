@@ -1,6 +1,6 @@
 /**
  * LogPanel 类型声明（vendored 零依赖组件，源码为 JS，此处补充 TS 接口）。
- * 与 reference/logpanel 的 API 契约保持一致。
+ * 与上游 logpanel 的 API 契约保持一致。
  */
 
 /** 面板日志条目（后端 /api/logs 返回结构） */

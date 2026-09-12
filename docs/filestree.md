@@ -79,7 +79,7 @@ proxy-pool/
 │       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）
 │       ├── composables/           # useRowSelection（框选）/ useProxyTooltip（浮窗+测速）/ usePurity（纯洁度）/ useLogPanel（控制台日志源：增量轮询+可见性节流+主题联动）
-│       ├── vendor/logpanel/       # 日志视窗组件（vendored 自 reference/logpanel，Shadow DOM 零依赖 + TS 声明 + --lp-* 主题变量化）
+│       ├── vendor/logpanel/       # 日志视窗组件（vendored 零依赖，Shadow DOM + TS 声明 + --lp-* 主题变量化）
 │       ├── components/            # ui（ToastHost/ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、ProxyTooltip、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
