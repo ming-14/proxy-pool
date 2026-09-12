@@ -10,12 +10,11 @@ abuseipdb_proxy = ""                        # AbuseIPDB 代理（空=直连）
 
 # ---------------------------------------------------------------- IP 归属地（Web 地图）
 [geoip]
-enabled = true                     # 地图/归属定位开关；false 时不加载 mmdb 定位器（省内存）
+enabled = true                     # 地图/归属定位开关
 # GeoLite2 离线数据库（相对项目根，MaxMind GeoLite2 或 P3TERX/GeoLite.mmdb 构建版）。
-# 支持 City / Country 两种库，按库的 database_type 自动识别：
+# 支持 City / Country 两种库：
 #   GeoLite2-City.mmdb    城市级（省/市/经纬度，地图散点精度高，约 60MB）
 #   GeoLite2-Country.mmdb 国家级（仅国家，地图散点用内置国家中心坐标兜底，约 5MB）
-# 切换只需改 db_file 指向对应文件。
 db_file = "vendor/geoip/GeoLite2-City.mmdb"
 # 定位结果缓存有效期秒：IP 段归属变化以月计，90 天内不重复解析 mmdb
 cache_ttl = 7776000

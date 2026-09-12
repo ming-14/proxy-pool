@@ -50,5 +50,5 @@ group_by_protocol = true
 name = "src.interfaces.sources.freeproxy_world"
 group = "freeproxy-world"
 enabled = true
-pause_ttl = 1800000             # 多阶段爬取较重
+pause_ttl = 1800000
 group_by_protocol = true

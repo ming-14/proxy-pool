@@ -10,5 +10,5 @@ file_level = "INFO"       # logs/ 文件：默认 INFO 事件级，避免高频�
 [logging.loggers]
 urllib3 = "WARNING"
 requests = "WARNING"
-"aiohttp.access" = "WARNING"   # 面板轮询访问日志：浏览器开着约 1.4 行/秒，INFO 落盘纯属噪音
+"aiohttp.access" = "WARNING"   # 面板轮询访问日志
 "asyncio" = "WARNING"          # Proactor 连接复位等 asyncio 内部噪音（代码内已有过滤器，此处兜底）

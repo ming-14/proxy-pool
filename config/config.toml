@@ -8,16 +8,16 @@
 # 说明：
 # - [paths] 下路径相对项目根（config/ 所在目录的上一级）解析
 # - 组全部在 pool.toml [groups] 定义（组语义由配置决定，代码不硬编码组名）
-# - 密钥不入 TOML：config/apikey.env（git 忽略）
+# - 密钥不入 TOML：config/apikey.env
 
 # ---------------------------------------------------------------- 缓存与日志路径
 [paths]
-cache_db = ".cache.db"        # 代理池状态持久化 SQLite 数据库（相对项目根，WAL 模式）
+cache_db = ".cache.db"       # 代理池状态持久化 SQLite 数据库（相对项目根，WAL 模式）
 log_dir = "logs"             # 日志目录（相对项目根）
 autoload = "autoload"        # 启动时自动加载的代理清单文件（相对项目根，一行一个，# 注释）
 
 # ---------------------------------------------------------------- Web 控制面板（serve 模式）
 [web]
-enabled = true                     # 面板总开关；false 时不构造/启动 aiohttp 面板
-host = "127.0.0.1"                # 面板监听地址（默认仅本机）
+enabled = true                    # 面板总开关
+host = "0.0.0.0"                  # 面板监听地址
 port = 8083                       # 面板监听端口
