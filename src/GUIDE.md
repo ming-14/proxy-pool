@@ -30,9 +30,10 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_cli.py                    # argparse 全命令 + setup_logging(debug) 透传
 │   ├── test_container.py              # 组合根降级（缺 key/缺 mmdb/web 门控）+ 惰性导入守卫（子进程）
 │   ├── test_logging.py                # logging.toml 双通道分档/逐 logger 覆盖
+│   ├── test_logbuffer.py              # 面板日志缓冲（环形裁剪/seq 游标/stack 采集/buffer_start）
 │   ├── test_loop.py                   # run_coro 跨循环桥接
 │   ├── test_view.py                   # view.py 数据层（缓存读取/行构建）
-│   └── test_web_api.py                # REST API 全端点（读快照/组明细/控制动作/测速/纯洁度/geo）
+│   └── test_web_api.py                # REST API 全端点（读快照/组明细/控制动作/测速/纯洁度/geo/日志增量与清空）
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
 │   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手）
@@ -41,7 +42,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
 │       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆
-│       └── test_panel_e2e.py          # 四页导航/主题/框选/右键/浮窗/测速/调度参数/源控制 25 项
+│       └── test_panel_e2e.py          # 四页导航/主题/框选/右键/浮窗/测速/调度参数/源控制/日志面板 27 项
 └── vendor/                            # vendor 库回归测试
     └── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用等）
 ```

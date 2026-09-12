@@ -100,3 +100,32 @@ body {
   background: var(--color-primary-100);
   color: var(--color-primary-700);
 }
+
+/*
+ * LogPanel 悬浮日志视窗（frontend/src/vendor/logpanel）：--lp-* 全量映射到
+ * 设计令牌，主题（light/dark）自动跟随。自定义属性可穿透 host 进入 Shadow DOM，
+ * 且 #logpanel-host 优先级高于组件内 :host 默认值；级别色无需重复定义。
+ */
+#logpanel-host {
+  --lp-bg: var(--color-card);
+  --lp-fg: var(--color-t-primary);
+  --lp-border: var(--color-line);
+  --lp-titlebar-bg: var(--color-hover);
+  --lp-muted: var(--color-t-muted);
+  --lp-accent: var(--color-primary-600);
+  --lp-btn-bg: var(--color-hover);
+  --lp-btn-hover: var(--color-line);
+  --lp-close-hover: var(--color-danger);
+  --lp-input-bg: var(--color-card);
+  --lp-input-border: var(--color-line);
+  --lp-error: var(--color-danger);
+  --lp-hover-bg: var(--color-hover);
+  --lp-font-ui: var(--font-sans);
+  --lp-font-mono: var(--font-mono);
+  --lp-scrollbar: var(--color-line);
+  --lp-log-bg: var(--color-body);
+  --lp-level-debug: var(--color-t-muted);
+  --lp-level-info: var(--color-info);
+  --lp-level-warn: var(--color-warning);
+  --lp-level-error: var(--color-danger);
+}

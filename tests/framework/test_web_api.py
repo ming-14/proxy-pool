@@ -31,6 +31,7 @@ from src.framework.config import (
 )
 from src.framework.web.control import ServeControl
 from src.framework.web.api import build_app, PanelContext
+from src.framework import logbuffer
 
 
 def make_pool():
@@ -193,6 +194,46 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert resp.status == 200
         data = await resp.json()
         assert data["standby"][0]["purity"] is None
+
+    async def test_logs_endpoint(self):
+        """日志端点：全量拉取 / since 增量过滤 / entry 结构契约"""
+        buf = logbuffer.get_buffer()
+        base_seq = buf.snapshot()[1]  # 基准游标（单例跨测试共享，seq 不清零，按相对值断言）
+        buf.emit(logging.LogRecord("src.use_cases.demo", logging.INFO, __file__, 1, "hello", (), None))
+        buf.emit(logging.LogRecord("src.framework.serve", logging.DEBUG, __file__, 2, "detail", (), None))
+        resp = await self.client.get("/api/logs")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["cursor"] == base_seq + 2
+        assert data["buffer_start"] >= 1  # 最旧条目 seq（缓冲非空）
+        assert [e["seq"] for e in data["entries"]] == [base_seq + 1, base_seq + 2]
+        assert data["entries"][0]["tag"] == "src.use_cases.demo"
+        assert data["entries"][0]["level"] == 1
+        assert data["entries"][0]["stack"] is None  # 无异常记录 stack=None
+        assert isinstance(data["entries"][0]["ts"], int)
+        # since 增量：只返回游标之后
+        resp2 = await self.client.get(f"/api/logs?since={base_seq + 1}")
+        data2 = await resp2.json()
+        assert [e["seq"] for e in data2["entries"]] == [base_seq + 2]
+        assert data2["cursor"] == base_seq + 2
+
+    async def test_logs_since_invalid(self):
+        """since 非法（负数/非数字）→ 400"""
+        for bad in ("-1", "abc", "1.5"):
+            resp = await self.client.get(f"/api/logs?since={bad}")
+            assert resp.status == 400, f"since={bad} 应返回 400"
+
+    async def test_logs_clear(self):
+        """清空缓冲：GET 全量为空，cursor 保持单调（seq 不重置）"""
+        buf = logbuffer.get_buffer()
+        buf.clear()
+        buf.emit(logging.LogRecord("src.x", logging.WARNING, __file__, 1, "w", (), None))
+        resp = await self.client.post("/api/logs/clear")
+        assert resp.status == 200
+        assert (await resp.json())["ok"] is True
+        resp2 = await self.client.get("/api/logs")
+        data = await resp2.json()
+        assert data["entries"] == []
 
     async def test_group_detail_and_404(self):
         self.pool.add_to_group("trusted", "5.6.7.8:3128", consecutive_fails=0, latency=0.2)

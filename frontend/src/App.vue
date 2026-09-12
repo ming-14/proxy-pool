@@ -6,12 +6,15 @@
 import { computed, ref } from 'vue';
 import { RouterView, useRoute } from 'vue-router';
 import ToastHost from '@/components/ui/ToastHost.vue';
+import { useLogPanel } from '@/composables/useLogPanel';
 import { useStatusStore } from '@/stores/status';
 import { useThemeStore } from '@/stores/theme';
 
 const route = useRoute();
 const statusStore = useStatusStore();
 const themeStore = useThemeStore();
+// 控制台日志面板（侧边栏底部按钮启停；面板隐藏时不发 /api/logs 请求）
+const { visible: logPanelVisible, toggle: toggleLogPanel } = useLogPanel();
 
 const pageTitle = computed(() => String(route.meta.title ?? '仪表盘'));
 const sidebarOpen = ref(false);
@@ -66,8 +69,19 @@ const NAV = [
         <span class="sidebar-text">{{ item.label }}</span>
       </RouterLink>
     </nav>
-    <div class="p-4 border-t border-[var(--color-line-light)] sidebar-text">
-      <div class="text-xs text-[var(--color-t-muted)]">v7</div>
+    <div class="p-4 border-t border-[var(--color-line-light)]">
+      <button
+        data-testid="btn-logpanel"
+        class="btn btn-ghost btn-sm w-full justify-start gap-2"
+        :class="{ 'btn-primary': logPanelVisible }"
+        title="控制台日志"
+        @click="toggleLogPanel"
+      >
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+        </svg>
+        <span class="sidebar-text">控制台日志</span>
+      </button>
     </div>
   </aside>
 

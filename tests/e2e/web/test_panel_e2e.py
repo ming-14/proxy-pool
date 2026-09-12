@@ -317,3 +317,53 @@ class TestSources:
         assert resume.count() >= 1
         resume.first.click()
         page.wait_for_selector(".toast-success", timeout=8000)
+
+
+# ---------------------------------------------------------------- 控制台日志面板
+class TestLogPanel:
+    """侧边栏底部按钮启停的控制台日志面板（shadow DOM 渲染）"""
+
+    def test_open_shows_entries(self, page):
+        """打开面板：按钮激活、面板可见、日志行渲染、标题正确"""
+        btn = page.locator('[data-testid="btn-logpanel"]')
+        assert btn.is_visible()
+        btn.click()
+        # 面板 host 可见（shadow DOM 内渲染 .lp-log-line）
+        page.wait_for_function("""() => {
+            const host = document.querySelector('#logpanel-host');
+            if (!host || host.hasAttribute('data-hidden') || !host.shadowRoot) return false;
+            return host.shadowRoot.querySelector('.lp-log-line') !== null;
+        }""", timeout=10000)
+        # 标题与模块标签（控制台日志 + 无 src. 前缀）
+        title = page.evaluate("document.querySelector('#logpanel-host').shadowRoot.querySelector('.lp-title span').textContent")
+        assert title == "控制台日志"
+        tag_text = page.evaluate("document.querySelector('#logpanel-host').shadowRoot.querySelector('.lp-log-line .lp-tag').textContent")
+        assert tag_text and "src." not in tag_text
+        # 按钮呈激活态（打开时主题色高亮）
+        assert 'btn-primary' in (btn.get_attribute('class') or '')
+        # 关闭后按钮恢复 ghost 态
+        btn.click()
+        assert page.evaluate("document.querySelector('#logpanel-host').hasAttribute('data-hidden')")
+        assert 'btn-primary' not in (btn.get_attribute('class') or '')
+
+    def test_hidden_stops_polling(self, page):
+        """性能约束：面板隐藏时零 /api/logs 请求，重新打开恢复"""
+        logs_seen: list[float] = []
+        page.on("request", lambda r: logs_seen.append(time.time()) if "/api/logs" in r.url else None)
+        # 打开 → 应出现请求
+        page.click('[data-testid="btn-logpanel"]')
+        deadline = time.time() + 10
+        while time.time() < deadline and not logs_seen:
+            page.wait_for_timeout(200)
+        assert logs_seen, "面板打开后应产生 /api/logs 请求"
+        # 关闭 → 3.2s（> 1s 轮询间隔）内零新请求
+        page.click('[data-testid="btn-logpanel"]')
+        count_at_close = len(logs_seen)
+        page.wait_for_timeout(3200)
+        assert len(logs_seen) == count_at_close, "面板隐藏后不应再请求 /api/logs"
+        # 重新打开 → 恢复请求
+        page.click('[data-testid="btn-logpanel"]')
+        deadline = time.time() + 10
+        while time.time() < deadline and len(logs_seen) == count_at_close:
+            page.wait_for_timeout(200)
+        assert len(logs_seen) > count_at_close, "重新打开后应恢复 /api/logs 请求"

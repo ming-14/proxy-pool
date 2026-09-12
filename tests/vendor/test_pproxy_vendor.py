@@ -36,7 +36,12 @@ try:
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import NameOID
 except ImportError:
+    # cryptography 缺失时全部置 None，_make_self_signed_cert 入口统一跳过 TLS 用例
     x509 = None
+    hashes = None
+    serialization = None
+    rsa = None
+    NameOID = None
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VENDOR_DIR = os.path.join(PROJECT_ROOT, "vendor")
@@ -94,6 +99,8 @@ async def _wait_file_marker(path: str, marker: bytes, timeout: float = 10.0) -> 
 
 def _make_self_signed_cert(directory):
     """生成临时自签名证书 (cert_path, key_path)，供 TLS 测试用"""
+    if rsa is None:  # cryptography 缺失：TLS 用例跳过（环境依赖，非产物回归）
+        raise unittest.SkipTest("cryptography 未安装，跳过 TLS 用例")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, u"localhost")])
     now = datetime.datetime.utcnow()

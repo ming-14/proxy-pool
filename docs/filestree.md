@@ -53,10 +53,11 @@ proxy-pool/
 │       ├── container.py           # 组合根（依赖组装；purity/geo 按 WEB_ENABLED 门控构造、重依赖分支内惰性导入）
 │       ├── cli.py                 # argparse 命令处理
 │       ├── serve.py               # serve 主循环（调度 fill/heartbeat/补测 + 上游同步）
-│       ├── logging.py             # 日志模块
+│       ├── logging.py             # 日志模块（双通道分档 + 逐 logger 覆盖）
+│       ├── logbuffer.py           # 面板日志缓冲（root 镜像 → 有界环形缓冲 + seq 游标增量拉取，供 /api/logs）
 │       └── web/                   # Web 控制面板（serve 模式）
 │           ├── __init__.py
-│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加）+ Vite 产物静态服务
+│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加 + /api/logs 面板日志增量拉取/清空）+ Vite 产物静态服务
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── server.py          # aiohttp 服务器启动
 │           └── static/            # 前端构建产物（frontend/ npm run build 输出，提交入库，勿手改）
@@ -68,16 +69,17 @@ proxy-pool/
 │   ├── vite.config.ts             # 构建（outDir=src/framework/web/static）+ dev 代理 /api→8083
 │   ├── index.html                 # 入口模板（主题防闪屏内联脚本）
 │   ├── public/world.json          # 地图数据源文件
-│   ├── tests/unit/                # Vitest 单测（format/merge/csv/status-store）
+│   ├── tests/unit/                # Vitest 单测（format/merge/csv/status-store/useLogPanel）
 │   └── src/
 │       ├── main.ts                # 应用装配（pinia/router/轮询启动）
-│       ├── App.vue                # 壳：侧边栏 + 顶栏（暂停/连接态/主题）+ 路由视图 + Toast
+│       ├── App.vue                # 壳：侧边栏（含底部控制台日志按钮）+ 顶栏（暂停/连接态/主题）+ 路由视图 + Toast
 │       ├── router.ts              # hash 路由（dashboard/groups/standby/sources）+ 历史拉取开关
 │       ├── types/                 # API DTO（与 api.py 契约对应）与 UI 类型
 │       ├── api/client.ts          # 类型化 API 客户端（fetch 封装 + ApiError）
 │       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）
-│       ├── composables/           # useRowSelection（框选）/ useProxyTooltip（浮窗+测速）/ usePurity（纯洁度）
+│       ├── composables/           # useRowSelection（框选）/ useProxyTooltip（浮窗+测速）/ usePurity（纯洁度）/ useLogPanel（控制台日志源：增量轮询+可见性节流+主题联动）
+│       ├── vendor/logpanel/       # 日志视窗组件（vendored 自 reference/logpanel，Shadow DOM 零依赖 + TS 声明 + --lp-* 主题变量化）
 │       ├── components/            # ui（ToastHost/ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、ProxyTooltip、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）

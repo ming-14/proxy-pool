@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 
 from src.framework import config
+from src.framework.logbuffer import get_buffer
 
 LOG_FORMAT = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -68,6 +69,9 @@ def setup_logging(debug: bool = False):
     root.setLevel(logging.DEBUG)  # 根级别取最低，handler 各自过滤
     root.addHandler(stream_handler)
     root.addHandler(file_handler)
+
+    # 面板日志缓冲：与控制台同级别（DEBUG），供 Web 面板增量拉取（见 logbuffer.py）
+    get_buffer()
 
     # 逐 logger 覆盖：logger 级过滤与 handler 级取交集（两边都放行才输出）
     for name, level in config.LOG_LOGGERS.items():

@@ -22,7 +22,7 @@ from aiohttp import web
 
 from src.domain.models import bind_of, normalize_proxy, proxy_to_ip
 from src.domain.proxy_pool import LOCKED_GROUP
-from src.framework import config
+from src.framework import config, logbuffer
 from src.interfaces.proxy_server import PproxyServer
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
@@ -241,6 +241,30 @@ async def _index(request: web.Request) -> web.Response:
 async def _world_json(request: web.Request) -> web.StreamResponse:
     """世界地图 GeoJSON（ECharts registerMap 数据，约 1MB，前端懒加载一次）"""
     return web.FileResponse(_WORLD_JSON)
+
+
+async def _logs(request: web.Request) -> web.Response:
+    """面板日志增量拉取：?since=<seq> 只返回 seq 之后条目 + 最新游标；缺省返回全量
+
+    缓冲与前端 LogPanel 容量一致（2000，见 logbuffer.py）；面板隐藏时前端不发请求。
+    buffer_start = 缓冲最旧条目 seq，前端据此检测 serve 重启/缓冲淘汰导致的
+    增量失效（seq 回绕或游标被越过），触发全量重拉。
+    """
+    since_raw = request.query.get("since", "0")
+    try:
+        since = int(since_raw)
+        if since < 0:
+            raise ValueError
+    except ValueError:
+        raise web.HTTPBadRequest(text="since 必须为非负整数")
+    entries, cursor, buffer_start = logbuffer.get_buffer().snapshot(since)
+    return web.json_response({"entries": entries, "cursor": cursor, "buffer_start": buffer_start})
+
+
+async def _logs_clear(request: web.Request) -> web.Response:
+    """清空面板日志缓冲（只影响面板镜像，不影响 stderr/文件输出）"""
+    logbuffer.get_buffer().clear()
+    return web.json_response({"ok": True})
 
 
 async def _status(request: web.Request) -> web.Response:
@@ -654,6 +678,8 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/", _index)
     app.router.add_get("/api/status", _status)
     app.router.add_get("/api/status/history", _status_history_route)
+    app.router.add_get("/api/logs", _logs)
+    app.router.add_post("/api/logs/clear", _logs_clear)
     app.router.add_get("/api/group/{name}", _group)
     app.router.add_post("/api/group/{name}/add", _do_group_add)
     app.router.add_get("/api/proxy/history", _proxy_history)

@@ -5,6 +5,7 @@
 import type {
   GeoMapData,
   GroupDetail,
+  LogsResponse,
   ProxyHistory,
   ScheduleSettings,
   SpeedTestResult,
@@ -85,6 +86,11 @@ export const api = {
   purity: (bind: string) => post<Record<string, unknown>>('/api/proxy/purity', { bind }),
 
   geoMap: () => request<GeoMapData>('/api/geo/map'),
+
+  logs: (since?: number) =>
+    request<LogsResponse>(`/api/logs${since ? `?since=${encodeURIComponent(since)}` : ''}`),
+
+  clearLogs: () => post<{ ok: boolean }>('/api/logs/clear', {}),
 
   moveProxy: (proxies: string[], targetGroup: string) =>
     post<{ ok: boolean; count: number }>('/api/proxy/move', { proxies, target_group: targetGroup }),

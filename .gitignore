@@ -66,6 +66,7 @@ desktop.ini
 .cache.db
 .cache.db-shm
 .cache.db-wal
+.cache.db.backup
 logs/
 # e2e 截图 / 本地构建中间产物
 build-artifacts/

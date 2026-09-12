@@ -11,6 +11,24 @@ export interface GroupStat {
   kind: 'trusted' | 'blacklist' | 'standby' | 'staging' | 'normal';
 }
 
+/** 面板日志条目（GET /api/logs），与后端 logbuffer.py 的 entry 结构一致 */
+export interface LogEntry {
+  seq: number;             // 单调递增游标（增量拉取位置）
+  ts: number;              // 毫秒时间戳
+  level: number;           // 0=DEBUG 1=INFO 2=WARN 3=ERROR
+  levelName: string;
+  tag: string;             // logger 名（如 src.use_cases.fetch_proxies）
+  text: string;
+  stack?: string | null;   // 异常堆栈（可展开详情，无异常为 null）
+}
+
+/** GET /api/logs?since=N */
+export interface LogsResponse {
+  entries: LogEntry[];
+  cursor: number;          // 当前最新 seq（后续增量拉取起点）
+  buffer_start: number;    // 缓冲最旧条目 seq（serve 重启/淘汰后增量失效检测）
+}
+
 export interface StandbyEntry {
   proxy: string;
   latency: number | null;
