@@ -75,6 +75,9 @@ node_modules/
 # ---- 用户自行下载的离线数据库（体积大，不随仓库分发）----
 vendor/geoip/
 
+# ---- 上游参考源码存档（实际使用 frontend/src/vendor/ 副本，不跟踪）----
+reference/
+
 autoload
 config/apikey.env
 .playwright-cli
