@@ -28,10 +28,11 @@ heartbeat_timeout = 3             # 心跳探测单个代理超时秒数
 
 metrics_window = 1800 # 队列指标采样存储时长秒
 
-# 允许的代理类型。不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），
+# serve 默认代理协议（CLI 未指定 --type 时的初始值；运行时面板可增删，不写回本配置）。
+# 不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），
 # 浏览器访问 https 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；
 # http/socks5 均为透传，无此问题。
-serve_proxy_types = ["http", "socks5"]
+proxy_types = ["http", "socks5"]
 
 network_probe_urls = [ # 本地网络门控，直连探测目标判定本地网络是否可用
     "https://cp.cloudflare.com/generate_204",

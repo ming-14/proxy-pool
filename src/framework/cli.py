@@ -196,7 +196,7 @@ def cmd_serve(args):
 
     # serve 用 CLI 的 host/port 重建组合根（proxy_server 按监听地址构造）
     c = build_container()
-    allowed = set(args.type) if args.type else set(config.SERVE_PROXY_TYPES)
+    allowed = set(args.type) if args.type else set(config.SERVER_PROXY_TYPES)
     print(f"启动本地代理服务器: {args.host}:{args.port} (类型: {','.join(sorted(allowed))})")
     run(
         c,
@@ -270,7 +270,7 @@ def main():
     p_serve.add_argument("--interval", type=int, default=config.HEARTBEAT_INTERVAL, help=f"心跳间隔秒 (默认{config.HEARTBEAT_INTERVAL})")
     p_serve.add_argument("--probe-url", default=config.HEARTBEAT_PROBE_URL, help="心跳探测URL")
     p_serve.add_argument("--type", action="append", choices=["http", "https", "socks5"],
-                         help="允许的代理类型 (可多次指定)，默认全部")
+                         help="serve 使用的代理类型 (可多次指定)；不填默认取 serve.toml [server].proxy_types")
     p_serve.add_argument("--web-host", default=config.WEB_HOST, help=f"Web 面板监听地址 (默认{config.WEB_HOST})")
     p_serve.add_argument("--web-port", type=int, default=config.WEB_PORT, help=f"Web 面板监听端口 (默认{config.WEB_PORT})")
 

@@ -163,9 +163,10 @@ HEARTBEAT_CONCURRENCY = int(_toml["server"]["heartbeat_concurrency"])  # 心跳�
 HEARTBEAT_TIMEOUT = int(_toml["server"]["heartbeat_timeout"])    # 心跳探测单个代理超时秒数
 # 队列指标采样存储时长秒（窗口）。每轮心跳采一次，超出窗口的自动清理；心跳动态调整时窗口始终不变。
 METRICS_WINDOW = int(_toml["server"]["metrics_window"])
+# serve 默认代理协议（CLI 未指定 --type 时的初始值；运行时由 ServeControl 持有，面板可增删）。
 # 不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），浏览器访问 https
 # 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；http/socks5 均为透传，无此问题。
-SERVE_PROXY_TYPES: tuple[str, ...] = tuple(_toml["server"]["serve_proxy_types"])
+SERVER_PROXY_TYPES: tuple[str, ...] = tuple(_toml["server"]["proxy_types"])
 # 本地网络门控（serve 心跳/补测/fill 前直连探测判定本地网络是否可用，异常时跳过避免误拉黑）
 NETWORK_PROBE_URLS: tuple[str, ...] = tuple(_toml["server"]["network_probe_urls"])  # 探测目标（任一通即正常）
 NETWORK_CHECK_CACHE_OK = float(_toml["server"]["network_check_cache_ok"])           # 正常时缓存秒数

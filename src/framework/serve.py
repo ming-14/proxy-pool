@@ -221,8 +221,12 @@ def run(
     web_port: int | None = None,
     web_enabled: bool = True,
 ) -> None:
-    """同步入口：构建并运行事件循环（Ctrl+C 干净退出）"""
-    types = allowed_types or {"http", "https", "socks5"}
+    """同步入口：构建并运行事件循环（Ctrl+C 干净退出）
+
+    不传 allowed_types 时使用配置默认（[server].proxy_types），与 CLI 缺省行为一致；
+    运行时实际生效集合由 ServeControl 持有（面板可增删）。
+    """
+    types = set(allowed_types) if allowed_types else set(config.SERVER_PROXY_TYPES)
     try:
         run_coro(_run(
             c,
