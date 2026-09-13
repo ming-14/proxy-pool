@@ -6,7 +6,7 @@
  *
  * 旧版 934 行补丁集（文本选区冻结×2、hover 冻结、innerHTML 重建跳过、focus 跳过…）
  * 由 Vue 响应式渲染天然消解；仅保留"选中/拖拽/悬浮时冻结顺序"这一 UX 语义
- * （mergeKeepOrder 纯函数）。
+ * （mergeKeepOrder 纯函数），且写动作后由 refreshQueueOrder 穿透冻结即时回正。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
@@ -37,8 +37,9 @@ const toast = useToastStore();
 
 const status = computed(() => store.status);
 const standbyList = computed(() => status.value?.standby ?? []);
-/** 是否已锁定单一上游（锁定行的其余队列行灰显且不可交互） */
-const hasLock = computed(() => standbyList.value.some((p) => p.locked));
+/** 是否已锁定单一上游（锁定行的其余队列行灰显且不可交互）——以后端 locked_proxy 为准，
+ *  与列表内的 locked 行标记同源（api.py 由同一次 is_locked() 判定下发） */
+const hasLock = computed(() => store.lockedProxy !== null);
 const groups = computed(() => status.value?.groups ?? {});
 const pending = computed(() => status.value?.pending_retries ?? []);
 
@@ -94,9 +95,21 @@ watch(hasLock, (locked) => {
 });
 
 // ---------------- 队列动作 ----------------
+/**
+ * 写动作成功后立即按最新顺序渲染。
+ * 顺序冻结是给后台 2s 轮询用的（选中/拖拽/悬浮期间不让行在光标下跑位），
+ * 但固定/解固/锁定/解锁是用户显式触发的重排，必须立刻可见——否则 toast 说
+ * "代理已移到队列最前"而列表原地不动，且选中态会让冻结一直不解除、顺序永不回正。
+ */
+async function refreshQueueOrder() {
+  await store.refreshNow();
+  displayStandby.value = [...(store.status?.standby ?? [])];
+}
+
 async function doPin(proxy: string) {
   try {
     await api.pin(proxy);
+    await refreshQueueOrder();
     toast.success('已固定', '代理已移到队列最前');
   } catch (e) {
     toast.error('固定失败', e instanceof Error ? e.message : String(e));
@@ -106,6 +119,7 @@ async function doPin(proxy: string) {
 async function doUnpin(proxy: string) {
   try {
     await api.unpin(proxy);
+    await refreshQueueOrder();
     toast.success('已解固', '代理回到延迟排序');
   } catch (e) {
     toast.error('解固失败', e instanceof Error ? e.message : String(e));
@@ -115,6 +129,7 @@ async function doUnpin(proxy: string) {
 async function doLock(proxy: string) {
   try {
     await api.lock(proxy);
+    await refreshQueueOrder();
     toast.success('已锁定', `只使用 ${proxy}`);
   } catch (e) {
     toast.error('锁定失败', e instanceof Error ? e.message : String(e));
@@ -124,6 +139,7 @@ async function doLock(proxy: string) {
 async function doUnlock() {
   try {
     await api.unlock();
+    await refreshQueueOrder();
     toast.success('已解锁', '恢复代理服务队列');
   } catch (e) {
     toast.error('解锁失败', e instanceof Error ? e.message : String(e));
@@ -362,7 +378,7 @@ onBeforeUnmount(() => {
     <div v-if="pending.length" class="card">
       <div class="card-header"><div class="card-title">待补测代理</div></div>
       <div class="card-body text-sm">
-        <div v-for="p in pending" :key="p" class="py-1"><code>{{ p.split('://')[1] || p }}</code></div>
+        <div v-for="p in pending" :key="p" class="py-1"><code>{{ bindOf(p) }}</code></div>
       </div>
     </div>
   </div>

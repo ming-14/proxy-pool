@@ -5,7 +5,9 @@
  * - 历史仅仪表盘/队列页需要（historyEnabled 由路由守卫切换），游标=已合并点最大 ts；
  * - 历史前端保留上限 MAX_HISTORY=1000 点（后端窗口 1800s / 2s ≈ 900 点，留余量）；
  * - paused 只停轮询（保留最后数据）；首次加载失败弹一次 error toast；
- * - 历史拉取失败不阻断状态刷新（图表滞后一拍，下轮重试）。
+ * - 历史拉取失败不阻断状态刷新（图表滞后一拍，下轮重试）；
+ * - 写动作（固定/锁定等）后由页面调用 refreshNow 立即取数：paused 是"停止自动轮询"，
+ *   不该压住用户刚触发的操作结果，故 refreshNow 不带 paused 判断。
  */
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
@@ -65,8 +67,7 @@ export const useStatusStore = defineStore('status', () => {
     }
   }
 
-  async function tick() {
-    if (paused.value) return;
+  async function fetchStatus() {
     try {
       const data = await api.status();
       status.value = data;
@@ -80,6 +81,16 @@ export const useStatusStore = defineStore('status', () => {
       }
     }
     firstLoadDone = true;
+  }
+
+  async function tick() {
+    if (paused.value) return;
+    await fetchStatus();
+  }
+
+  /** 写动作后的即时刷新：忽略暂停（用户显式操作的结果必须立刻反映，不等下一次轮询） */
+  async function refreshNow() {
+    await fetchStatus();
   }
 
   function start() {
@@ -100,6 +111,6 @@ export const useStatusStore = defineStore('status', () => {
 
   return {
     status, standbyHistory, trafficHistory, connected, paused, historyEnabled, lockedProxy,
-    tick, start, stop, togglePause,
+    tick, refreshNow, start, stop, togglePause,
   };
 });

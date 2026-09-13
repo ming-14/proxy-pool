@@ -55,6 +55,9 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
   let drag: DragState | null = null;
   let marquee: HTMLElement | null = null;
   let scrollRaf: number | null = null;
+  // 自动滚动步长放在循环外：rAF 循环每帧读取，鼠标换边后方向即时跟随
+  // （若把 step 捕获进 tick 闭包，方向要等经过中间死区停一次才切得过来）
+  let scrollStep = 0;
 
   // ---------------- 框选矩形 ----------------
   function showMarquee() {
@@ -207,15 +210,15 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
     let step = 0;
     if (clientY < rect.top + SCROLL_EDGE) step = -(SCROLL_EDGE - (clientY - rect.top));
     else if (clientY > rect.bottom - SCROLL_EDGE) step = SCROLL_EDGE - (rect.bottom - clientY);
-    step = Math.max(-SCROLL_MAX, Math.min(SCROLL_MAX, step));
-    if (step === 0) {
+    scrollStep = Math.max(-SCROLL_MAX, Math.min(SCROLL_MAX, step));
+    if (scrollStep === 0) {
       stopAutoScroll();
       return;
     }
-    if (scrollRaf) return;
+    if (scrollRaf) return; // 循环已在跑：只更新步长（下一帧即按新方向滚）
     const tick = () => {
       if (!drag) return;
-      scrollEl.scrollTop += step;
+      scrollEl.scrollTop += scrollStep;
       if (drag.moved) {
         recomputeFromDrag(); // 滚动改变行位置，按最新索引重算
         updateMarquee();
@@ -228,6 +231,7 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
   function stopAutoScroll() {
     if (scrollRaf) cancelAnimationFrame(scrollRaf);
     scrollRaf = null;
+    scrollStep = 0;
   }
 
   // ---------------- 全选 / 清空 / 键盘 / 外部点击 ----------------

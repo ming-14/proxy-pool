@@ -1,8 +1,9 @@
-"""Web 面板浏览器 e2e：真实 serve 子进程（8082/8083）+ mock 上游代理 + Playwright Chromium
+"""Web 面板浏览器 e2e：真实 serve 子进程（端口见 conftest，默认空闲端口）+ mock 上游代理 + Playwright Chromium
 
 覆盖：壳层导航/主题/暂停轮询、仪表盘 KPI 与三趋势图与地图、代理组（过滤/排序/添加/
-右键拉黑还原/框选/导出）、队列（表格/固定/锁定/hover 浮窗）、设置页（调度参数保存）、
-代理源（暂停恢复）。截图输出到 build-artifacts/e2e-screenshots/ 供与参考图人工比对。
+右键拉黑还原/框选/导出）、队列（表格/固定置顶/锁定/右键菜单夹取/hover 浮窗）、
+设置页（调度参数保存）、代理源（暂停恢复）。截图输出到 build-artifacts/e2e-screenshots/
+供与参考图人工比对。
 """
 
 from __future__ import annotations
@@ -12,10 +13,55 @@ from pathlib import Path
 
 import pytest
 import requests
+from playwright.sync_api import Locator, Page
 
 from tests.e2e.web.conftest import BASE_URL, api_status
 
 SHOT_DIR = Path(__file__).resolve().parents[3] / "build-artifacts" / "e2e-screenshots"
+
+
+def standby_rows(page: Page) -> Locator:
+    """代理服务队列表格的数据行"""
+    return page.locator('[data-testid="sb-table"] tbody tr[data-proxy]')
+
+
+def first_proxy(page: Page) -> str:
+    return standby_rows(page).first.get_attribute("data-proxy")
+
+
+def standby_group_name() -> str:
+    """队列组名从 /api/status 的 kind 派生（不硬编码配置里的组名）"""
+    return next(n for n, g in api_status()["groups"].items() if g["kind"] == "standby")
+
+
+def group_proxies(name: str) -> list[str]:
+    return [p["proxy"] for p in requests.get(f"{BASE_URL}/api/group/{name}", timeout=5).json()["proxies"]]
+
+
+def main_scroll(page: Page) -> dict:
+    """主滚动容器几何：{scroll_height, client_height, top, bottom, left, right}"""
+    return page.evaluate(
+        "() => { const el = document.getElementById('main-content'); const r = el.getBoundingClientRect();"
+        " return { scroll_height: el.scrollHeight, client_height: el.clientHeight,"
+        " top: r.top, bottom: r.bottom, left: r.left, right: r.right }; }"
+    )
+
+
+def wait_layout_stable(page: Page, selector: str) -> None:
+    """等元素盒子在两帧之间不再变化：视口缩放会触发重排，未稳定时的坐标/右键都不可靠
+    （右键菜单还会被 resize 事件关闭）"""
+    page.wait_for_function(
+        """sel => {
+            const el = document.querySelector(sel);
+            if (!el) return false;
+            const b = el.getBoundingClientRect();
+            const cur = [b.x, b.y, b.width, b.height];
+            const prev = window.__stableBox;
+            window.__stableBox = cur;
+            return !!prev && prev.every((v, i) => v === cur[i]);
+        }""",
+        arg=selector,
+    )
 
 
 @pytest.fixture()
@@ -193,8 +239,14 @@ class TestGroups:
         page.wait_for_selector(".context-submenu .context-menu-item")
         page.click(".context-submenu .context-menu-item:has-text('信任池')")
         page.wait_for_selector(".toast-success", timeout=8000)
-        # 移回 staging（若已被 fill 搬入队列，move 仍按代理当前组移动）
-        requests.post(f"{BASE_URL}/api/proxy/move", json={"proxies": [proxy], "target_group": "staging"}, timeout=5)
+        # 移回 staging：trusted 是队列填充候选组，serve 填充循环可能抢先把该代理搬进队列，
+        # 所以重试到它真正回到 staging 为止（否则后续用例的 staging 行数断言会间歇性失败）
+        for _ in range(5):
+            requests.post(f"{BASE_URL}/api/proxy/move", json={"proxies": [proxy], "target_group": "staging"}, timeout=5)
+            if proxy in group_proxies("staging"):
+                return
+            time.sleep(0.5)
+        raise AssertionError(f"staging 未恢复代理 {proxy}（队列填充仍在抢占？）")
 
     def test_marquee_selection(self, page, shot):
         wrap = page.locator('[data-testid="grp-table"]')
@@ -256,24 +308,35 @@ class TestStandby:
         tip.wait_for(state="hidden", timeout=5000)
 
     def test_pin_unpin(self, page):
-        row = page.locator('[data-testid="sb-table"] tbody tr[data-proxy]').first
+        """固定后立即置顶（写动作穿透顺序冻结），解固后固定标记消失"""
+        row = standby_rows(page).last
         proxy = row.get_attribute("data-proxy")
         row.locator('button[data-action="pin"]').click()
-        page.wait_for_selector(".toast-success", timeout=8000)
-        page.wait_for_timeout(2500)
-        row2 = page.locator(f'[data-testid="sb-table"] tr[data-proxy="{proxy}"]')
-        assert row2.locator('button[data-action="unpin"]').count() == 1
-        row2.locator('button[data-action="unpin"]').click()
-        page.wait_for_timeout(2500)
+        page.wait_for_function(
+            "p => document.querySelector('[data-testid=sb-table] tbody tr[data-proxy]').dataset.proxy === p",
+            arg=proxy, timeout=8000,
+        )
+        assert api_status()["standby"][0]["proxy"] == proxy
+        row = page.locator(f'[data-testid="sb-table"] tr[data-proxy="{proxy}"]')
+        row.locator('button[data-action="unpin"]').wait_for(timeout=8000)
+        row.locator('button[data-action="unpin"]').click()
+        page.wait_for_function(
+            "p => [...document.querySelectorAll('[data-testid=sb-table] tbody tr[data-proxy]')]"
+            ".every(r => r.dataset.proxy !== p || !r.querySelector('button[data-action=unpin]'))",
+            arg=proxy, timeout=8000,
+        )
+        assert [p["pinned"] for p in api_status()["standby"] if p["proxy"] == proxy] == [False]
 
     def test_lock_unlock(self, page):
-        row = page.locator('[data-testid="sb-table"] tbody tr[data-proxy]').first
+        """锁定末行：置顶为首行并留在队列列表内（无独立卡片），其余行灰显"""
+        row = standby_rows(page).last
+        proxy = row.get_attribute("data-proxy")
         row.locator('button[data-action="lock"]').click()
-        # 锁定行留在队列列表内（无独立卡片）：带「已锁定」标记，其余行灰显
         locked = page.locator('[data-testid="sb-table"] tbody tr[data-locked]')
         locked.wait_for(timeout=8000)
-        assert locked.locator('.badge', has_text='已锁定').count() == 1
-        page.wait_for_timeout(500)
+        assert first_proxy(page) == proxy
+        assert locked.first.get_attribute("data-proxy") == proxy
+        assert locked.first.locator('.badge', has_text='已锁定').count() == 1
         assert page.locator('[data-testid="sb-table"] tbody tr.row-dimmed').count() >= 1
         # 锁定后仪表盘隐藏健康率卡
         page.click('[data-testid="nav-dashboard"]')
@@ -284,6 +347,71 @@ class TestStandby:
         page.click('[data-testid="unlock-btn"]')
         page.wait_for_selector('[data-testid="sb-table"] tbody tr[data-locked]', state="detached", timeout=8000)
         assert page.locator('[data-testid="sb-table"] tbody tr.row-dimmed').count() == 0
+
+    def test_context_menu_reposition_clamped(self, page):
+        """菜单已打开时再次右键：夹取必须仍然生效（曾因重渲染把夹取结果覆盖回原始点击点）
+
+        两个坑：① 只压矮视口高度，不缩宽度——缩小会跨 lg 断点触发侧边栏滑出过渡，
+        过渡期间它盖在内容区上，坐标点击会命中侧边栏；② 用坐标点击而非元素点击——
+        元素点击会先 scrollIntoView，滚动事件正是菜单的关闭条件。
+        """
+        vw, vh = 1440, 300
+        page.set_viewport_size({"width": vw, "height": vh})
+        wait_layout_stable(page, '[data-testid="sb-table"] tbody tr[data-proxy] code')
+        rows = standby_rows(page)
+        assert rows.count() >= 2, "队列至少要有两行才能验证二次定位"
+        code = rows.first.locator("code").bounding_box()
+        page.mouse.click(code["x"] + code["width"] / 2, code["y"] + code["height"] / 2, button="right")
+        page.wait_for_selector(".context-menu", state="visible")
+        menu = page.locator(".context-menu").bounding_box()
+        # 第二次右键落在下一行最右单元格：既能避开已展开的菜单，点击点又会让菜单纵向溢出视口
+        tds = rows.nth(1).locator("td")
+        boxes = []
+        for i in range(tds.count()):
+            b = tds.nth(i).bounding_box()
+            if b:
+                boxes.append(b)
+        cell = max(boxes, key=lambda b: b["x"])
+        cell_x, cell_y = cell["x"] + cell["width"] / 2, cell["y"] + cell["height"] / 2
+        assert cell_x > menu["x"] + menu["width"], "候选单元格落在菜单内，第二次右键会命中菜单"
+        assert cell_y + menu["height"] > vh, f"候选点击点 y={cell_y:.0f} 不会让菜单溢出视口（高 {vh}），用例失效"
+        page.mouse.click(cell_x, cell_y, button="right")
+        wait_layout_stable(page, ".context-menu")  # slideIn 动画（0.1s）结束后再量
+        box = page.locator(".context-menu").bounding_box()
+        assert box["x"] >= 0 and box["x"] + box["width"] <= vw
+        assert box["y"] >= 0 and box["y"] + box["height"] <= vh
+
+    def test_marquee_autoscroll_follows_edge(self, page):
+        """框选拖到边缘自动滚动：换边后方向立即跟随（曾因步长被 rAF 闭包捕获而只能按原方向滚）"""
+        # 队列只有 3 行滚不动：把 staging 组代理补进队列，并压矮视口保证可滚
+        group = standby_group_name()
+        staging = group_proxies("staging")
+        rows_before = standby_rows(page).count()
+        requests.post(f"{BASE_URL}/api/group/{group}/add", json={"proxies": staging}, timeout=5)
+        page.set_viewport_size({"width": 1440, "height": 400})
+        try:
+            page.wait_for_function(
+                "n => document.querySelectorAll('[data-testid=sb-table] tbody tr[data-proxy]').length >= n",
+                arg=rows_before + len(staging), timeout=8000,
+            )
+            wait_layout_stable(page, '[data-testid="sb-table"] tbody tr[data-proxy]')
+            sc = main_scroll(page)
+            assert sc["scroll_height"] > sc["client_height"], "队列行不足以滚动，无法验证自动滚动"
+            mid_x = (sc["left"] + sc["right"]) / 2
+            page.evaluate("document.getElementById('main-content').scrollTop = 0")
+            cell = standby_rows(page).first.locator("td").first.bounding_box()
+            page.mouse.move(cell["x"] + cell["width"] / 2, cell["y"] + cell["height"] / 2)
+            page.mouse.down()
+            page.mouse.move(mid_x, sc["top"] + 10, steps=1)      # 顶边：已在顶部，负方向无处可滚
+            page.wait_for_timeout(350)
+            at_top = page.evaluate("document.getElementById('main-content').scrollTop")
+            page.mouse.move(mid_x, sc["bottom"] - 5, steps=1)    # 底边：方向应立刻改成向下
+            page.wait_for_timeout(600)
+            scrolled = page.evaluate("document.getElementById('main-content').scrollTop")
+            page.mouse.up()
+            assert at_top == 0 and scrolled > 0, f"自动滚动方向未跟随边缘: top={at_top} bottom={scrolled}"
+        finally:
+            requests.post(f"{BASE_URL}/api/proxy/remove", json={"proxies": staging, "group": group}, timeout=5)
 
     def test_settings_save(self, page):
         # 调度参数已迁至设置页（队列页不再展示）

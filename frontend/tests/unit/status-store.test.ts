@@ -61,3 +61,16 @@ describe('useStatusStore.tick', () => {
     expect(historyCall).toContain('since=5');
   });
 });
+
+describe('useStatusStore.refreshNow', () => {
+  it('paused 时仍取数（写动作后的即时刷新不受暂停影响）', async () => {
+    mockResponses({ standby: [{ proxy: 'a' }] }, {});
+    const store = useStatusStore();
+    store.paused = true;
+    await store.tick();
+    expect(fetch).not.toHaveBeenCalled();
+    await store.refreshNow();
+    expect(store.status).toEqual({ standby: [{ proxy: 'a' }] });
+    expect(store.connected).toBe(true);
+  });
+});
