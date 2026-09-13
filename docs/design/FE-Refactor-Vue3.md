@@ -60,7 +60,7 @@ frontend/src/
 | 世界地图数据 | `frontend/public/world.json`（懒加载 fetch + registerMap 全局一次） | static/vendor/world.json |
 | 虚拟滚动 | @tanstack/vue-virtual（双向动态测量） | 手工 spacer/estRowH |
 | 单测 | Vitest（utils/stores/composables 纯逻辑） | 无 |
-| E2E | Python playwright（`tests/e2e/web/`，pytest 集成，真实 serve 8082/8083） | 无 |
+| E2E | Python playwright（`tests/e2e/web/`，pytest 集成，真实 serve 端口运行时挑空闲端口） | 无 |
 
 ### 2.3 数据流
 

@@ -2,7 +2,8 @@
 
 隔离策略：
 - PROXY_POOL_CONFIG 指向临时配置目录（复制自 config/，补丁 cache_db / 日志目录 / 本地 mock 探测 URL）
-- 代理端口 8082、面板端口 8083（用户指定，避开 8080/8081）
+- 端口默认运行时挑**空闲端口**（本机 8082/8083 常被手动运行的 serve 占用，写死就得先停面板），
+  需要固定端口时用环境变量 PP_E2E_SERVER_PORT / PP_E2E_WEB_PORT 指定
 - 队列数据来自本地 mock 上游代理（复用 tests/e2e/mock_upstream），不依赖外网
 - serve 以子进程运行（真实 aiohttp 面板 + Vue 前端构建产物）
 """
@@ -34,8 +35,29 @@ from tests.e2e.mock_upstream import start_mock_upstream  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_SRC = PROJECT_ROOT / "config"
-SERVER_PORT = 8082
-WEB_PORT = 8083
+
+
+def _free_ports(count: int) -> list[int]:
+    """取 count 个当前空闲端口（全部 bind 后再统一释放，避免两次取到同一端口）"""
+    socks = [socket.socket() for _ in range(count)]
+    for s in socks:
+        s.bind(("127.0.0.1", 0))
+    ports = [s.getsockname()[1] for s in socks]
+    for s in socks:
+        s.close()
+    return ports
+
+
+def _resolve_port(env_name: str, fallback: int) -> int:
+    raw = os.environ.get(env_name)
+    return int(raw) if raw else fallback
+
+
+# 默认挑空闲端口：写死 8082/8083 会与手动运行的 serve 撞车，而 Windows SO_REUSEADDR 允许
+# 后起进程绑同一端口并劫持连接（测试结果会指向错误实例且极难排查）——挑空闲端口天然规避。
+_free = _free_ports(2)
+SERVER_PORT = _resolve_port("PP_E2E_SERVER_PORT", _free[0])
+WEB_PORT = _resolve_port("PP_E2E_WEB_PORT", _free[1])
 BASE_URL = f"http://127.0.0.1:{WEB_PORT}"
 
 
@@ -109,7 +131,11 @@ def panel():
     for port in (SERVER_PORT, WEB_PORT):
         with socket.socket() as probe:
             if probe.connect_ex(("127.0.0.1", port)) == 0:
-                pytest.fail(f"端口 {port} 已被占用：请先停止手动运行的 serve，e2e 需独占 8082/8083")
+                pytest.fail(
+                    f"端口 {port} 已被占用：e2e 需独占面板/代理端口"
+                    "（默认取空闲端口，被占通常意味着并发跑了同一会话；"
+                    "可用 PP_E2E_SERVER_PORT / PP_E2E_WEB_PORT 指定其它端口）"
+                )
     mocks = _MockProxyLoop(count=6)
     mocks.start()
     config_dir = _make_config_dir(tmpdir, mocks.ports[0])

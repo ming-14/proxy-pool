@@ -78,8 +78,8 @@ npm run dev       # 开发模式（HMR，/api 代理到 127.0.0.1:8083，需先 
 python -m pytest -v
 ```
 
-Web 面板浏览器 e2e（`tests/e2e/web/`，Playwright + Chromium，自动起 serve 于 8082/8083、
-mock 上游代理、独立临时 cache_db，不依赖外网）需先安装：
+Web 面板浏览器 e2e（`tests/e2e/web/`，Playwright + Chromium，自动起 serve（端口默认取空闲端口，可用
+`PP_E2E_SERVER_PORT` / `PP_E2E_WEB_PORT` 固定）、mock 上游代理、独立临时 cache_db，不依赖外网）需先安装：
 
 ```bash
 pip install playwright

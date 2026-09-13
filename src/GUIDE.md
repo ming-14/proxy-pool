@@ -41,8 +41,8 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→优雅退出）
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
-│       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆
-│       └── test_panel_e2e.py          # 四页导航/主题/框选/右键/浮窗/测速/调度参数/源控制/日志面板 27 项
+│       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆（默认空闲端口，PP_E2E_* 可固定）
+│       └── test_panel_e2e.py          # 四页导航/主题/框选（含边缘自动滚动）/右键（含二次定位夹取）/固定置顶/锁定/浮窗/测速/调度参数/源控制/日志面板 29 项
 └── vendor/                            # vendor 库回归测试
     └── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用等）
 ```
