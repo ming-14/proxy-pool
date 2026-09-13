@@ -81,3 +81,6 @@ reference/
 autoload
 config/apikey.env
 .playwright-cli
+
+# ---- 智能体工作区（本机记忆/技能，不随仓库分发）----
+.workbuddy/

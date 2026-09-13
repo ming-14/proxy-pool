@@ -60,8 +60,6 @@ export const api = {
 
   blacklist: (proxies: string[]) => post<{ ok: boolean; count: number }>('/api/blacklist', { proxies }),
 
-  trust: (proxies: string[]) => post<{ ok: boolean; count: number }>('/api/trust', { proxies }),
-
   pauseSource: (source: string, ttl?: number) =>
     post<{ ok: boolean; pause_remaining: number | null }>('/api/source/pause', { source, ttl }),
 
