@@ -37,14 +37,15 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - **组明细**：选择任一组查看每个代理的连续失败数、响应时间、过期倒计时（支持关键字过滤、列排序）；**虚拟滚动**（@tanstack/vue-virtual，动态测高 + overscan）——只渲染视口附近行，上下 spacer 保持滚动条比例，拖滚动条跳到远处自动定位；右下角悬浮回到顶部按钮
 - **Windows 资源管理器式框选**：代理组页与代理服务队列页的代理列表支持鼠标框选/多选——空白处、表头或行上按住拖拽出现蓝色矩形框选，矩形覆盖的行被选中（从表头向下拖拽也可框选）；单击行单选、Ctrl+单击切换、Shift+单击锚点范围选择、Ctrl+拖拽切换框内行、Ctrl+A 全选当前列表、Esc 清空、点击列表外部空白清空选中、拖到视口边缘自动滚动（框选可跨未渲染区域）；选中态行高亮（左缘蓝色指示条），列表重绘后选中保持
 - **右键批量操作**：选中多行后右键弹出上下文菜单，菜单项作用于**整个选中集**——代理组页：移动（子菜单选目标组，批量）/ 拉黑（批量）/ 删除（批量）/ 还原（黑名单组批量）；代理服务队列页：移出（批量）/ 拉黑（批量）/ 测速（**多选时菜单不展示测速项**，仅单选可用）。右键目标行不在选中集内时先单选该行（对齐资源管理器）
-- **代理源**：启用状态、暂停剩余时间；代理服务队列待补测代理一览
+- **代理源**：启用状态、暂停剩余时间
+- **代理服务队列**：队列内代理（latency 升序，列出延迟/连续失败/纯洁度与纯洁·固定·锁定操作）、已锁定单一上游卡片；队列外**待补测代理一览**（心跳失败后进入退避复核、尚未判定结果的代理）仅在此页展示
 - **单代理 hover 图表**：代理服务队列页面鼠标悬浮代理 IP（表格行或锁定卡片）时弹出 tooltip，展示该代理的延时趋势 + 流量速率图表（ECharts 独立实例），数据来自 `/api/proxy/history?bind=`，2s 定时刷新；tooltip 可交互（鼠标可移入查看图表），离开后 100ms 延迟销毁
 - **单代理测速**：tooltip 底部「测速 (CF 10s)」按钮，点击后调 `/api/proxy/speedtest`（POST `{"bind": "..."}`），后端用 vendor/pspeed 对该代理做 Cloudflare 下载+上传 10s 测速（`asyncio.to_thread` 避免阻塞），返回 `{download: {best_mbps, ...}, upload: {best_mbps, ...}}` 展示在按钮下方；测速开始后 tooltip **pin**（鼠标移出不自动消失，鼠标在 tooltip 外部按下即销毁），解除 pin 后恢复正常 mouseleave 行为
 - **右键上下文菜单**：代理服务队列页面右键代理行弹出菜单——「移出」（hover 展开子菜单，列出所有组及其存量，点击调 `/api/proxy/move` 将代理移到目标组并同步 pproxy 上游）、「拉黑」（调 `/api/blacklist`，从所有组移除并加入黑名单）、「测速」（显示 tooltip 并立即触发测速）
 - **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」；黑名单组：「还原」（移到代理队列）+「删除」
 - **点击 IP pin tooltip**：代理服务队列页面**点击代理 IP → pin tooltip**（鼠标移出不自动消失，tooltip 外部按下即销毁）；**按住 IP 拖动（拖选文本）→ 立即隐藏悬浮面板**，便于选择/复制 IP 文本；悬浮 IP 仍显示图表，离开后 100ms 延迟销毁
 - **添加代理**：代理组页面「添加」按钮（导出 CSV 左边），弹出模态框输入代理地址（每行一个，裸地址默认 http），调 `POST /api/group/{name}/add` 批量添加到当前组
-- **设置页**（侧边栏「设置」，顶部分区 Tab，仅运行时可变项）：「代理服务」集中编辑全部 8 项调度参数（心跳间隔/并发/超时/探测 URL/允许类型/填充倍率/填充最小增量/调度算法，`/api/settings` 即刻生效）；「界面偏好」主题（浅色/深色）、轮询间隔（ms）、历史保留点数（localStorage，仅本机生效）；「数据维护」清空面板日志镜像（`/api/logs/clear`，不影响 stderr/文件）与立即刷新状态
+- **设置页**（侧边栏「设置」，仅运行时可变项）：集中编辑全部 8 项调度参数（心跳间隔/并发/超时/探测 URL/允许类型/填充倍率/填充最小增量/调度算法，`/api/settings` 即刻生效）
 
 #### 控制功能
 
@@ -67,7 +68,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 
 「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，每轮 heartbeat 采累计值存历史（同窗口），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。按上游代理的累计/历史流量（`per_proxy_traffic`，`{bind: {"upload": int, "download": int}}`）通过 vendor/pproxy 内化的 `modstat(user, remote_ip, host_name, roption)` 钩子实现，仅内存实时计数不持久化，经 `/api/proxy/history?bind=` 按需查单代理的延时历史（`ProxyLatencySample`）+ 流量历史（`TrafficSample`），两种历史统一用 bind（地址，不含 scheme）作 key。
 
-面板为 Vue 3 + Vite + TypeScript + Tailwind CSS 4 单页应用（源码 `frontend/`，构建产物提交在 `src/framework/web/static/`，由 aiohttp 直接 serve；图表统一 ECharts）。定时轮询 `/api/status`（默认 2s，设置页「界面偏好」可调），数据全部通过 REST API 交互。
+面板为 Vue 3 + Vite + TypeScript + Tailwind CSS 4 单页应用（源码 `frontend/`，构建产物提交在 `src/framework/web/static/`，由 aiohttp 直接 serve；图表统一 ECharts）。定时轮询 `/api/status`（固定 2s），数据全部通过 REST API 交互。
 
 ## fetch — 拉取代理
 

@@ -157,7 +157,7 @@ async function save() {
       </div>
       <div class="flex items-center justify-between gap-3">
         <span class="text-[var(--color-t-muted)]">允许类型</span>
-        <div class="flex items-center gap-4">
+        <div class="checkbox-group">
           <label v-for="t in ['http', 'https', 'socks5']" :key="t" class="flex items-center gap-1.5 cursor-pointer select-none">
             <input
               type="checkbox"

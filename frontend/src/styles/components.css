@@ -6,7 +6,16 @@
  * 必须置于 @layer components：Tailwind 4 工具类在 @layer utilities 中，
  * 未分层样式在级联中恒赢分层样式——不包层时 td{text-align:left} 会压过
  * .text-center/.text-right（旧版 v3 无层且 CDN 样式后注入，工具类天然赢）。
+ *
+ * 唯一新增令牌：--control-h（表单控件高度基准），定义在下方 :root。
  */
+
+/* 表单控件统一高度：0.875rem 字号（行高 1.25rem）+ 0.5rem×2 内边距 + 1px×2 边框 = 2.375rem。
+   带边框的 .input 天然就是这个高度；无边框控件（复选框组）需显式撑高才能与同行输入框对齐。 */
+:root {
+  --control-h: 2.375rem;
+}
+
 @layer components {
 
 /* ---------------- 按钮 ---------------- */
@@ -212,6 +221,8 @@ tr.row-paused {
   font-size: 0.875rem;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   min-width: 0;
+  /* 高度下限：与外层字号解耦时保证各控件行等高 */
+  min-height: var(--control-h);
 }
 .input:focus,
 .select:focus {
@@ -232,6 +243,14 @@ tr.row-paused {
   font-weight: 500;
   color: var(--color-t-secondary);
   margin-bottom: 0.375rem;
+}
+/* 行内无边框多选组（如调度参数的「允许类型」）：自身无内边距/边框，
+   需撑到与 .input 同高，否则该行行高由行内文本决定（20px），与其它控件行（38px）参差 */
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: var(--control-h);
 }
 
 /* ---------------- Badge ---------------- */

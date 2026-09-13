@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 仪表盘：KPI 卡片、队列延迟/健康率趋势、数据流量图+速率 KPI、IP 分布地图、待补测。
+ * 仪表盘：KPI 卡片、队列延迟/健康率趋势、数据流量图+速率 KPI、IP 分布地图。
  * 数据全部来自 statusStore（2s 轮询 + 历史增量），图表 option 为纯 computed——
  * 旧版增量渲染状态机与 innerHTML 重建补丁全部移除。
  */
@@ -133,10 +133,6 @@ const trafficKpi = computed(() => {
     { label: '平均延迟', value: avgLatency != null ? `${avgLatency.toFixed(3)}s` : '-', color: '' },
   ];
 });
-
-const pendingText = computed(() =>
-  (status.value?.pending_retries ?? []).map((p) => p.split('://')[1] || p).join(', '),
-);
 </script>
 
 <template>
@@ -192,14 +188,6 @@ const pendingText = computed(() =>
 
     <!-- IP 分布地图（geoip.enabled=false 时后端不下发 geo_enabled，区块隐藏） -->
     <GeoMap v-if="status.geo_enabled" />
-
-    <!-- 待补测 -->
-    <div v-if="status.pending_retries.length" data-testid="pending-card" class="card card-body">
-      <div class="flex items-center gap-2 text-sm text-[var(--color-t-secondary)]">
-        <span class="badge badge-warning">待补测</span>
-        <span>{{ pendingText }}</span>
-      </div>
-    </div>
   </template>
   </div>
 </template>

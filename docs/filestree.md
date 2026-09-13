@@ -76,7 +76,7 @@ proxy-pool/
 │       ├── router.ts              # hash 路由（dashboard/groups/standby/sources/settings）+ 历史拉取开关
 │       ├── types/                 # API DTO（与 api.py 契约对应）与 UI 类型
 │       ├── api/client.ts          # 类型化 API 客户端（fetch 封装 + ApiError）
-│       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast / prefs（轮询间隔·历史点数，localStorage）
+│       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）
 │       ├── composables/           # useRowSelection（框选）/ useProxyTooltip（浮窗+测速）/ usePurity（纯洁度）/ useLogPanel（控制台日志源：增量轮询+可见性节流+主题联动）
 │       ├── vendor/logpanel/       # 日志视窗组件（vendored 零依赖，Shadow DOM + TS 声明 + --lp-* 主题变量化）
