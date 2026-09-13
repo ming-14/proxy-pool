@@ -82,7 +82,7 @@ def _purity_cached(ctx: PanelContext, proxy: str) -> dict | None:
 
 
 def _status_snapshot(ctx: PanelContext) -> dict:
-    """全量状态快照：组统计 / 可用数 / 代理服务队列 / 待补测 / 源暂停 / 调度参数"""
+    """全量状态快照：组统计 / 可用数 / 代理服务队列（含锁定行）/ 待补测 / 源暂停 / 调度参数"""
     pool = ctx.pool
     # 组名 → 中文标签 + 语义类型（从 config 派生，不硬编码）
     _GROUP_META = {
@@ -104,24 +104,27 @@ def _status_snapshot(ctx: PanelContext) -> dict:
             "kind": kind,
         }
     available = pool.get_available_proxies()
-    standby = [
-        {
+
+    # 锁定代理作为 pproxy 唯一上游，物理上已移出队列组；面板把它显示为队列首行
+    # （行内标记已锁定、其余行灰显），故并入 standby 下发，省得前端拼接两处数据。
+    locked_proxy = None
+    if ctx.standby.is_locked():
+        locked_group = ctx.standby.upstream_proxies()
+        locked_proxy = locked_group[0]  # is_locked 为真即该组非空
+
+    def _standby_entry(p: str, *, locked: bool) -> dict:
+        return {
             "proxy": p,
             "latency": pool.get_latency(p),
             "consecutive_fails": pool.get_consecutive_fail_count(p),
             "pinned": pool.is_pinned(p),
             "purity": _purity_cached(ctx, p),
+            "locked": locked,
         }
-        for p in ctx.standby.standby_proxies(truncate=False)
-    ]
-    # 锁定状态：locked 代理作为 pproxy 唯一上游（无论心跳是否成功）
-    locked_proxy = None
-    locked_purity = None
-    if ctx.standby.is_locked():
-        locked_list = ctx.standby.upstream_proxies()
-        if locked_list:
-            locked_proxy = locked_list[0]
-            locked_purity = _purity_cached(ctx, locked_proxy)
+
+    standby = [_standby_entry(p, locked=False) for p in ctx.standby.standby_proxies(truncate=False)]
+    if locked_proxy:
+        standby.insert(0, _standby_entry(locked_proxy, locked=True))
     traffic_upload, traffic_download = ctx.server.traffic_total()
     sources = []
     for s in config.SOURCES:
@@ -139,7 +142,6 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "standby": standby,
         "standby_count": len(standby),
         "locked_proxy": locked_proxy,
-        "locked_purity": locked_purity,
         "capacity": ctx.capacity,
         "pending_retries": ctx.standby.pending_retries(),
         "sources": sources,

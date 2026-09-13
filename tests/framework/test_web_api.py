@@ -402,11 +402,14 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post("/api/standby/lock", json={"proxy": "http://1.2.3.4:8080"})
         assert r.status == 200
         assert (await r.json())["locked"] is True
-        # status 返回 locked_proxy + standby 含完整队列（锁定代理已移出 standby 组）
+        # status 返回 locked_proxy + standby 首行为锁定代理（locked=true，已移出队列组故需合并下发）
         resp = await self.client.get("/api/status")
         data = await resp.json()
         assert data["locked_proxy"] == "http://1.2.3.4:8080"
-        assert [p["proxy"] for p in data["standby"]] == ["http://5.6.7.8:3128"]
+        assert [(p["proxy"], p["locked"]) for p in data["standby"]] == [
+            ("http://1.2.3.4:8080", True),
+            ("http://5.6.7.8:3128", False),
+        ]
         # LOCKED_GROUP 不在 groups 列表（隐藏）
         assert "_proxy-pool-locked" not in data["groups"]
         # unlock
@@ -417,6 +420,7 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         data2 = await resp2.json()
         assert data2["locked_proxy"] is None
         assert set(p["proxy"] for p in data2["standby"]) == {"http://1.2.3.4:8080", "http://5.6.7.8:3128"}
+        assert not any(p["locked"] for p in data2["standby"])
 
     async def test_standby_lock_rejects_non_standby(self):
         """lock 非队列代理返回 400"""

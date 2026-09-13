@@ -269,7 +269,12 @@ class TestStandby:
     def test_lock_unlock(self, page):
         row = page.locator('[data-testid="sb-table"] tbody tr[data-proxy]').first
         row.locator('button[data-action="lock"]').click()
-        page.wait_for_selector('[data-testid="lock-card"]', timeout=8000)
+        # 锁定行留在队列列表内（无独立卡片）：带「已锁定」标记，其余行灰显
+        locked = page.locator('[data-testid="sb-table"] tbody tr[data-locked]')
+        locked.wait_for(timeout=8000)
+        assert locked.locator('.badge', has_text='已锁定').count() == 1
+        page.wait_for_timeout(500)
+        assert page.locator('[data-testid="sb-table"] tbody tr.row-dimmed').count() >= 1
         # 锁定后仪表盘隐藏健康率卡
         page.click('[data-testid="nav-dashboard"]')
         page.wait_for_timeout(500)
@@ -277,7 +282,8 @@ class TestStandby:
         assert page.locator('[data-testid="kpi-standby"] .kpi-value').inner_text() == "固定代理"
         page.click('[data-testid="nav-standby"]')
         page.click('[data-testid="unlock-btn"]')
-        page.wait_for_selector('[data-testid="lock-card"]', state="hidden", timeout=8000)
+        page.wait_for_selector('[data-testid="sb-table"] tbody tr[data-locked]', state="detached", timeout=8000)
+        assert page.locator('[data-testid="sb-table"] tbody tr.row-dimmed').count() == 0
 
     def test_settings_save(self, page):
         # 调度参数已迁至设置页（队列页不再展示）

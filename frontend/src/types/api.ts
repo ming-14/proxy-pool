@@ -34,6 +34,7 @@ export interface StandbyEntry {
   latency: number | null;
   consecutive_fails: number;
   pinned: boolean;
+  locked: boolean;             // 锁定为 pproxy 唯一上游（列表置顶显示，其余行灰显）
   purity: PurityInfo | null;   // 缓存的纯洁度（无缓存为 null）
 }
 
@@ -76,7 +77,6 @@ export interface StatusSnapshot {
   standby: StandbyEntry[];
   standby_count: number;
   locked_proxy: string | null;
-  locked_purity: PurityInfo | null;
   capacity: number;
   pending_retries: string[];
   sources: SourceStat[];

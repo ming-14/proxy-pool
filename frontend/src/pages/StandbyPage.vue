@@ -1,6 +1,8 @@
 <script setup lang="ts">
 /**
- * 代理服务队列页：锁定卡片、队列表格（框选/右键/固定/锁定/纯洁度）、待补测。
+ * 代理服务队列页：队列表格（框选/右键/固定/锁定/纯洁度）、待补测。
+ * 锁定单一上游时锁定代理作为列表首行（行内「已锁定」标记，操作列只剩纯洁/解锁），
+ * 其余行灰显且不可交互——不单独开锁定卡片。
  *
  * 旧版 934 行补丁集（文本选区冻结×2、hover 冻结、innerHTML 重建跳过、focus 跳过…）
  * 由 Vue 响应式渲染天然消解；仅保留"选中/拖拽/悬浮时冻结顺序"这一 UX 语义
@@ -15,6 +17,7 @@ import { checkPurity, purityCache, type PurityEntry } from '@/composables/usePur
 import {
   cancelShow,
   hideTooltip,
+  pinTooltip,
   runSpeedTest,
   scheduleHide,
   scheduleShow,
@@ -33,8 +36,9 @@ const store = useStatusStore();
 const toast = useToastStore();
 
 const status = computed(() => store.status);
-const lockedProxy = computed(() => status.value?.locked_proxy ?? null);
 const standbyList = computed(() => status.value?.standby ?? []);
+/** 是否已锁定单一上游（锁定行的其余队列行灰显且不可交互） */
+const hasLock = computed(() => standbyList.value.some((p) => p.locked));
 const groups = computed(() => status.value?.groups ?? {});
 const pending = computed(() => status.value?.pending_retries ?? []);
 
@@ -67,7 +71,8 @@ const selection = useRowSelection<StandbyEntry>({
   getRows: () => displayStandby.value,
   proxyOf: (r) => r.proxy,
   indexAtY,
-  isExcludedTarget: (e) => !!(e.target as HTMLElement).closest('code, button'),
+  // 锁定期间队列行不参与框选/多选（等价旧版"整卡禁用"；锁定行的按钮与浮窗仍可用）
+  isExcludedTarget: (e) => hasLock.value || !!(e.target as HTMLElement).closest('code, button'),
   onDragStart: hideTooltip, // 框选出现立即关浮窗
 });
 
@@ -81,6 +86,12 @@ watch(
   },
   { immediate: true },
 );
+
+// 锁定后队列行不可交互：清空残留选中——否则选中态会继续冻结列表顺序，
+// 并在灰显行上叠一层选中高亮（既不可操作又看着像被选中）
+watch(hasLock, (locked) => {
+  if (locked) selection.clear();
+});
 
 // ---------------- 队列动作 ----------------
 async function doPin(proxy: string) {
@@ -169,7 +180,7 @@ function onMenuAction(item: MenuItem) {
       .catch((err: Error) => toast.error('拉黑失败', err.message));
   } else if (item.action === 'speedtest') {
     const bind = bindOf(contextProxy.value);
-    showTooltip(bind, pos.x, pos.y, 'table', true);
+    showTooltip(bind, pos.x, pos.y, true);
     runSpeedTest(bind);
   }
 }
@@ -193,7 +204,7 @@ function onTableMouseover(e: MouseEvent) {
   }
   const bind = bindOf(code.textContent || '');
   if (tooltipState.visible && tooltipState.bind === bind) return;
-  scheduleShow(bind, e.clientX, e.clientY, 'table');
+  scheduleShow(bind, e.clientX, e.clientY);
 }
 
 function onTableMouseleave() {
@@ -220,22 +231,10 @@ function onTableMousedown(e: MouseEvent) {
     document.removeEventListener('mouseup', onUp, true);
     if (moved) return;
     const bind = bindOf(code.textContent || '');
-    if (tooltipState.visible && tooltipState.bind === bind) showPin();
+    if (tooltipState.visible && tooltipState.bind === bind) pinTooltip();
   };
   document.addEventListener('mousemove', onMove, true);
   document.addEventListener('mouseup', onUp, true);
-}
-
-function showPin() {
-  tooltipState.pinned = true;
-}
-
-// 锁定卡片 IP：点击弹出统计浮窗并 pin（hover 不自动弹出，避免遮住下方表格）
-function onLockProxyClick(e: MouseEvent) {
-  const proxy = lockedProxy.value;
-  if (!proxy || window.getSelection()?.toString()) return;
-  showTooltip(bindOf(proxy), e.clientX, e.clientY, 'lock', true);
-  showPin();
 }
 
 // pin 状态下点击浮窗外部 → 关闭
@@ -254,7 +253,7 @@ function onMainScroll() {
 
 // 队列刷新后：hover 的表格代理已离队且未 pin → 销毁浮窗
 watch(displayStandby, (list) => {
-  if (!tooltipState.visible || tooltipState.source !== 'table' || tooltipState.pinned || !tooltipState.bind) return;
+  if (!tooltipState.visible || tooltipState.pinned || !tooltipState.bind) return;
   if (!list.some((p) => bindOf(p.proxy) === tooltipState.bind)) hideTooltip();
 });
 
@@ -268,48 +267,18 @@ onBeforeUnmount(() => {
   document.getElementById('main-content')?.removeEventListener('scroll', onMainScroll);
   hideTooltip(); // 离开页面销毁浮窗（模块级状态跨路由保留测速结果）
 });
-
-// ---------------- 锁定代理（队列统计已移至仪表盘/队列卡，此页不再展示） ----------------
-const lockedPurity = computed<PurityEntry | undefined>(() => {
-  const p = lockedProxy.value;
-  if (!p) return undefined;
-  return purityCache.get(bindOf(p)) ?? (status.value?.locked_purity as PurityEntry | undefined) ?? undefined;
-});
-
-const lockedBind = computed(() => (lockedProxy.value ? bindOf(lockedProxy.value) : ''));
-const lockedChecking = computed(() => purityCache.get(lockedBind.value)?.status === 'checking');
 </script>
 
 <template>
   <div class="space-y-5">
-    <!-- 锁定卡片 -->
-    <div v-if="lockedProxy" data-testid="lock-card" class="card border-[var(--color-warning)]">
-      <div class="card-header">
-        <div>
-          <div class="card-title">已锁定单一上游</div>
-          <div class="card-subtitle">无论心跳是否成功，只使用此代理</div>
-        </div>
-      </div>
-      <div class="card-body flex items-center justify-between">
-        <div class="flex items-center gap-2 min-w-0">
-          <code class="text-sm font-medium cursor-pointer" @click="onLockProxyClick">{{ lockedProxy }}</code>
-          <span class="flex items-center gap-1 flex-shrink-0"><PurityTags :data="lockedPurity" /></span>
-        </div>
-        <div class="flex items-center gap-2 flex-shrink-0">
-          <button data-testid="lock-purity-btn" class="btn btn-ghost btn-sm" :disabled="lockedChecking" @click="checkPurity(lockedProxy)">
-            {{ lockedChecking ? '检查中' : '纯洁' }}
-          </button>
-          <button data-testid="unlock-btn" class="btn btn-warning btn-sm" @click="doUnlock">解锁</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 队列卡片（锁定时禁用） -->
-    <div class="card" :class="{ 'opacity-50 pointer-events-none': lockedProxy }">
+    <!-- 队列卡片：锁定期间锁定行置顶高亮，其余行灰显且不可交互 -->
+    <div class="card">
       <div class="card-header">
         <div>
           <div class="card-title">代理服务队列</div>
-          <div class="card-subtitle">pproxy 队列</div>
+          <div class="card-subtitle">
+            {{ hasLock ? '已锁定单一上游：无论心跳是否成功，只使用此代理' : 'pproxy 队列' }}
+          </div>
         </div>
       </div>
       <div
@@ -337,11 +306,21 @@ const lockedChecking = computed(() => purityCache.get(lockedBind.value)?.status 
               :key="p.proxy"
               :data-idx="i"
               :data-proxy="p.proxy"
-              :class="{ selected: selection.has(p.proxy) }"
+              :data-locked="p.locked ? '1' : null"
+              :class="{
+                selected: selection.has(p.proxy),
+                'row-locked': p.locked,
+                'row-dimmed': hasLock && !p.locked,
+              }"
             >
               <td class="text-[var(--color-t-muted)] w-12">{{ i + 1 }}</td>
               <td>
                 <code>{{ p.proxy }}</code>
+                <span
+                  v-if="p.locked"
+                  class="badge badge-warning ml-2"
+                  title="无论心跳是否成功，只使用此代理"
+                >已锁定</span>
                 <PurityTags :data="purityOf(p.proxy) ?? p.purity" />
               </td>
               <td>{{ fmtLatency(p.latency) }}</td>
@@ -355,14 +334,23 @@ const lockedChecking = computed(() => purityCache.get(lockedBind.value)?.status 
                 >
                   {{ purityOf(p.proxy)?.status === 'checking' ? '检查中' : '纯洁' }}
                 </button>
+                <!-- 锁定行只能解锁（换锁需先解锁）；其余行固定/解固 + 锁定 -->
                 <button
-                  v-if="p.pinned"
-                  class="btn btn-ghost btn-sm"
-                  data-action="unpin"
-                  @click="doUnpin(p.proxy)"
-                >解固</button>
-                <button v-else class="btn btn-warning btn-sm" data-action="pin" @click="doPin(p.proxy)">固定</button>
-                <button class="btn btn-danger btn-sm" data-action="lock" @click="doLock(p.proxy)">锁定</button>
+                  v-if="p.locked"
+                  class="btn btn-warning btn-sm"
+                  data-testid="unlock-btn"
+                  @click="doUnlock"
+                >解锁</button>
+                <template v-else>
+                  <button
+                    v-if="p.pinned"
+                    class="btn btn-ghost btn-sm"
+                    data-action="unpin"
+                    @click="doUnpin(p.proxy)"
+                  >解固</button>
+                  <button v-else class="btn btn-warning btn-sm" data-action="pin" @click="doPin(p.proxy)">固定</button>
+                  <button class="btn btn-danger btn-sm" data-action="lock" @click="doLock(p.proxy)">锁定</button>
+                </template>
               </td>
             </tr>
           </tbody>

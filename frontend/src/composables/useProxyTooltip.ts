@@ -9,12 +9,9 @@ import { reactive, ref } from 'vue';
 import { api } from '@/api/client';
 import type { ProxyHistory, SpeedTestResult } from '@/types/api';
 
-export type TooltipSource = 'table' | 'lock';
-
 interface TooltipState {
   visible: boolean;
   bind: string;
-  source: TooltipSource;
   pinned: boolean;
   x: number;
   y: number;
@@ -23,7 +20,6 @@ interface TooltipState {
 export const tooltipState = reactive<TooltipState>({
   visible: false,
   bind: '',
-  source: 'table',
   pinned: false,
   x: 0,
   y: 0,
@@ -65,7 +61,7 @@ async function refreshHistory() {
   }
 }
 
-export function showTooltip(bind: string, x: number, y: number, source: TooltipSource, force = false) {
+export function showTooltip(bind: string, x: number, y: number, force = false) {
   cancelShow();
   if (hideTimer) {
     clearTimeout(hideTimer);
@@ -76,7 +72,6 @@ export function showTooltip(bind: string, x: number, y: number, source: TooltipS
   hideTooltip();
   tooltipState.visible = true;
   tooltipState.bind = bind;
-  tooltipState.source = source;
   tooltipState.x = x;
   tooltipState.y = y;
   refreshHistory();
@@ -84,11 +79,11 @@ export function showTooltip(bind: string, x: number, y: number, source: TooltipS
   refreshTimer = setInterval(refreshHistory, REFRESH_MS);
 }
 
-export function scheduleShow(bind: string, x: number, y: number, source: TooltipSource) {
+export function scheduleShow(bind: string, x: number, y: number) {
   cancelShow();
   showTimer = setTimeout(() => {
     showTimer = null;
-    showTooltip(bind, x, y, source);
+    showTooltip(bind, x, y);
   }, SHOW_DELAY);
 }
 
@@ -109,7 +104,6 @@ export function hideTooltip() {
   tooltipState.visible = false;
   tooltipState.pinned = false;
   tooltipState.bind = '';
-  tooltipState.source = 'table';
   tooltipHistory.value = null;
 }
 
