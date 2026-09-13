@@ -73,15 +73,15 @@ proxy-pool/
 │   └── src/
 │       ├── main.ts                # 应用装配（pinia/router/轮询启动）
 │       ├── App.vue                # 壳：侧边栏（含底部控制台日志按钮）+ 顶栏（暂停/连接态/主题）+ 路由视图 + Toast
-│       ├── router.ts              # hash 路由（dashboard/groups/standby/sources）+ 历史拉取开关
+│       ├── router.ts              # hash 路由（dashboard/groups/standby/sources/settings）+ 历史拉取开关
 │       ├── types/                 # API DTO（与 api.py 契约对应）与 UI 类型
 │       ├── api/client.ts          # 类型化 API 客户端（fetch 封装 + ApiError）
-│       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
+│       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast / prefs（轮询间隔·历史点数，localStorage）
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）
 │       ├── composables/           # useRowSelection（框选）/ useProxyTooltip（浮窗+测速）/ usePurity（纯洁度）/ useLogPanel（控制台日志源：增量轮询+可见性节流+主题联动）
 │       ├── vendor/logpanel/       # 日志视窗组件（vendored 零依赖，Shadow DOM + TS 声明 + --lp-* 主题变量化）
 │       ├── components/            # ui（ToastHost/ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、ProxyTooltip、PurityTags、ScheduleSettingsCard、AddProxyModal
-│       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage
+│       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
 ├── tests/                         # 测试目录（复刻 src 结构；tests/e2e/web/ 为面板 Playwright e2e）
 ├── vendor/

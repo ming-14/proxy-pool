@@ -1,8 +1,8 @@
 """Web 面板浏览器 e2e：真实 serve 子进程（8082/8083）+ mock 上游代理 + Playwright Chromium
 
 覆盖：壳层导航/主题/暂停轮询、仪表盘 KPI 与三趋势图与地图、代理组（过滤/排序/添加/
-右键拉黑还原/框选/导出）、队列（表格/固定/锁定/hover 浮窗/调度参数保存）、代理源
-（暂停恢复）。截图输出到 build-artifacts/e2e-screenshots/ 供与参考图人工比对。
+右键拉黑还原/框选/导出）、队列（表格/固定/锁定/hover 浮窗）、设置页（调度参数保存）、
+代理源（暂停恢复）。截图输出到 build-artifacts/e2e-screenshots/ 供与参考图人工比对。
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ class TestShell:
         goto_expect("groups", "代理组", "#/groups")
         goto_expect("standby", "代理服务队列", "#/standby")
         goto_expect("sources", "代理源", "#/sources")
+        goto_expect("settings", "设置", "#/settings")
         goto_expect("dashboard", "仪表盘", "#/dashboard")
 
     def test_theme_toggle_persists(self, page):
@@ -269,7 +270,6 @@ class TestStandby:
         row = page.locator('[data-testid="sb-table"] tbody tr[data-proxy]').first
         row.locator('button[data-action="lock"]').click()
         page.wait_for_selector('[data-testid="lock-card"]', timeout=8000)
-        assert page.locator('[data-testid="settings-card"]').count() == 0
         # 锁定后仪表盘隐藏健康率卡
         page.click('[data-testid="nav-dashboard"]')
         page.wait_for_timeout(500)
@@ -278,9 +278,11 @@ class TestStandby:
         page.click('[data-testid="nav-standby"]')
         page.click('[data-testid="unlock-btn"]')
         page.wait_for_selector('[data-testid="lock-card"]', state="hidden", timeout=8000)
-        assert page.locator('[data-testid="settings-card"]').count() == 1
 
     def test_settings_save(self, page):
+        # 调度参数已迁至设置页（队列页不再展示）
+        page.click('[data-testid="nav-settings"]')
+        page.wait_for_selector('[data-testid="settings-card"]', timeout=8000)
         page.fill('[data-testid="set-interval"]', "5")
         save = page.locator('[data-testid="set-save"]')
         save.wait_for(state="visible")

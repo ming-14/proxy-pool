@@ -44,6 +44,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」；黑名单组：「还原」（移到代理队列）+「删除」
 - **点击 IP pin tooltip**：代理服务队列页面**点击代理 IP → pin tooltip**（鼠标移出不自动消失，tooltip 外部按下即销毁）；**按住 IP 拖动（拖选文本）→ 立即隐藏悬浮面板**，便于选择/复制 IP 文本；悬浮 IP 仍显示图表，离开后 100ms 延迟销毁
 - **添加代理**：代理组页面「添加」按钮（导出 CSV 左边），弹出模态框输入代理地址（每行一个，裸地址默认 http），调 `POST /api/group/{name}/add` 批量添加到当前组
+- **设置页**（侧边栏「设置」，顶部分区 Tab，仅运行时可变项）：「代理服务」集中编辑全部 8 项调度参数（心跳间隔/并发/超时/探测 URL/允许类型/填充倍率/填充最小增量/调度算法，`/api/settings` 即刻生效）；「界面偏好」主题（浅色/深色）、轮询间隔（ms）、历史保留点数（localStorage，仅本机生效）；「数据维护」清空面板日志镜像（`/api/logs/clear`，不影响 stderr/文件）与立即刷新状态
 
 #### 控制功能
 
@@ -56,7 +57,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - 添加代理到组（`POST /api/group/{name}/add`，`{"proxies": [...]}`）：批量添加代理到指定组，裸地址自动补 http://，standby 组添加后同步 pproxy 上游
 - 源暂停 / 恢复（可带自定义暂停时长，`/api/source/pause|resume`）
 - 固定 / 解固代理服务队列代理（`/api/standby/pin|unpin`）：固定代理排队列最前（按固定时间升序），不被踢出/拉黑/补测，超出 `capacity` 的固定代理忽略但保留固定状态
-- 锁定 / 解锁单一上游（`/api/standby/lock|unlock`）：锁定队列内代理为 pproxy 唯一上游（move 到内建隐藏组），fill 跳过、心跳仍探测锁定代理测速（延迟数据加趋势图，失败只计数不拉黑）、无论心跳是否成功都只用该代理；锁定时健康率趋势卡片隐藏、调度参数卡片隐藏、队列统计只显示延迟；其他代理保留不动，解锁后恢复原调度。与 pin 区别：pin 只是不被踢出（rc 仍可能选其他），lock 是上游只有这一个
+- 锁定 / 解锁单一上游（`/api/standby/lock|unlock`）：锁定队列内代理为 pproxy 唯一上游（move 到内建隐藏组），fill 跳过、心跳仍探测锁定代理测速（延迟数据加趋势图，失败只计数不拉黑）、无论心跳是否成功都只用该代理；锁定时仪表盘健康率卡/健康率趋势卡隐藏（队列长度与健康率无意义），延迟趋势图连续显示测速；其他代理保留不动，解锁后恢复原调度。与 pin 区别：pin 只是不被踢出（rc 仍可能选其他），lock 是上游只有这一个
 - 调度策略运行时调整（`/api/settings`）：
   - 心跳间隔、并发、超时、探测 URL
   - 填充倍率/增量、允许的代理类型
@@ -66,7 +67,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 
 「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，每轮 heartbeat 采累计值存历史（同窗口），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。按上游代理的累计/历史流量（`per_proxy_traffic`，`{bind: {"upload": int, "download": int}}`）通过 vendor/pproxy 内化的 `modstat(user, remote_ip, host_name, roption)` 钩子实现，仅内存实时计数不持久化，经 `/api/proxy/history?bind=` 按需查单代理的延时历史（`ProxyLatencySample`）+ 流量历史（`TrafficSample`），两种历史统一用 bind（地址，不含 scheme）作 key。
 
-面板为 Vue 3 + Vite + TypeScript + Tailwind CSS 4 单页应用（源码 `frontend/`，构建产物提交在 `src/framework/web/static/`，由 aiohttp 直接 serve；图表统一 ECharts）。定时轮询 `/api/status`（2s），数据全部通过 REST API 交互。
+面板为 Vue 3 + Vite + TypeScript + Tailwind CSS 4 单页应用（源码 `frontend/`，构建产物提交在 `src/framework/web/static/`，由 aiohttp 直接 serve；图表统一 ECharts）。定时轮询 `/api/status`（默认 2s，设置页「界面偏好」可调），数据全部通过 REST API 交互。
 
 ## fetch — 拉取代理
 

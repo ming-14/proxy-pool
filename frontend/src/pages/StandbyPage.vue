@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 代理服务队列页：锁定卡片、队列表格（框选/右键/固定/锁定/纯洁度）、统计、调度参数、待补测。
+ * 代理服务队列页：锁定卡片、队列表格（框选/右键/固定/锁定/纯洁度）、待补测。
  *
  * 旧版 934 行补丁集（文本选区冻结×2、hover 冻结、innerHTML 重建跳过、focus 跳过…）
  * 由 Vue 响应式渲染天然消解；仅保留"选中/拖拽/悬浮时冻结顺序"这一 UX 语义
@@ -24,7 +24,6 @@ import {
 import ContextMenu from '@/components/ui/ContextMenu.vue';
 import PurityTags from '@/components/PurityTags.vue';
 import ProxyTooltip from '@/components/ProxyTooltip.vue';
-import ScheduleSettingsCard from '@/components/ScheduleSettingsCard.vue';
 import { bindOf, fmtLatency } from '@/utils/format';
 import { mergeKeepOrder } from '@/utils/merge';
 import type { MenuItem } from '@/types/ui';
@@ -270,44 +269,7 @@ onBeforeUnmount(() => {
   hideTooltip(); // 离开页面销毁浮窗（模块级状态跨路由保留测速结果）
 });
 
-// ---------------- 统计 ----------------
-interface QueueStats {
-  locked: boolean;
-  capacity?: string;
-  rate?: string;
-  avg: string;
-  min: string;
-  max: string;
-}
-
-const stats = computed<QueueStats>(() => {
-  const list = standbyList.value;
-  if (lockedProxy.value) {
-    const hist = store.standbyHistory;
-    const last = hist.length ? hist[hist.length - 1] : null;
-    return {
-      locked: true,
-      avg: last?.avg != null ? `${last.avg.toFixed(3)}s` : '-',
-      min: last?.min != null ? `${last.min.toFixed(3)}s` : '-',
-      max: last?.max != null ? `${last.max.toFixed(3)}s` : '-',
-    };
-  }
-  const latencies = list.map((x) => x.latency).filter((v): v is number => v != null);
-  const avg = latencies.length ? (latencies.reduce((a, b) => a + b, 0) / latencies.length).toFixed(3) : '-';
-  const min = latencies.length ? Math.min(...latencies).toFixed(3) : '-';
-  const max = latencies.length ? Math.max(...latencies).toFixed(3) : '-';
-  const healthy = list.filter((x) => (x.consecutive_fails || 0) === 0).length;
-  const rate = list.length ? Math.round((healthy / list.length) * 100) : 0;
-  return {
-    locked: false,
-    capacity: `${list.length} / ${status.value?.capacity ?? '-'}`,
-    rate: `${rate}%`,
-    avg: `${avg}s`,
-    min: `${min}s`,
-    max: `${max}s`,
-  };
-});
-
+// ---------------- 锁定代理（队列统计已移至仪表盘/队列卡，此页不再展示） ----------------
 const lockedPurity = computed<PurityEntry | undefined>(() => {
   const p = lockedProxy.value;
   if (!p) return undefined;
@@ -319,126 +281,100 @@ const lockedChecking = computed(() => purityCache.get(lockedBind.value)?.status 
 </script>
 
 <template>
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-    <div class="lg:col-span-2 space-y-5">
-      <!-- 锁定卡片 -->
-      <div v-if="lockedProxy" data-testid="lock-card" class="card border-[var(--color-warning)]">
-        <div class="card-header">
-          <div>
-            <div class="card-title">已锁定单一上游</div>
-            <div class="card-subtitle">无论心跳是否成功，只使用此代理</div>
-          </div>
-        </div>
-        <div class="card-body flex items-center justify-between">
-          <div class="flex items-center gap-2 min-w-0">
-            <code class="text-sm font-medium cursor-pointer" @click="onLockProxyClick">{{ lockedProxy }}</code>
-            <span class="flex items-center gap-1 flex-shrink-0"><PurityTags :data="lockedPurity" /></span>
-          </div>
-          <div class="flex items-center gap-2 flex-shrink-0">
-            <button data-testid="lock-purity-btn" class="btn btn-ghost btn-sm" :disabled="lockedChecking" @click="checkPurity(lockedProxy)">
-              {{ lockedChecking ? '检查中' : '纯洁' }}
-            </button>
-            <button data-testid="unlock-btn" class="btn btn-warning btn-sm" @click="doUnlock">解锁</button>
-          </div>
+  <div class="space-y-5">
+    <!-- 锁定卡片 -->
+    <div v-if="lockedProxy" data-testid="lock-card" class="card border-[var(--color-warning)]">
+      <div class="card-header">
+        <div>
+          <div class="card-title">已锁定单一上游</div>
+          <div class="card-subtitle">无论心跳是否成功，只使用此代理</div>
         </div>
       </div>
-
-      <!-- 队列卡片（锁定时禁用） -->
-      <div class="card" :class="{ 'opacity-50 pointer-events-none': lockedProxy }">
-        <div class="card-header">
-          <div>
-            <div class="card-title">代理服务队列</div>
-            <div class="card-subtitle">pproxy 队列</div>
-          </div>
+      <div class="card-body flex items-center justify-between">
+        <div class="flex items-center gap-2 min-w-0">
+          <code class="text-sm font-medium cursor-pointer" @click="onLockProxyClick">{{ lockedProxy }}</code>
+          <span class="flex items-center gap-1 flex-shrink-0"><PurityTags :data="lockedPurity" /></span>
         </div>
-        <div
-          id="sb-table"
-          ref="tableWrapRef"
-          data-testid="sb-table"
-          class="table-wrap border-0 rounded-t-none"
-          @mouseover="onTableMouseover"
-          @mouseleave="onTableMouseleave"
-          @mousedown="onTableMousedown"
-          @contextmenu="onContextmenu"
-        >
-          <div v-if="!displayStandby.length" class="empty-state">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
-            <div>代理服务队列为空</div>
-            <div class="text-xs mt-1">等待 serve 主循环自动补入</div>
-          </div>
-          <table v-else>
-            <thead>
-              <tr><th>#</th><th>代理</th><th>延迟</th><th>连续失败</th><th class="text-right">操作</th></tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="(p, i) in displayStandby"
-                :key="p.proxy"
-                :data-idx="i"
-                :data-proxy="p.proxy"
-                :class="{ selected: selection.has(p.proxy) }"
-              >
-                <td class="text-[var(--color-t-muted)] w-12">{{ i + 1 }}</td>
-                <td>
-                  <code>{{ p.proxy }}</code>
-                  <PurityTags :data="purityOf(p.proxy) ?? p.purity" />
-                </td>
-                <td>{{ fmtLatency(p.latency) }}</td>
-                <td>{{ p.consecutive_fails ?? 0 }}</td>
-                <td class="text-right whitespace-nowrap">
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    data-action="purity"
-                    :disabled="purityOf(p.proxy)?.status === 'checking'"
-                    @click="checkPurity(p.proxy)"
-                  >
-                    {{ purityOf(p.proxy)?.status === 'checking' ? '检查中' : '纯洁' }}
-                  </button>
-                  <button
-                    v-if="p.pinned"
-                    class="btn btn-ghost btn-sm"
-                    data-action="unpin"
-                    @click="doUnpin(p.proxy)"
-                  >解固</button>
-                  <button v-else class="btn btn-warning btn-sm" data-action="pin" @click="doPin(p.proxy)">固定</button>
-                  <button class="btn btn-danger btn-sm" data-action="lock" @click="doLock(p.proxy)">锁定</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <button data-testid="lock-purity-btn" class="btn btn-ghost btn-sm" :disabled="lockedChecking" @click="checkPurity(lockedProxy)">
+            {{ lockedChecking ? '检查中' : '纯洁' }}
+          </button>
+          <button data-testid="unlock-btn" class="btn btn-warning btn-sm" @click="doUnlock">解锁</button>
         </div>
       </div>
     </div>
 
-    <div class="space-y-5">
-      <!-- 队列统计 -->
-      <div class="card">
-        <div class="card-header"><div class="card-title">队列统计</div></div>
-        <div class="card-body space-y-3">
-          <template v-if="stats.locked">
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">平均延迟</span><span class="font-medium">{{ stats.avg }}</span></div>
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">最小延迟</span><span class="font-medium text-[var(--color-success)]">{{ stats.min }}</span></div>
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">最大延迟</span><span class="font-medium text-[var(--color-warning)]">{{ stats.max }}</span></div>
-          </template>
-          <template v-else>
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">容量</span><span class="font-medium">{{ stats.capacity }}</span></div>
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">健康率</span><span class="font-medium text-[var(--color-success)]">{{ stats.rate }}</span></div>
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">平均延迟</span><span class="font-medium">{{ stats.avg }}</span></div>
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">最小延迟</span><span class="font-medium text-[var(--color-success)]">{{ stats.min }}</span></div>
-            <div class="flex justify-between"><span class="text-[var(--color-t-muted)]">最大延迟</span><span class="font-medium text-[var(--color-warning)]">{{ stats.max }}</span></div>
-          </template>
+    <!-- 队列卡片（锁定时禁用） -->
+    <div class="card" :class="{ 'opacity-50 pointer-events-none': lockedProxy }">
+      <div class="card-header">
+        <div>
+          <div class="card-title">代理服务队列</div>
+          <div class="card-subtitle">pproxy 队列</div>
         </div>
       </div>
-
-      <!-- 调度参数（锁定时隐藏） -->
-      <ScheduleSettingsCard v-if="!lockedProxy && status" :settings="status.settings" />
-
-      <!-- 待补测 -->
-      <div v-if="pending.length" class="card">
-        <div class="card-header"><div class="card-title">待补测代理</div></div>
-        <div class="card-body text-sm">
-          <div v-for="p in pending" :key="p" class="py-1"><code>{{ p.split('://')[1] || p }}</code></div>
+      <div
+        id="sb-table"
+        ref="tableWrapRef"
+        data-testid="sb-table"
+        class="table-wrap border-0 rounded-t-none"
+        @mouseover="onTableMouseover"
+        @mouseleave="onTableMouseleave"
+        @mousedown="onTableMousedown"
+        @contextmenu="onContextmenu"
+      >
+        <div v-if="!displayStandby.length" class="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
+          <div>代理服务队列为空</div>
+          <div class="text-xs mt-1">等待 serve 主循环自动补入</div>
         </div>
+        <table v-else>
+          <thead>
+            <tr><th>#</th><th>代理</th><th>延迟</th><th>连续失败</th><th class="text-right">操作</th></tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(p, i) in displayStandby"
+              :key="p.proxy"
+              :data-idx="i"
+              :data-proxy="p.proxy"
+              :class="{ selected: selection.has(p.proxy) }"
+            >
+              <td class="text-[var(--color-t-muted)] w-12">{{ i + 1 }}</td>
+              <td>
+                <code>{{ p.proxy }}</code>
+                <PurityTags :data="purityOf(p.proxy) ?? p.purity" />
+              </td>
+              <td>{{ fmtLatency(p.latency) }}</td>
+              <td>{{ p.consecutive_fails ?? 0 }}</td>
+              <td class="text-right whitespace-nowrap">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  data-action="purity"
+                  :disabled="purityOf(p.proxy)?.status === 'checking'"
+                  @click="checkPurity(p.proxy)"
+                >
+                  {{ purityOf(p.proxy)?.status === 'checking' ? '检查中' : '纯洁' }}
+                </button>
+                <button
+                  v-if="p.pinned"
+                  class="btn btn-ghost btn-sm"
+                  data-action="unpin"
+                  @click="doUnpin(p.proxy)"
+                >解固</button>
+                <button v-else class="btn btn-warning btn-sm" data-action="pin" @click="doPin(p.proxy)">固定</button>
+                <button class="btn btn-danger btn-sm" data-action="lock" @click="doLock(p.proxy)">锁定</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 待补测 -->
+    <div v-if="pending.length" class="card">
+      <div class="card-header"><div class="card-title">待补测代理</div></div>
+      <div class="card-body text-sm">
+        <div v-for="p in pending" :key="p" class="py-1"><code>{{ p.split('://')[1] || p }}</code></div>
       </div>
     </div>
   </div>

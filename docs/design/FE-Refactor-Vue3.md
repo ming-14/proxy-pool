@@ -41,7 +41,7 @@ frontend/src/
   components/   # 展示组件：ui/（Card/Badge/Button/Modal/EmptyState/Skeleton）、
                 # charts/（TrendChart 折线工厂、ProxyMiniCharts、GeoMap）、
                 # layout/（AppSidebar/AppHeader）、tables/（VirtualTable 行渲染）
-  pages/        # 路由视图：DashboardPage / GroupsPage / StandbyPage / SourcesPage
+  pages/        # 路由视图：DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
   router.ts     # vue-router（hash 模式，保持 #dashboard 等 URL 不变）
   App.vue       # 壳：侧边栏 + 顶栏 + <RouterView> + Toast 容器
   main.ts
@@ -125,10 +125,10 @@ frontend/src/
 - **Vitest**：format 工具（字节/时长/延迟/国家名映射）、历史合并裁剪、CSV 转义、
   status store（mock fetch：轮询/暂停/离线/增量游标）、rowSelection 纯逻辑。
 - **Playwright E2E**（`tests/e2e/web/`，pytest）：起真实 serve（8082/8083，复用现有
-  .cache.db 数据）覆盖——四页导航与标题、主题切换（截图比对暗/亮）、KPI 渲染、
+  .cache.db 数据）覆盖——五页导航与标题、主题切换（截图比对暗/亮）、KPI 渲染、
   三趋势图 canvas 存在、地图渲染与统计文本、组选择/过滤/排序/虚拟滚动行高、框选+
   Ctrl/Shift/Ctrl+A/Esc、右键菜单移动/拉黑/还原/删除、添加模态框、导出 CSV/JSON、
-  队列页固定/锁定/解锁、hover tooltip+测速按钮、纯洁度检查、调度参数编辑保存、
+  队列页固定/锁定/解锁、hover tooltip+测速按钮、纯洁度检查、设置页调度参数/偏好编辑保存、
   源暂停/恢复/拉取、暂停轮询按钮、断连指示。
 - **视觉验收**：对 5 张参考图逐项截图比对（延迟趋势/健康率/流量+KPI/hover 浮窗/组表格），
   差异仅允许因渲染引擎不同导致的微小差别。

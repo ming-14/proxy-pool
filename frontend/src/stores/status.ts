@@ -8,12 +8,13 @@
  * - 历史拉取失败不阻断状态刷新（图表滞后一拍，下轮重试）。
  */
 import { defineStore } from 'pinia';
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { api, ApiError } from '@/api/client';
 import type { StandbyHistoryPoint, StatusHistory, StatusSnapshot, TrafficHistoryPoint } from '@/types/api';
 import { useToastStore } from '@/stores/toast';
+import { usePrefsStore } from '@/stores/prefs';
 
-const REFRESH_INTERVAL = 2000;
+/** mergePoints 默认裁剪上限（测试与未指定 max 的调用沿用） */
 export const MAX_HISTORY = 1000;
 
 /** 纯函数：按 ts 顺序追加并裁剪（服务端保证时间序，直接 concat 后截尾）。可单测。 */
@@ -41,6 +42,7 @@ export const useStatusStore = defineStore('status', () => {
   const connected = ref(false);
   const paused = ref(false);
   const historyEnabled = ref(false);
+  const prefs = usePrefsStore();
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let firstLoadDone = false;
@@ -48,8 +50,8 @@ export const useStatusStore = defineStore('status', () => {
   const lockedProxy = computed(() => status.value?.locked_proxy ?? null);
 
   function mergeHistory(data: StatusHistory) {
-    standbyHistory.value = mergePoints(standbyHistory.value, data.standby_history ?? []);
-    trafficHistory.value = mergePoints(trafficHistory.value, data.traffic_history ?? []);
+    standbyHistory.value = mergePoints(standbyHistory.value, data.standby_history ?? [], prefs.historyLimit);
+    trafficHistory.value = mergePoints(trafficHistory.value, data.traffic_history ?? [], prefs.historyLimit);
   }
 
   async function refreshHistory() {
@@ -81,7 +83,7 @@ export const useStatusStore = defineStore('status', () => {
 
   function start() {
     if (timer) return;
-    timer = setInterval(tick, REFRESH_INTERVAL);
+    timer = setInterval(tick, prefs.pollIntervalMs);
     tick();
   }
 
@@ -89,6 +91,16 @@ export const useStatusStore = defineStore('status', () => {
     if (timer) clearInterval(timer);
     timer = null;
   }
+
+  // 轮询间隔偏好变化时热重载定时器（正在轮询才需要重启）
+  watch(
+    () => prefs.pollIntervalMs,
+    () => {
+      if (!timer) return;
+      clearInterval(timer);
+      timer = setInterval(tick, prefs.pollIntervalMs);
+    },
+  );
 
   function togglePause() {
     paused.value = !paused.value;
