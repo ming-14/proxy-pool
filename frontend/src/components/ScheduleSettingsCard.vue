@@ -25,8 +25,6 @@ const form = reactive({
   salgorithm: props.settings.salgorithm,
   probe_url: props.settings.probe_url,
   allowed_types: [...props.settings.allowed_types],
-  fill_probe_multiplier: props.settings.fill_probe_multiplier,
-  fill_probe_min_extra: props.settings.fill_probe_min_extra,
 });
 const baseline = ref({ ...form });
 const saving = ref(false);
@@ -42,8 +40,6 @@ watch(
     form.salgorithm = s.salgorithm;
     form.probe_url = s.probe_url;
     form.allowed_types = [...s.allowed_types];
-    form.fill_probe_multiplier = s.fill_probe_multiplier;
-    form.fill_probe_min_extra = s.fill_probe_min_extra;
     baseline.value = { ...form, allowed_types: [...form.allowed_types] };
   },
 );
@@ -55,9 +51,7 @@ const dirty = computed(
     form.timeout !== baseline.value.timeout ||
     form.salgorithm !== baseline.value.salgorithm ||
     form.probe_url.trim() !== baseline.value.probe_url ||
-    [...form.allowed_types].sort().join(',') !== [...baseline.value.allowed_types].sort().join(',') ||
-    form.fill_probe_multiplier !== baseline.value.fill_probe_multiplier ||
-    form.fill_probe_min_extra !== baseline.value.fill_probe_min_extra,
+    [...form.allowed_types].sort().join(',') !== [...baseline.value.allowed_types].sort().join(','),
 );
 
 function toggleType(type: string) {
@@ -87,12 +81,6 @@ async function save() {
     toast.error('参数错误', '至少保留一种允许的代理类型');
     return;
   }
-  for (const key of ['fill_probe_multiplier', 'fill_probe_min_extra'] as const) {
-    if (!Number.isFinite(form[key]) || !Number.isInteger(form[key]) || form[key] < 1) {
-      toast.error('参数错误', `${key === 'fill_probe_multiplier' ? '填充候选倍率' : '填充候选最小增量'}必须为正整数`);
-      return;
-    }
-  }
   saving.value = true;
   try {
     const d = await api.settings({
@@ -102,8 +90,6 @@ async function save() {
       salgorithm: form.salgorithm,
       probe_url: form.probe_url.trim(),
       allowed_types: [...form.allowed_types].sort(),
-      fill_probe_multiplier: form.fill_probe_multiplier,
-      fill_probe_min_extra: form.fill_probe_min_extra,
     });
     toast.success('已更新', '调度参数即刻生效');
     baseline.value = {
@@ -113,8 +99,6 @@ async function save() {
       salgorithm: d.settings.salgorithm,
       probe_url: d.settings.probe_url,
       allowed_types: [...d.settings.allowed_types],
-      fill_probe_multiplier: d.settings.fill_probe_multiplier,
-      fill_probe_min_extra: d.settings.fill_probe_min_extra,
     };
   } catch (e) {
     toast.error('保存失败', e instanceof Error ? e.message : String(e));
@@ -167,19 +151,6 @@ async function save() {
             >
             <span>{{ t }}</span>
           </label>
-        </div>
-      </div>
-      <div class="flex items-center justify-between gap-3">
-        <span class="text-[var(--color-t-muted)]">填充候选倍率</span>
-        <div class="flex items-center gap-1">
-          <input v-model.number="form.fill_probe_multiplier" data-testid="set-fill-mult" type="number" class="input w-20 text-right" min="1" step="1">
-          <span class="text-[var(--color-t-muted)] text-xs">x</span>
-        </div>
-      </div>
-      <div class="flex items-center justify-between gap-3">
-        <span class="text-[var(--color-t-muted)]">填充候选最小增量</span>
-        <div class="flex items-center gap-1">
-          <input v-model.number="form.fill_probe_min_extra" data-testid="set-fill-extra" type="number" class="input w-20 text-right" min="1" step="1">
         </div>
       </div>
       <div class="flex items-center justify-between gap-3">
