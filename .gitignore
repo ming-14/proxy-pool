@@ -38,9 +38,6 @@ dist/
 *.egg
 wheels/
 *.whl
-# go 分支的编译产物（切分支时会残留在工作区）
-proxy-pool.exe
-proxy-pool
 
 # ---- 本地配置 / 环境变量 ----
 config.local.toml
@@ -56,6 +53,8 @@ config.json
 *.swo
 *~
 .codeartsdoer/
+.workbuddy/
+.freebuff/
 
 # ---- 操作系统 ----
 .DS_Store
@@ -68,19 +67,14 @@ desktop.ini
 .cache.db-wal
 .cache.db.backup
 logs/
-# e2e 截图 / 本地构建中间产物
 build-artifacts/
 node_modules/
 
-# ---- 用户自行下载的离线数据库（体积大，不随仓库分发）----
+# ---- 离线数据库----
 vendor/geoip/
 
-# ---- 上游参考源码存档（实际使用 frontend/src/vendor/ 副本，不跟踪）----
+# ---- 上游参考源码存档----
 reference/
 
 autoload
-config/apikey.env
 .playwright-cli
-
-# ---- 智能体工作区（本机记忆/技能，不随仓库分发）----
-.workbuddy/
