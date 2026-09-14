@@ -164,7 +164,7 @@ def build_container(cache_db: str | None = None) -> Container:
         fill_groups=config.STANDBY_FILL_GROUPS,
         fill_probe_multiplier=config.STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
-        metrics_window=config.METRICS_WINDOW,
+        metrics_window=config.STANDBY_METRICS_WINDOW,
     )
     # IP 纯洁度 / IP 归属：仅 Web 面板消费（api.py）——web 关闭时不构造也不
     # import 依赖链（requests/geoip2 客户端模块均分支内惰性导入）

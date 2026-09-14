@@ -4,6 +4,7 @@ import {
   MAX_SPARK_POINTS,
   dedupeByTs,
   downsample,
+  matchPrevAvg,
   seriesTimeWindow,
   sparkDomain,
   sparkSegments,
@@ -198,5 +199,29 @@ describe('trimBefore', () => {
   it('无需裁剪时返回原数组引用（避免无谓重建）', () => {
     const pts: [number, number][] = [[10, 0]];
     expect(trimBefore(pts, 5)).toBe(pts);
+  });
+});
+
+describe('matchPrevAvg', () => {
+  const refs = [
+    { ts: 100, avg: 0.2 },
+    { ts: 102, avg: 0.3 },
+    { ts: 104, avg: 0.4 },
+  ];
+
+  it('为每个时间点匹配最近的前一个参考点', () => {
+    expect(matchPrevAvg(refs, [101, 103, 105])).toEqual([0.2, 0.3, 0.4]);
+  });
+
+  it('参考点时间戳相同/略早时命中（同轮采集 ts 不精确相等）', () => {
+    expect(matchPrevAvg(refs, [102.5, 103.9])).toEqual([0.3, 0.3]);
+  });
+
+  it('参考点之前无点或间距超过 maxGap → null（短窗口外的流量区间无延迟参考）', () => {
+    expect(matchPrevAvg(refs, [99, 100, 104 + 16])).toEqual([null, 0.2, null]);
+  });
+
+  it('参考序列为空时全 null', () => {
+    expect(matchPrevAvg([], [1, 2])).toEqual([null, null]);
   });
 });

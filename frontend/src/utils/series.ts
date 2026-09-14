@@ -187,6 +187,25 @@ export function dedupeByTs(points: SeriesPoint[]): SeriesPoint[] {
   return out;
 }
 
+/**
+ * 为每个时间点匹配"最近的前一个"参考点（两序列均需时间升序，游标单次扫描）。
+ * 用于流量差分点（长窗口 1800s）对齐队列采样点（短窗口 60s）：窗口外的时间点
+ * 匹配不到参考 → null（不绘制）。不能按索引对齐——两序列窗口不同后下标错位，
+ * 且同轮采集的 ts 也不精确相等（standby 在 heartbeat 内采样、traffic 在其后）。
+ */
+export function matchPrevAvg(
+  refs: { ts: number; avg: number | null }[],
+  ts: number[],
+  maxGap = 15,
+): (number | null)[] {
+  let i = 0;
+  return ts.map((t) => {
+    while (i < refs.length && refs[i].ts <= t) i++;
+    const p = i > 0 ? refs[i - 1] : null;
+    return p && t - p.ts <= maxGap ? p.avg : null;
+  });
+}
+
 /** 按时间窗口裁剪（早于 cutoff 的点丢弃） */
 export function trimBefore<T extends [number, unknown]>(points: T[], cutoff: number): T[] {
   let i = 0;

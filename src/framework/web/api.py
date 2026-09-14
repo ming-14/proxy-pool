@@ -183,8 +183,9 @@ def _status_history(ctx: PanelContext, since: float | None) -> dict:
     """队列指标/流量历史（按需拉取，避免全量下发撑大 /api/status）
 
     since 指定时只返回 ts > since 的采样点（前端增量追加）；缺省返回窗口内全量。
-    历史数据体量大（METRICS_WINDOW=1800s / 2s 采样 ≈ 900 点/序列），2 秒轮询
-    /api/status 不携带，改由前端低频增量拉取。
+    流量历史体量大（METRICS_WINDOW=1800s / 2s 采样 ≈ 900 点）；队列指标窗口独立
+    （standby_metrics_window=60s ≈ 30 点）。两者 2 秒轮询 /api/status 均不携带，
+    改由前端低频增量拉取。
     """
     standby_history = [s._asdict() for s in ctx.standby.history() if since is None or s.ts > since]
     traffic_history = [s._asdict() for s in ctx.server.traffic_history() if since is None or s.ts > since]
@@ -205,7 +206,7 @@ def _standby_series(ctx: PanelContext, since: float | None) -> dict:
 
     - 延时序列的 latency 为 None 表示该轮探测失败，前端据此断开曲线；
     - 流量为累计字节，前端差分算速率；
-    - 逐代理全量体量大（队列 30 × 2 序列 × 900 点），故与 /api/status/history 同机制
+    - 逐代理全量体量大（队列 30 × 2 序列 × 窗口内采样点数），故与 /api/status/history 同机制
       走游标增量；代理离队后其序列自然不再出现，前端按现存行裁剪本地缓冲。
     """
     series: dict[str, dict[str, list]] = {}

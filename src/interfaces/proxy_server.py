@@ -61,7 +61,8 @@ class PproxyServer:
             salgorithm: 上游调度算法（fa=first_available, rr=轮询, rc=随机, lc=最少连接）。
                         默认 rc（随机）：每次请求随机选存活代理，坏代理有概率被跳过，
                         避免 fa 固定用第一个坏代理导致持续失败。
-            metrics_window: 流量采样存储时长秒（窗口），与 standby 指标共用同一窗口
+            metrics_window: 流量采样存储时长秒（窗口），与代理服务队列窗口相互独立
+                           （队列窗口见 serve.toml 的 standby_metrics_window）
         """
         self._listen_uri = listen_uri
         self._salgorithm = salgorithm

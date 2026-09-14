@@ -161,8 +161,11 @@ HEARTBEAT_LOCK_INTERVAL = int(_toml["server"]["heartbeat_lock_interval"])
 HEARTBEAT_PROBE_URL = _toml["server"]["heartbeat_probe_url"]     # 心跳探测目标 URL
 HEARTBEAT_CONCURRENCY = int(_toml["server"]["heartbeat_concurrency"])  # 心跳探测并发数
 HEARTBEAT_TIMEOUT = int(_toml["server"]["heartbeat_timeout"])    # 心跳探测单个代理超时秒数
-# 队列指标采样存储时长秒（窗口）。每轮心跳采一次，超出窗口的自动清理；心跳动态调整时窗口始终不变。
+# 流量采样存储时长秒（窗口）。超出窗口的自动清理。
 METRICS_WINDOW = int(_toml["server"]["metrics_window"])
+# 代理服务队列指标采样存储时长秒（窗口），与流量 METRICS_WINDOW 相互独立。
+# 每轮心跳采一次，超出窗口的自动清理；心跳动态调整时窗口始终不变。
+STANDBY_METRICS_WINDOW = int(_toml["server"]["standby_metrics_window"])
 # serve 默认代理协议（CLI 未指定 --type 时的初始值；运行时由 ServeControl 持有，面板可增删）。
 # 不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），浏览器访问 https
 # 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；http/socks5 均为透传，无此问题。

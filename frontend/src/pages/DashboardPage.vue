@@ -11,6 +11,7 @@ import { lineChartOption } from '@/components/charts/chartOptions';
 import { useLineTheme } from '@/components/charts/useLineTheme';
 import { useStatusStore } from '@/stores/status';
 import { fmtBytesSpaced, fmtTime } from '@/utils/format';
+import { matchPrevAvg } from '@/utils/series';
 import type { TrafficHistoryPoint } from '@/types/api';
 
 const store = useStatusStore();
@@ -75,23 +76,25 @@ const healthOption = computed(() => {
 /** 累计字节序列 → 相邻差分速率（与旧 renderTraffic 语义一致：首点无差分被跳过） */
 function trafficRates(th: TrafficHistoryPoint[]) {
   const labels: string[] = [];
+  const ts: number[] = [];
   const up: number[] = [];
   const down: number[] = [];
   for (let i = 1; i < th.length; i++) {
     const dt = th[i].ts - th[i - 1].ts;
     if (dt <= 0) continue;
+    ts.push(th[i].ts);
     labels.push(fmtTime(th[i].ts));
     up.push((th[i].total_upload - th[i - 1].total_upload) / dt);
     down.push((th[i].total_download - th[i - 1].total_download) / dt);
   }
-  return { labels, up, down };
+  return { ts, labels, up, down };
 }
 
 const trafficOption = computed(() => {
-  const { labels, up, down } = trafficRates(store.trafficHistory);
-  const sh = store.standbyHistory;
-  // 平均延迟取 traffic 序列同索引起点偏移 1（差分点 i 对应 standby[i]）
-  const avg = sh.slice(1, 1 + labels.length).map((p) => p.avg);
+  const { ts, labels, up, down } = trafficRates(store.trafficHistory);
+  // 平均延迟按 ts 匹配最近的前一个队列采样点（standby 窗口 60s 短于流量窗口 1800s，
+  // 窗口外的流量区间无延迟参考 → null 不绘制；不能按索引对齐，见 utils/series.matchPrevAvg）
+  const avg = matchPrevAvg(store.standbyHistory, ts);
   return lineChartOption(
     {
       labels,

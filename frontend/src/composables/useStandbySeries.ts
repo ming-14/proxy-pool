@@ -14,8 +14,9 @@ import type { SeriesPoint, StandbySeriesEntry } from '@/types/api';
 
 /**
  * 本地缓冲保留时长（秒）：由服务端 `/api/standby/series` 的 `window` 下发（即后端
- * metrics_window）。不在前端硬编码——配置一改两边窗口就会各自漂移，队列页与仪表盘
- * 显示的跨度对不上。null = 尚无响应，此时不裁剪（宁可多留一拍，也不误删未对齐窗口的点）。
+ * standby_metrics_window，代理服务队列专用窗口，与流量窗口相互独立）。不在前端
+ * 硬编码——配置一改两边窗口就会各自漂移，队列页与仪表盘显示的跨度对不上。
+ * null = 尚无响应，此时不裁剪（宁可多留一拍，也不误删未对齐窗口的点）。
  */
 let windowS: number | null = null;
 

@@ -52,7 +52,7 @@ export interface StandbySeriesEntry {
 
 export interface StandbySeries {
   cursor: number;                     // 本次下发点的最大时间戳（下轮 since）
-  window: number;                     // 服务端采样窗口（秒，= metrics_window）：前端据此裁剪本地缓冲
+  window: number;                     // 服务端采样窗口（秒，= standby_metrics_window）：前端据此裁剪本地缓冲
   series: Record<string, StandbySeriesEntry>;  // key 为 bind（地址，不含 scheme）
 }
 
