@@ -1,9 +1,11 @@
-/** 序列纯函数：降采样、速率差分、sparkline 坐标（时间戳映射/断线/多序列共享值域）、统计 */
+/** 序列纯函数：降采样、速率差分、sparkline 坐标（共享时间窗口/断线/多序列共享值域）、统计 */
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SPARK_POINTS,
   dedupeByTs,
   downsample,
+  seriesTimeWindow,
+  sparkDomain,
   sparkSegments,
   sparkStats,
   toRates,
@@ -44,6 +46,23 @@ describe('toRates', () => {
     expect(toRates([[0, 5]])).toEqual([]);
     expect(toRates([])).toEqual([]);
   });
+
+  it('零速率置 null（不绘制、不参与 y 值域；负值同样丢弃）', () => {
+    expect(toRates([[0, 10], [2, 10], [4, 25], [6, 25], [8, 5]])).toEqual([
+      [2, null], [4, 7.5], [6, null], [8, null],
+    ]);
+  });
+});
+
+describe('sparkDomain', () => {
+  it('多序列共用值域，只统计非 null 点', () => {
+    expect(sparkDomain([[[0, 3], [1, null]], [[0, 10], [1, 1]]])).toEqual({ lo: 1, hi: 10 });
+  });
+
+  it('无任何可绘制点时返回 null（调用方显示占位而不是画空线）', () => {
+    expect(sparkDomain([])).toBeNull();
+    expect(sparkDomain([[[0, null]]])).toBeNull();
+  });
 });
 
 describe('sparkStats', () => {
@@ -57,57 +76,106 @@ describe('sparkStats', () => {
   });
 });
 
-describe('sparkSegments', () => {
-  const opts = { width: 100, height: 20 };
+describe('seriesTimeWindow', () => {
+  it('起 = 最早采样点，止 = 现在', () => {
+    const bufs = [{ lat: [[100, 1], [104, 2]] as NumericPoint[], up: [[102, 1]] as NumericPoint[], down: [] }];
+    expect(seriesTimeWindow(bufs, 110)).toEqual([100, 110]);
+  });
 
-  it('按时间戳映射 x 轴（时间跨度均匀则首尾贴边）', () => {
-    const [seg] = sparkSegments([[[0, 1], [10, 2]]], opts);
+  it('止与最末采样取大（容忍服务端时钟略快于浏览器）', () => {
+    const bufs = [{ lat: [[100, 1], [104, 2]] as NumericPoint[], up: [], down: [] }];
+    expect(seriesTimeWindow(bufs, 101)).toEqual([100, 104]);
+  });
+
+  it('跨行取全局最早点（行与行共用同一原点）', () => {
+    const bufs = [
+      { lat: [[100, 1]] as NumericPoint[], up: [], down: [] },
+      { lat: [[90, 1], [95, 1]] as NumericPoint[], up: [], down: [] },
+    ];
+    expect(seriesTimeWindow(bufs, 120)).toEqual([90, 120]);
+  });
+
+  it('无任何采样时退化为 [now, now]（组件显示占位而非画线）', () => {
+    expect(seriesTimeWindow([], 50)).toEqual([50, 50]);
+    expect(seriesTimeWindow([{ lat: [], up: [], down: [] }], 50)).toEqual([50, 50]);
+  });
+});
+
+describe('sparkSegments', () => {
+  const opts = (window: [number, number]) => ({ width: 100, height: 20, window });
+  const xs = (seg: string) => seg.split(' ').map((p) => Number(p.split(',')[0]));
+  const ys = (seg: string) => seg.split(' ').map((p) => Number(p.split(',')[1]));
+
+  it('按时间戳映射 x 轴（点落在窗口两端则首尾贴边）', () => {
+    const [seg] = sparkSegments([[[0, 1], [10, 2]]], opts([0, 10]));
     expect(seg).toHaveLength(1);
-    const xs = seg[0].split(' ').map((p) => Number(p.split(',')[0]));
-    expect(xs).toEqual([0, 100]);
+    expect(xs(seg[0])).toEqual([0, 100]);
+  });
+
+  it('窗口比数据跨度大时留白（刚入队/采样已停止的行不再被拉满整宽）', () => {
+    const [seg] = sparkSegments([[[0, 1], [10, 2]]], opts([0, 40]));
+    expect(xs(seg[0])).toEqual([0, 25]);
+  });
+
+  it('多序列共用窗口（同一时刻落在同一条 x 上，可相互比较）', () => {
+    const segs = sparkSegments([[[0, 1], [10, 1]], [[5, 1], [10, 1]]], opts([0, 10]));
+    expect(xs(segs[0][0])).toEqual([0, 100]);
+    expect(xs(segs[1][0])[0]).toBe(50);
+    expect(xs(segs[1][0])[1]).toBe(100);
   });
 
   it('时间戳不均匀时按真实时间留白（不是按数组下标等距）', () => {
     // 第 2、3 点间隔 90s，第 1、2 点间隔 10s：中间点应靠近左侧
-    const [seg] = sparkSegments([[[0, 1], [10, 1], [100, 1]]], opts);
-    const xs = seg[0].split(' ').map((p) => Number(p.split(',')[0]));
-    expect(xs[1]).toBeCloseTo(10);
-    expect(xs[2]).toBeCloseTo(100);
+    const [seg] = sparkSegments([[[0, 1], [10, 1], [100, 1]]], opts([0, 100]));
+    expect(xs(seg[0])[1]).toBeCloseTo(10);
+    expect(xs(seg[0])[2]).toBeCloseTo(100);
   });
 
   it('null 点切断为多段（失败期呈现断线）', () => {
-    const [segs] = sparkSegments([[[0, 1], [1, 2], [2, null], [3, 3], [4, 4]]], opts);
+    const [segs] = sparkSegments([[[0, 1], [1, 2], [2, null], [3, 3], [4, 4]]], opts([0, 4]));
     expect(segs).toHaveLength(2);
     expect(segs[0].split(' ')).toHaveLength(2);
     expect(segs[1].split(' ')).toHaveLength(2);
   });
 
-  it('全 null / 空序列返回空段', () => {
-    expect(sparkSegments([[[0, null], [1, null]]], opts)).toEqual([[]]);
-    expect(sparkSegments([[]], opts)).toEqual([[]]);
+  it('孤立单点补重复坐标（单点 polyline 浏览器不绘制，零长度段才出圆点）', () => {
+    const [segs] = sparkSegments([[[0, 1], [1, null], [2, 2], [3, null]]], opts([0, 3]));
+    expect(segs).toHaveLength(2);
+    for (const seg of segs) {
+      const [a, b] = seg.split(' ');
+      expect(seg.split(' ')).toHaveLength(2);
+      expect(a).toBe(b); // 同一坐标两遍：零长度子路径的圆头端帽才渲染出那个点
+    }
+    expect(segs[0]).not.toBe(segs[1]);
   });
 
-  it('多序列共用值域与时间轴（上下行速率可相互比较）', () => {
-    const segs = sparkSegments([[[0, 10], [10, 10]], [[0, 0], [10, 20]]], opts);
+  it('全 null / 空序列返回空段', () => {
+    expect(sparkSegments([[[0, null], [1, null]]], opts([0, 1]))).toEqual([[]]);
+    expect(sparkSegments([[]], opts([0, 1]))).toEqual([[]]);
+  });
+
+  it('多序列共用值域（上下行速率可相互比较）', () => {
+    const segs = sparkSegments([[[0, 10], [10, 10]], [[0, 0], [10, 20]]], opts([0, 10]));
     expect(segs).toHaveLength(2);
     // 上界 20 → 值 10 落在纵向中部；两序列的第一个点时间相同 → 同一条 x
-    const yTop = Number(segs[0][0].split(' ')[0].split(',')[1]);
-    const yBottom = Number(segs[1][0].split(' ')[0].split(',')[1]);
-    expect(yTop).toBeLessThan(yBottom);
+    expect(ys(segs[0][0])[0]).toBeLessThan(ys(segs[1][0])[0]);
   });
 
   it('对数轴把跨数量级的延迟摊开', () => {
-    const [seg] = sparkSegments([[[0, 0.1], [1, 1], [2, 10]]], { ...opts, log: true });
-    const ys = seg[0].split(' ').map((p) => Number(p.split(',')[1]));
+    const [seg] = sparkSegments([[[0, 0.1], [1, 1], [2, 10]]], { ...opts([0, 2]), log: true });
+    const y = ys(seg[0]);
     // 三个点在 log 轴上是等距的
-    expect(ys[1] - ys[2]).toBeCloseTo(ys[0] - ys[1], 1);
+    expect(y[1] - y[2]).toBeCloseTo(y[0] - y[1], 1);
   });
 
   it('同值序列退化为中线（不除零）', () => {
-    const [seg] = sparkSegments([[[0, 5], [1, 5]]], opts);
-    const ys = seg[0].split(' ').map((p) => Number(p.split(',')[1]));
-    expect(ys[0]).toBeCloseTo(10);
-    expect(ys[1]).toBeCloseTo(10);
+    const [seg] = sparkSegments([[[0, 5], [1, 5]]], opts([0, 1]));
+    expect(ys(seg[0])).toEqual([10, 10]);
+  });
+
+  it('窗口退化（起止相同）不产生 NaN 坐标', () => {
+    const [seg] = sparkSegments([[[7, 1], [7, 2]]], opts([7, 7]));
+    expect(seg[0]).not.toContain('NaN');
   });
 });
 

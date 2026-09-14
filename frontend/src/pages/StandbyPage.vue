@@ -42,7 +42,7 @@ import Sparkline from '@/components/Sparkline.vue';
 import { bindOf, fmtAge, fmtBytes, fmtLatency } from '@/utils/format';
 import { mergeKeepOrder } from '@/utils/merge';
 import { hasQualityIssue, qualityFlags, type QualityFlags } from '@/utils/quality';
-import { sparkStats, toRates, type NumericPoint } from '@/utils/series';
+import { seriesTimeWindow, sparkStats, toRates, type NumericPoint } from '@/utils/series';
 import type { MenuItem } from '@/types/ui';
 import type { StandbyEntry } from '@/types/api';
 
@@ -187,6 +187,23 @@ interface RowView {
   trafficNote: string;
   flags: QualityFlags;
 }
+
+/** 行内流量图左侧数据值：字节/秒（与行内「累计」同一套字节格式化） */
+const fmtRate = (v: number) => `${fmtBytes(v)}/s`;
+
+/**
+ * 行内趋势图的共享时间窗口（全部行、同一行的两条曲线共用）。
+ * 每行自己归一化会让"刚入队只有两点"与"跑了半小时"的行长得一样、采样已停止的行
+ * 也贴着右边缘——共享窗口后右端留白就是陈旧，左端留白就是新入队。
+ */
+const sparkWindow = computed<[number, number]>(() => {
+  const buffers = [];
+  for (const row of displayStandby.value) {
+    const buf = seriesBuffers.get(bindOf(row.proxy));
+    if (buf) buffers.push(buf);
+  }
+  return seriesTimeWindow(buffers, Date.now() / 1000);
+});
 
 const EMPTY_VIEW: RowView = {
   lat: [],
@@ -455,14 +472,24 @@ onBeforeUnmount(() => {
                       <span>延时趋势</span>
                       <span class="pstrip-note">{{ viewOf(p).latNote }}</span>
                     </div>
-                    <Sparkline :series="[{ pts: viewOf(p).lat, color: 'var(--color-primary-600)' }]" log />
+                    <Sparkline
+                      :series="[{ pts: viewOf(p).lat, color: 'var(--color-primary-600)' }]"
+                      :window="sparkWindow"
+                      :format-value="fmtLatency"
+                      log
+                    />
                   </div>
                   <div class="pstrip-chart" data-testid="strip-traffic">
                     <div class="pstrip-label">
                       <span>流量速率</span>
                       <span class="pstrip-note">{{ viewOf(p).trafficNote }}</span>
                     </div>
-                    <Sparkline :series="viewOf(p).traffic" />
+                    <Sparkline
+                      :series="viewOf(p).traffic"
+                      :window="sparkWindow"
+                      :format-value="fmtRate"
+                      empty-text="无速率"
+                    />
                   </div>
                   <div class="pstrip-side" data-testid="strip-side">
                     <template v-if="purityEntryOf(p)?.status === 'checking'">

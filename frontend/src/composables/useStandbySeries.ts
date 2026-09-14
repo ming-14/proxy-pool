@@ -12,8 +12,12 @@ import { api } from '@/api/client';
 import { dedupeByTs, trimBefore } from '@/utils/series';
 import type { SeriesPoint, StandbySeriesEntry } from '@/types/api';
 
-/** 本地缓冲保留时长（秒）：与后端 metrics_window 对齐（窗口外的点后端不再下发） */
-export const SERIES_WINDOW_S = 1800;
+/**
+ * 本地缓冲保留时长（秒）：由服务端 `/api/standby/series` 的 `window` 下发（即后端
+ * metrics_window）。不在前端硬编码——配置一改两边窗口就会各自漂移，队列页与仪表盘
+ * 显示的跨度对不上。null = 尚无响应，此时不裁剪（宁可多留一拍，也不误删未对齐窗口的点）。
+ */
+let windowS: number | null = null;
 
 export interface SeriesBuffer {
   lat: SeriesPoint[];
@@ -35,12 +39,14 @@ function mergeEntry(buf: SeriesBuffer, entry: StandbySeriesEntry): void {
 /** 丢弃离队代理的缓冲 + 裁剪窗口外的点；缓冲一旦全空，游标归零（下次必须全量拉取） */
 function pruneBuffers(binds: string[]): void {
   const keep = new Set(binds);
-  const cutoff = Date.now() / 1000 - SERIES_WINDOW_S;
+  const win = windowS;
   for (const [bind, buf] of seriesBuffers) {
     if (!keep.has(bind)) {
       seriesBuffers.delete(bind);
       continue;
     }
+    if (win === null) continue;
+    const cutoff = Date.now() / 1000 - win;
     buf.lat = trimBefore(buf.lat, cutoff);
     buf.up = trimBefore(buf.up, cutoff);
     buf.down = trimBefore(buf.down, cutoff);
@@ -54,6 +60,7 @@ export async function refreshStandbySeries(binds: string[]): Promise<void> {
   try {
     const data = await api.standbySeries(cursor.value || undefined);
     cursor.value = data.cursor || cursor.value;
+    windowS = data.window;
     for (const [bind, entry] of Object.entries(data.series)) {
       const buf = seriesBuffers.get(bind) ?? { lat: [], up: [], down: [] };
       mergeEntry(buf, entry);

@@ -47,7 +47,7 @@ const latencyOption = computed(() => {
         { name: '最小延迟', data: h.map((p) => p.min), color: theme.value.success },
         { name: '最大延迟', data: h.map((p) => p.max), color: theme.value.warning },
       ],
-      axes: [{ type: 'log' }],
+      axes: [{ type: 'log', name: '延迟 s' }],
     },
     theme.value,
   );

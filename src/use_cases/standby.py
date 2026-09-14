@@ -119,6 +119,15 @@ class StandbyQueueUseCase:
         self._capacity = capacity
 
     @property
+    def metrics_window(self) -> float:
+        """指标采样窗口（秒）
+
+        随 /api/standby/series 下发给前端：本地缓冲按同一窗口裁剪，不在前端再硬编码
+        一份（否则改配置后两边窗口各自漂移，面板显示的时间跨度对不上）。
+        """
+        return self._metrics_window
+
+    @property
     def standby_group(self) -> str:
         """代理服务队列组名（供 API 层校验 pin/unpin 目标）"""
         return self._standby_group

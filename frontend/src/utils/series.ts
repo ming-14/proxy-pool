@@ -5,7 +5,8 @@
  * 组件只负责把坐标串画成 <polyline>。
  *
  * 关键约定：x 轴按**时间戳**映射（不是按数组下标等距铺开）——探测失败期间没有采样点
- * 或采到 null 时必须留出真实的时间空白，否则掉线会被视觉抹平。
+ * 或采到 null 时必须留出真实的时间空白，否则掉线会被视觉抹平；时间窗口由调用方
+ * 统一给定（`seriesTimeWindow`）而不是按各自点集归一化，否则新入队/已陈旧的行分不出来。
  */
 import type { SeriesPoint } from '@/types/api';
 
@@ -32,15 +33,44 @@ export function downsample(points: NumericPoint[], max = MAX_SPARK_POINTS): Nume
   return out;
 }
 
-/** 累计值序列 → 速率序列（字节/秒）：相邻点差分除以时间间隔；时间不前进的点丢弃 */
-export function toRates(samples: [number, number][]): [number, number][] {
-  const out: [number, number][] = [];
+/**
+ * 累计值序列 → 速率序列（字节/秒）：相邻点差分除以时间间隔；时间不前进的点丢弃。
+ *
+ * 非正速率（该间隔没有流量）一律置 null：**不绘制、也不参与 y 值域**。
+ * 不这样做时，"零流量"会画成一条平线（全零时值域退化、线落在中间），看着像有数据，
+ * 还会把真正有流量的尖峰压平；与仪表盘流量图的规则保持一致。
+ */
+export function toRates(samples: [number, number][]): NumericPoint[] {
+  const out: NumericPoint[] = [];
   for (let i = 1; i < samples.length; i++) {
     const dt = samples[i][0] - samples[i - 1][0];
     if (dt <= 0) continue;
-    out.push([samples[i][0], (samples[i][1] - samples[i - 1][1]) / dt]);
+    const rate = (samples[i][1] - samples[i - 1][1]) / dt;
+    out.push([samples[i][0], rate > 0 ? rate : null]);
   }
   return out;
+}
+
+export interface SparkDomain {
+  lo: number;
+  hi: number;
+}
+
+/**
+ * y 值域（多序列共用）：只统计非 null 点；无任何可绘制点时返回 null。
+ * 值域是「坐标映射」与「左侧标出的数据值」的同一来源，避免两边各算一套而对不上。
+ */
+export function sparkDomain(series: NumericPoint[][]): SparkDomain | null {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const pts of series) {
+    for (const [, v] of pts) {
+      if (v === null) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  return Number.isFinite(lo) ? { lo, hi } : null;
 }
 
 export interface SparkStats {
@@ -59,10 +89,41 @@ export function sparkStats(points: NumericPoint[]): SparkStats {
 export interface SparkOptions {
   width: number;
   height: number;
+  /**
+   * 时间窗口 [起, 止]（秒）：由调用方统一提供，全部行（及同一行的多条曲线）共用。
+   * 不能按各自点集归一化——那会让"刚入队只有两点"和"采样已停止"的行都铺满整宽，
+   * 新老行看着一样、陈旧数据也贴着右边缘，横向比较随之失效。
+   */
+  window: [number, number];
   /** 对数 y 轴（延迟跨数量级时用，与仪表盘延迟趋势图一致） */
   log?: boolean;
   /** 上下留白（px），避免峰值贴边 */
   pad?: number;
+}
+
+/** 行内趋势图的数据缓冲视图（时间段）——只读首末两点，故只要求时间序 */
+export interface TimeBuffers {
+  lat: SeriesPoint[];
+  up: SeriesPoint[];
+  down: SeriesPoint[];
+}
+
+/**
+ * 共享时间窗口 [起, 止]（秒）：起 = 所有缓冲最早的采样点，止 = 现在。
+ * 止取「现在」而非最末采样：采样已停止的行因此停在右边缘左侧（陈旧可见），
+ * 而不是被拉伸到右边缘装成最新；与最末采样取大是为了容忍服务端时钟略快。
+ */
+export function seriesTimeWindow(buffers: Iterable<TimeBuffers>, now: number): [number, number] {
+  let start = Infinity;
+  let end = now;
+  for (const buf of buffers) {
+    for (const pts of [buf.lat, buf.up, buf.down]) {
+      if (!pts.length) continue;
+      if (pts[0][0] < start) start = pts[0][0];
+      if (pts[pts.length - 1][0] > end) end = pts[pts.length - 1][0];
+    }
+  }
+  return [Number.isFinite(start) ? start : now, end];
 }
 
 /**
@@ -74,21 +135,17 @@ export interface SparkOptions {
  * 多序列共用一个 y 值域与一条时间轴：上下行速率之类需要相互比较的曲线不能各自缩放。
  */
 export function sparkSegments(series: NumericPoint[][], opts: SparkOptions): string[][] {
-  const { width, height, log = false, pad = 2 } = opts;
-  const all = series.flat().filter((p): p is [number, number] => p[1] !== null);
-  if (all.length === 0) return series.map(() => []);
+  const { width, height, window: [t0, t1], log = false, pad = 2 } = opts;
+  const domain = sparkDomain(series);
+  if (!domain) return series.map(() => []);
 
-  const t0 = Math.min(...all.map((p) => p[0]));
-  const t1 = Math.max(...all.map((p) => p[0]));
   const span = t1 - t0;
-  const values = all.map((p) => p[1]);
-  const lo = Math.min(...values);
-  const hi = Math.max(...values);
+  const { lo, hi } = domain;
   const innerH = Math.max(1, height - pad * 2);
   const la = Math.log10(Math.max(lo, 1e-4));
   const lb = Math.log10(Math.max(hi, 1e-4));
 
-  const xOf = (ts: number) => (span > 0 ? ((ts - t0) / span) * width : width);
+  const xOf = (ts: number) => (span > 0 ? ((ts - t0) / span) * width : 0);
   const yOf = (v: number) => {
     // 对数轴：延迟恒 > 0，下界兜到 1e-4 避免 log(0)；同值序列退化为中线
     const k = log
@@ -100,15 +157,21 @@ export function sparkSegments(series: NumericPoint[][], opts: SparkOptions): str
   return series.map((points) => {
     const segments: string[] = [];
     let current: string[] = [];
+    const flush = () => {
+      // 单点段要写两遍同一坐标：只有一个点的 <polyline> 不产生可描边子路径，
+      // 浏览器什么都不画（实测），零长度段的圆头端帽才会显出那个孤立的成功点。
+      if (current.length === 1) current.push(current[0]);
+      if (current.length) segments.push(current.join(' '));
+      current = [];
+    };
     for (const [ts, v] of points) {
       if (v === null) {
-        if (current.length) segments.push(current.join(' '));
-        current = [];
+        flush();
         continue;
       }
       current.push(`${xOf(ts).toFixed(1)},${yOf(v).toFixed(1)}`);
     }
-    if (current.length) segments.push(current.join(' '));
+    flush();
     return segments;
   });
 }

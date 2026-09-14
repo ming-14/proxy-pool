@@ -93,8 +93,10 @@ frontend/src/
 
 - 网格/坐标轴：`splitLine` 色 `--border-color`，刻度文字 `--text-secondary`，x 轴时间
   `HH:MM:SS`（maxTicksLimit≈8 用 `interval` 自适应），轴标题（字节/s、延迟 s、健康率 %、数量）。
-- 对数轴（延迟、流量）：`type:'log'`，`axisLabel.formatter` 输出千分位整数（10/100/500/
-  1,000/50,000…），log base 10 + 1-2-5 刻度对齐 Chart.js 观感。
+- 对数轴（延迟、流量）：`type:'log'`，`axisLabel.formatter` 大数输出千分位整数（10/100/500/
+  1,000/50,000…）、小数按有效位（0.001/0.0001——`toLocaleString` 默认最多 3 位小数会把
+  1e-4 显示成 `0`，对数轴上读到 0 是错的），log base 10 + 1-2-5 刻度对齐 Chart.js 观感；
+  轴上的非正值（0/负）不绘制也不参与值域（空闲时的 0 字节/s 会把整条轴拖到 0、取不到界）。
 - 线型：`smooth: 0.4`（≈tension 0.35）、`symbol:'none'`、`lineStyle.width:2`、
   平均/健康率/队列长度/上下行带 `areaStyle`（颜色 alpha 0x20/0x15），最大/最小延迟、
   平均延迟(流量图) 无填充。

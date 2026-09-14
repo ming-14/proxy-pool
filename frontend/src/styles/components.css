@@ -564,15 +564,35 @@ tbody tr.row-dimmed {
   gap: 0.25rem;
 }
 
-/* 行内迷你趋势图（纯 SVG，见 Sparkline.vue） */
+/* 行内迷你趋势图（纯 SVG，见 Sparkline.vue）：左侧一列标出该图的数据值区间（最大/最小） */
+.sparkline-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 0.375rem;
+}
+.sparkline-scale {
+  flex: 0 0 auto;
+  min-width: 2.75rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  font-size: 0.625rem;
+  line-height: 1;
+  color: var(--color-t-muted);
+  font-variant-numeric: tabular-nums;
+}
 .sparkline {
   display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   width: 100%;
 }
+/* 高度由组件按 height prop 内联给出（这里写死 44px 会在换高度时对不上） */
 .sparkline-empty {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
-  height: 44px;
   font-size: 0.7rem;
   color: var(--color-t-muted);
 }

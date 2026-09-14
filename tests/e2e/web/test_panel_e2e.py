@@ -313,6 +313,18 @@ class TestStandby:
         assert "http" in meta and "入队" in meta
         box = page.locator('[data-testid="strip-latency"] .sparkline').first.bounding_box()
         assert box["width"] > 100 and box["height"] > 20, "行内趋势图应有可用尺寸"
+        # 图左侧标出数据值区间（上=最大 / 下=最小）：迷你图没有坐标轴，不标就读不出量级；
+        # 该列只要给了格式化器就占位（无数据也不塌陷），否则绘图区会在行与行之间错位
+        scale = page.locator('[data-testid="strip-latency"] .sparkline-scale')
+        assert scale.count() == rows.count(), "每行延时图都应有左侧值列"
+        assert scale.first.inner_text().rstrip().endswith("s"), "延时图值列应带单位 s"
+        # 流量速率为 0 的间隔不绘制：画出来就必须有值域，没得画则显示占位（而不是一条零平线）
+        for i in range(rows.count()):
+            traffic = page.locator('[data-testid="strip-traffic"]').nth(i)
+            if traffic.locator(".sparkline").count():
+                assert traffic.locator(".sparkline-scale").inner_text().strip(), "画出的流量图必须标出值域"
+            else:
+                assert traffic.locator(".sparkline-empty").inner_text().strip(), "无速率时应显示占位文案"
         shot("standby-inline")
 
     def test_quality_strip_always_visible(self, page):

@@ -200,7 +200,8 @@ def _standby_series(ctx: PanelContext, since: float | None) -> dict:
     """队列逐代理序列（延时 + 累计流量），供面板每行内联绘制趋势
 
     since 指定时只返回 ts > since 的点（前端增量追加），缺省返回窗口内全量；
-    cursor 为本次下发点的最大时间戳，前端下轮以此为 since。
+    cursor 为本次下发点的最大时间戳，前端下轮以此为 since；window 为服务端采样窗口
+    （= metrics_window），前端本地缓冲据此裁剪，不再自己硬编码一份。
 
     - 延时序列的 latency 为 None 表示该轮探测失败，前端据此断开曲线；
     - 流量为累计字节，前端差分算速率；
@@ -227,7 +228,7 @@ def _standby_series(ctx: PanelContext, since: float | None) -> dict:
             entry["down"] = [[s.ts, s.total_download] for s in traffic]
             cursor = max(cursor, traffic[-1].ts)
         series[bind] = entry
-    return {"cursor": cursor, "series": series}
+    return {"cursor": cursor, "window": ctx.standby.metrics_window, "series": series}
 
 
 async def _group_detail(ctx: PanelContext, name: str) -> dict | None:

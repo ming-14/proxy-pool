@@ -52,6 +52,9 @@ def make_pool():
 class FakeStandby:
     """代理服务队列壳：站内读取走真实 pool"""
 
+    # 采样窗口（/api/standby/series 下发给前端裁剪本地缓冲）
+    metrics_window = 1800
+
     def __init__(self, pool):
         self.pool = pool
         self.probe_params = []
@@ -191,6 +194,8 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert resp.status == 200
         data = await resp.json()
         assert data["cursor"] == 1002.0
+        # 窗口随响应下发（前端据此裁剪本地缓冲，不再硬编码 1800）
+        assert data["window"] == 1800
         s = data["series"]["1.2.3.4:8080"]
         assert s["lat"] == [[1000.0, 0.2], [1002.0, None]]
         assert s["up"] == [[1000.0, 10], [1002.0, 30]]

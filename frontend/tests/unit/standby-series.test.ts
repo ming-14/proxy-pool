@@ -1,7 +1,9 @@
 /** useStandbySeries / useStandbyGeo：游标增量、合并去重、窗口裁剪、离队丢弃（mock fetch） */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SERIES_WINDOW_S } from '@/composables/useStandbySeries';
 import { geoText } from '@/composables/useStandbyGeo';
+
+/** 服务端下发的采样窗口（秒）：与后端 metrics_window 同源，前端不硬编码 */
+const WINDOW_S = 1800;
 
 /** 每个用例取全新模块实例（模块级缓冲/游标不跨用例串味） */
 async function freshModule() {
@@ -10,7 +12,8 @@ async function freshModule() {
 }
 
 function mockSeries(body: unknown) {
-  const fetchMock = vi.fn(async (_path: string) => ({ ok: true, status: 200, json: async () => body }));
+  const payload = { window: WINDOW_S, ...(body as Record<string, unknown>) };
+  const fetchMock = vi.fn(async (_path: string) => ({ ok: true, status: 200, json: async () => payload }));
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
@@ -62,9 +65,9 @@ describe('refreshStandbySeries', () => {
     expect([...mod.seriesBuffers.keys()]).toEqual(['kept']);
   });
 
-  it('窗口外的点被裁掉（缓冲只保留 metrics_window 内的采样）', async () => {
+  it('窗口外的点被裁掉（缓冲只保留服务端下发窗口内的采样）', async () => {
     const mod = await freshModule();
-    const stale = nowS() - SERIES_WINDOW_S - 10;
+    const stale = nowS() - WINDOW_S - 10;
     const fresh = nowS() - 5;
     mockSeries({
       cursor: fresh,
@@ -74,6 +77,20 @@ describe('refreshStandbySeries', () => {
     const buf = mod.seriesBuffers.get('p')!;
     expect(buf.lat).toEqual([[fresh, 0.2]]);
     expect(buf.up).toEqual([[fresh, 2]]);
+  });
+
+  it('裁剪窗口取服务端下发的 window（前端不再硬编码一份，改配置即生效）', async () => {
+    const mod = await freshModule();
+    const now = nowS();
+    mockSeries({
+      cursor: now,
+      window: 60,
+      series: { p: { lat: [[now - 120, 0.1], [now - 5, 0.2]], up: [[now - 120, 1], [now - 5, 2]] } },
+    });
+    await mod.refreshStandbySeries(['p']);
+    const buf = mod.seriesBuffers.get('p')!;
+    expect(buf.lat).toEqual([[now - 5, 0.2]]);
+    expect(buf.up).toEqual([[now - 5, 2]]);
   });
 
   it('缓冲全空时游标归零（下次全量拉取，避免只拿增量导致图表空转）', async () => {
