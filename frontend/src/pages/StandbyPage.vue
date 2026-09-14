@@ -28,12 +28,11 @@ import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
 import {
   checkPurity,
-  purityCache,
+  purityEntryOf,
   purityScoreClass,
   usageTypeShort,
-  type PurityEntry,
 } from '@/composables/usePurity';
-import { runSpeedTest, speedTestOf } from '@/composables/useSpeedTest';
+import { runSpeedTest, speedTestEntryOf } from '@/composables/useSpeedTest';
 import { GEO_REFRESH_MS, geoText, refreshStandbyGeo, standbyGeo } from '@/composables/useStandbyGeo';
 import { refreshStandbySeries, seriesBuffers } from '@/composables/useStandbySeries';
 import ContextMenu from '@/components/ui/ContextMenu.vue';
@@ -247,8 +246,13 @@ function joinedTextOf(row: StandbyEntry): string | null {
   return `入队 ${fmtAge(Date.now() / 1000 - row.joined_at)}`;
 }
 
-function purityEntryOf(row: StandbyEntry): PurityEntry | null | undefined {
-  return purityCache.get(bindOf(row.proxy)) ?? row.purity;
+/** 行内纯洁度/测速状态（薄包装：本地 Map → 后端状态 → 缓存结果，模板调用简洁） */
+function rowPurity(row: StandbyEntry): ReturnType<typeof purityEntryOf> {
+  return purityEntryOf(bindOf(row.proxy), row.purity_state, row.purity);
+}
+
+function rowSpeedTest(row: StandbyEntry): ReturnType<typeof speedTestEntryOf> {
+  return speedTestEntryOf(bindOf(row.proxy), row.speedtest);
 }
 
 // ---------------- 右键菜单 ----------------
@@ -393,7 +397,7 @@ onBeforeUnmount(() => {
                         class="badge badge-warning ml-2"
                         title="无论心跳是否成功，只使用此代理"
                       >已锁定</span>
-                      <PurityTags :data="purityEntryOf(p)" />
+                      <PurityTags :data="rowPurity(p)" />
                     </div>
                     <div class="proxy-meta">
                       <span v-if="geoEnabled" :title="GEO_TIP">{{ geoTextOf(p) ?? '归属未知' }}</span>
@@ -406,17 +410,17 @@ onBeforeUnmount(() => {
                     <button
                       class="btn btn-ghost btn-sm"
                       data-action="purity"
-                      :disabled="purityEntryOf(p)?.status === 'checking'"
+                      :disabled="rowPurity(p)?.status === 'checking'"
                       title="查询 IP 滥用置信度与类型（结果写入 30 天缓存）"
                       @click="checkPurity(p.proxy)"
-                    >{{ purityEntryOf(p)?.status === 'checking' ? '检查中' : '纯洁' }}</button>
+                    >{{ rowPurity(p)?.status === 'checking' ? '检查中' : '纯洁' }}</button>
                     <button
                       class="btn btn-ghost btn-sm"
                       data-action="speedtest"
-                      :disabled="speedTestOf(bindOf(p.proxy))?.status === 'running'"
+                      :disabled="rowSpeedTest(p)?.status === 'running'"
                       title="Cloudflare 上传/下载测速（最多 10s）"
                       @click="runSpeedTest(bindOf(p.proxy))"
-                    >{{ speedTestOf(bindOf(p.proxy))?.status === 'running' ? '测速中' : '测速' }}</button>
+                    >{{ rowSpeedTest(p)?.status === 'running' ? '测速中' : '测速' }}</button>
                     <!-- 锁定行只能解锁（换锁需先解锁）；其余行固定/解固 + 锁定 -->
                     <button
                       v-if="p.locked"
@@ -464,30 +468,30 @@ onBeforeUnmount(() => {
                     />
                   </div>
                   <div class="pstrip-side" data-testid="strip-side">
-                    <template v-if="purityEntryOf(p)?.status === 'checking'">
+                    <template v-if="rowPurity(p)?.status === 'checking'">
                       <span class="badge badge-muted" data-testid="strip-purity">纯洁度检查中…</span>
                     </template>
-                    <span v-else-if="purityEntryOf(p)?.error" class="badge badge-danger" data-testid="strip-purity">纯洁度检查失败</span>
-                    <template v-else-if="purityEntryOf(p)?.abuse_confidence_score != null">
+                    <span v-else-if="rowPurity(p)?.error" class="badge badge-danger" data-testid="strip-purity">纯洁度检查失败</span>
+                    <template v-else-if="rowPurity(p)?.abuse_confidence_score != null">
                       <span
                         class="badge"
-                        :class="purityScoreClass(purityEntryOf(p)!.abuse_confidence_score!)"
+                        :class="purityScoreClass(rowPurity(p)!.abuse_confidence_score!)"
                         data-testid="strip-purity"
                         title="滥用置信度（0-100，越低越干净）"
-                      >滥用 {{ purityEntryOf(p)!.abuse_confidence_score }}</span>
-                      <span class="badge badge-info" :title="purityEntryOf(p)!.usage_type || ''">
-                        {{ usageTypeShort(purityEntryOf(p)!.usage_type || '') }}
+                      >滥用 {{ rowPurity(p)!.abuse_confidence_score }}</span>
+                      <span class="badge badge-info" :title="rowPurity(p)!.usage_type || ''">
+                        {{ usageTypeShort(rowPurity(p)!.usage_type || '') }}
                       </span>
                     </template>
                     <span v-else class="badge badge-muted" data-testid="strip-purity">纯洁度未检查</span>
-                    <span v-if="speedTestOf(bindOf(p.proxy))?.status === 'running'" class="badge badge-muted" data-testid="strip-speedtest">测速中…（最多 10s）</span>
-                    <span v-else-if="speedTestOf(bindOf(p.proxy))?.error" class="badge badge-danger" data-testid="strip-speedtest">
-                      测速失败：{{ speedTestOf(bindOf(p.proxy))!.error }}
+                    <span v-if="rowSpeedTest(p)?.status === 'running'" class="badge badge-muted" data-testid="strip-speedtest">测速中…（最多 10s）</span>
+                    <span v-else-if="rowSpeedTest(p)?.error" class="badge badge-danger" data-testid="strip-speedtest">
+                      测速失败：{{ rowSpeedTest(p)!.error }}
                     </span>
-                    <span v-else-if="speedTestOf(bindOf(p.proxy))?.result" class="badge badge-info" data-testid="strip-speedtest">
-                      ↓{{ speedTestOf(bindOf(p.proxy))!.result!.download?.best_mbps?.toFixed(1) ?? '-' }}
-                      ↑{{ speedTestOf(bindOf(p.proxy))!.result!.upload?.best_mbps?.toFixed(1) ?? '-' }} Mbps
-                      · {{ speedTestOf(bindOf(p.proxy))!.time }}
+                    <span v-else-if="rowSpeedTest(p)?.result" class="badge badge-info" data-testid="strip-speedtest">
+                      ↓{{ rowSpeedTest(p)!.result!.download?.best_mbps?.toFixed(1) ?? '-' }}
+                      ↑{{ rowSpeedTest(p)!.result!.upload?.best_mbps?.toFixed(1) ?? '-' }} Mbps
+                      · {{ rowSpeedTest(p)!.time }}
                     </span>
                     <span v-else class="badge badge-muted" data-testid="strip-speedtest">未测速</span>
                   </div>

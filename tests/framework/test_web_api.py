@@ -31,6 +31,7 @@ from src.framework.config import (
 )
 from src.framework.web.control import ServeControl
 from src.framework.web.api import build_app, PanelContext
+from src.framework.web.panel_state import PanelTasks
 from src.framework import logbuffer
 from src.use_cases.standby import ProxyLatencySample
 from src.interfaces.proxy_server import TrafficSample
@@ -126,8 +127,74 @@ def make_ctx(pool):
     geo.save_cache = MagicMock()
     ctx = PanelContext(pool=pool, fetch=fetch, record=record, standby=standby,
                        control=control, server=server, save=MagicMock(), capacity=5,
-                       purity=purity, geo=geo)
+                       purity=purity, geo=geo, tasks=PanelTasks())
     return ctx, fetch, standby, server
+
+
+class PanelTasksTest(unittest.TestCase):
+    """面板任务状态注册表单测：幂等 / 结果存储 / FIFO 容量 / purity 按 IP 共享"""
+
+    def test_speedtest_start_idempotent(self):
+        """同一 bind 已在 running 时第二次 start 返回 False（不重复起任务）"""
+        tasks = PanelTasks()
+        assert tasks.speedtest_start("1.2.3.4:8080") is True
+        assert tasks.speedtest_start("1.2.3.4:8080") is False
+
+    def test_speedtest_done_then_restart(self):
+        """done 保存结果与时间戳；终态后允许重新 start（重测）"""
+        tasks = PanelTasks()
+        tasks.speedtest_start("1.2.3.4:8080")
+        tasks.speedtest_done("1.2.3.4:8080", {"proxy": "http://1.2.3.4:8080"})
+        st = tasks.speedtest_of("1.2.3.4:8080")
+        assert st["status"] == "done"
+        assert st["result"]["proxy"] == "http://1.2.3.4:8080"
+        assert st["ts"] is not None
+        assert tasks.speedtest_start("1.2.3.4:8080") is True
+
+    def test_speedtest_error(self):
+        """error 保存错误文案；of 读取终态"""
+        tasks = PanelTasks()
+        tasks.speedtest_start("1.2.3.4:8080")
+        tasks.speedtest_error("1.2.3.4:8080", "boom")
+        assert tasks.speedtest_of("1.2.3.4:8080")["status"] == "error"
+        assert tasks.speedtest_of("1.2.3.4:8080")["error"] == "boom"
+
+    def test_purity_keyed_by_ip_shared(self):
+        """purity 按 IP 键：同 IP 不同端口行共享 checking（防重复调 API 日限额）"""
+        tasks = PanelTasks()
+        assert tasks.purity_start("1.2.3.4") is True
+        assert tasks.purity_start("1.2.3.4") is False
+        tasks.purity_done("1.2.3.4")
+        assert tasks.purity_of("1.2.3.4") is None
+        assert tasks.purity_start("1.2.3.4") is True  # 完成后可重新查
+
+    def test_purity_error_cleared_by_done(self):
+        """error 后重查：start 覆盖旧终态"""
+        tasks = PanelTasks()
+        tasks.purity_start("1.2.3.4")
+        tasks.purity_error("1.2.3.4", "API down")
+        assert tasks.purity_of("1.2.3.4")["status"] == "error"
+        assert tasks.purity_start("1.2.3.4") is True
+
+    def test_fifo_capacity_evicts_stale(self):
+        """超容量优先淘汰最旧的非中间态条目"""
+        tasks = PanelTasks(capacity=2)
+        tasks.speedtest_start("a"); tasks.speedtest_done("a", {})
+        tasks.speedtest_start("b"); tasks.speedtest_done("b", {})
+        tasks.speedtest_start("c")
+        assert tasks.speedtest_of("a") is None
+        assert tasks.speedtest_of("b") is not None
+        assert tasks.speedtest_of("c") is not None
+
+    def test_fifo_capacity_all_running(self):
+        """全 running 时退而淘汰最旧"""
+        tasks = PanelTasks(capacity=2)
+        tasks.speedtest_start("a")
+        tasks.speedtest_start("b")
+        tasks.speedtest_start("c")
+        assert tasks.speedtest_of("a") is None
+        assert tasks.speedtest_of("b") is not None
+        assert tasks.speedtest_of("c") is not None
 
 
 class WebApiTest(unittest.IsolatedAsyncioTestCase):
@@ -583,6 +650,33 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["download"]["best_mbps"] == 5.0
         assert data["upload"]["best_mbps"] == 2.0
 
+    async def test_speedtest_running_idempotent(self):
+        """测速进行中重复请求返回 {"status":"running"}，不重复起任务"""
+        from unittest.mock import patch
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        assert self.ctx.tasks.speedtest_start("1.2.3.4:8080") is True
+        with patch("pspeed.probe.probe_one") as probe_mock:
+            r = await self.client.post("/api/proxy/speedtest", json={"bind": "1.2.3.4:8080"})
+            probe_mock.assert_not_called()
+        assert r.status == 200
+        assert (await r.json()) == {"status": "running"}
+
+    async def test_status_carries_speedtest_state(self):
+        """status 快照带测速任务状态（前端刷新后恢复测速中/结果）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.tasks.speedtest_done("1.2.3.4:8080", {"proxy": "http://1.2.3.4:8080"})
+        row = (await (await self.client.get("/api/status")).json())["standby"][0]
+        assert row["speedtest"]["status"] == "done"
+        assert row["speedtest"]["result"]["proxy"] == "http://1.2.3.4:8080"
+        assert row["speedtest"]["ts"] is not None
+
+    async def test_status_speedtest_none_when_no_record(self):
+        """无测速记录时 speedtest 字段为 None"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        row = (await (await self.client.get("/api/status")).json())["standby"][0]
+        assert row["speedtest"] is None
+        assert row["purity_state"] is None
+
     async def test_group_add_proxies(self):
         """向组批量添加代理"""
         r = await self.client.post("/api/group/trusted/add", json={"proxies": ["3.3.3.3:80", "http://4.4.4.4:3128"]})
@@ -690,6 +784,35 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.ctx.purity.check_remote = MagicMock(side_effect=RuntimeError("API error"))
         r = await self.client.post("/api/proxy/purity", json={"bind": "1.2.3.4:8080"})
         assert r.status == 500
+
+    async def test_purity_checking_idempotent(self):
+        """检查进行中重复请求返回 {"status":"checking"}，不重复调 API（防日限额）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.purity = MagicMock()
+        self.ctx.purity.query_cache = MagicMock(return_value=None)
+        assert self.ctx.tasks.purity_start("1.2.3.4") is True
+        r = await self.client.post("/api/proxy/purity", json={"bind": "1.2.3.4:8080"})
+        assert r.status == 200
+        assert (await r.json()) == {"status": "checking"}
+        self.ctx.purity.check_remote.assert_not_called()
+
+    async def test_purity_checking_shared_same_ip(self):
+        """同 IP 不同端口行共享 checking：第二个端口请求直接返回 checking"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8081", consecutive_fails=0)
+        self.ctx.purity = MagicMock()
+        self.ctx.purity.query_cache = MagicMock(return_value=None)
+        assert self.ctx.tasks.purity_start("1.2.3.4") is True
+        r = await self.client.post("/api/proxy/purity", json={"bind": "1.2.3.4:8081"})
+        assert (await r.json()) == {"status": "checking"}
+        self.ctx.purity.check_remote.assert_not_called()
+
+    async def test_status_carries_purity_state(self):
+        """status 快照带纯洁度检查中间态（前端刷新后恢复检查中/失败）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.tasks.purity_start("1.2.3.4")
+        row = (await (await self.client.get("/api/status")).json())["standby"][0]
+        assert row["purity_state"]["status"] == "checking"
 
 
 class WebApiGeoDisabledTest(unittest.IsolatedAsyncioTestCase):

@@ -27,6 +27,7 @@ from src.interfaces.proxy_server import PproxyServer
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
+from src.framework.web.panel_state import PanelTasks
 
 # pspeed 测速工具（vendor 目录）：sys.path 注册留在模块级（stdlib，零成本），
 # 实际 import 下沉到 _run_speedtest——测速是低频面板动作，不为其常驻加载
@@ -58,6 +59,7 @@ class PanelContext:
     capacity: int              # 代理服务队列容量
     purity: CheckPurityUseCase | None    # IP 纯洁度检查；禁用时为 None
     geo: object | None                   # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）；geoip.enabled=false 时为 None
+    tasks: PanelTasks                    # 面板任务状态（测速/纯洁度检查进行中与终态，前端刷新后恢复）
 
 
 # ------------------------------------------------------------------ 读取
@@ -148,6 +150,9 @@ def _status_snapshot(ctx: PanelContext) -> dict:
             "consecutive_fails": info.get("consecutive_fails", 0),
             "pinned": info.get("pinned", False),
             "purity": _purity_cached(ctx, p),
+            # 面板任务状态（前端刷新后据此恢复测速结果/检查中间态；无记录为 None）
+            "speedtest": ctx.tasks.speedtest_of(bind_of(p)),
+            "purity_state": ctx.tasks.purity_of(proxy_to_ip(p)),
             "locked": locked,
             "protocol": proxy_type(p),
             "joined_at": info.get("joined_at"),
@@ -482,6 +487,9 @@ async def _do_speedtest(request: web.Request) -> web.Response:
     """对指定代理进行 Cloudflare 上传/下载 10s 测速
 
     请求体 {"bind": "1.2.3.4:8080"}，后端反查完整 proxy URL 后调 pspeed。
+    幂等：同一 bind 已在测速中直接返回 {"status": "running"}（前端刷新后恢复
+    "测速中"，也防止刷新后重复点击并发起第二个任务）。结果写 PanelTasks，
+    /api/status 下发供前端刷新后恢复（服务重启清空，测速为瞬时重操作）。
     """
     ctx = request.app[_PANEL_KEY]
     body = await _json_body(request)
@@ -491,11 +499,16 @@ async def _do_speedtest(request: web.Request) -> web.Response:
     proxy = _find_proxy_by_bind(ctx, bind)
     if not proxy:
         return web.json_response({"error": "未找到该代理"}, status=404)
+    # 幂等：进行中直接返回，不重复起任务（await 前置状态，无竞态）
+    if not ctx.tasks.speedtest_start(bind):
+        return web.json_response({"status": "running"})
     try:
         result = await asyncio.get_running_loop().run_in_executor(None, _run_speedtest, proxy)
     except Exception as e:
         logger.exception("测速失败 proxy=%s", proxy)
+        ctx.tasks.speedtest_error(bind, str(e))
         return web.json_response({"error": f"测速失败: {e}"}, status=500)
+    ctx.tasks.speedtest_done(bind, result)
     return web.json_response(result)
 
 
@@ -524,14 +537,27 @@ async def _do_purity(request: web.Request) -> web.Response:
     cached = ctx.purity.query_cache(proxy)
     if cached is not None:
         return web.json_response(cached)
-    # 2. 调多源 API（executor 线程，纯网络）
+    # 幂等键用 IP（同 IP 多端口行共享 checking，防重复调 API 日限额）：
+    # 已在检查中直接返回 {"status": "checking"}（await 前置状态，无竞态）
+    ip = proxy_to_ip(proxy)
+    if not ctx.tasks.purity_start(ip):
+        return web.json_response({"status": "checking"})
     try:
-        result = await asyncio.get_running_loop().run_in_executor(None, ctx.purity.check_remote, proxy)
+        # 2. 调多源 API（executor 线程，纯网络）
+        try:
+            result = await asyncio.get_running_loop().run_in_executor(None, ctx.purity.check_remote, proxy)
+        except Exception as e:
+            logger.exception("纯洁度检查失败 proxy=%s", proxy)
+            ctx.tasks.purity_error(ip, str(e))
+            return web.json_response({"error": f"检查失败: {e}"}, status=500)
+        # 3. 写缓存（主线程 SQLite 写）
+        final = ctx.purity.save_cache(proxy, result)
     except Exception as e:
-        logger.exception("纯洁度检查失败 proxy=%s", proxy)
-        return web.json_response({"error": f"检查失败: {e}"}, status=500)
-    # 3. 写缓存（主线程 SQLite 写）
-    final = ctx.purity.save_cache(proxy, result)
+        logger.exception("纯洁度结果写缓存失败 proxy=%s", proxy)
+        ctx.tasks.purity_error(ip, str(e))
+        return web.json_response({"error": f"写缓存失败: {e}"}, status=500)
+    # 清除中间态（结果由 SQLite 缓存承载，快照读 row.purity）
+    ctx.tasks.purity_done(ip)
     return web.json_response(final)
 
 

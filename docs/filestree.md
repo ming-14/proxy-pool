@@ -59,6 +59,7 @@ proxy-pool/
 │           ├── __init__.py
 │           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加 + /api/logs 面板日志增量拉取/清空）+ Vite 产物静态服务
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
+│           ├── panel_state.py     # PanelTasks（面板任务状态：测速/纯洁度检查的进行中与终态，/api/status 下发供前端刷新后恢复）
 │           ├── server.py          # aiohttp 服务器启动
 │           └── static/            # 前端构建产物（frontend/ npm run build 输出，提交入库，勿手改）
 │               ├── index.html     # Vite 入口（hash 路由单页）

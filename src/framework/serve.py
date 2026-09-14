@@ -17,6 +17,7 @@ import time
 from src.framework import config
 from src.framework.loop import run_coro
 from src.framework.web.control import ServeControl
+from src.framework.web.panel_state import PanelTasks
 from src.interfaces.proxy_server import PproxyServer
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,7 @@ async def _run(
             capacity=capacity,
             purity=c.purity,
             geo=c.geo,
+            tasks=PanelTasks(),
         ))
         if web_port:
             await panel.start(web_host or "127.0.0.1", web_port)

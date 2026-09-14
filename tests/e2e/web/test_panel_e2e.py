@@ -308,9 +308,9 @@ class TestStandby:
             timeout=15000,
         )
         assert page.locator('[data-testid="strip-latency"] .sparkline').count() == rows.count()
-        # 摘要行带代理信息：协议 + 入队时长（不需要点进去看）
+        # 摘要行带代理信息：归属地 + 入队时长（协议已不在 meta 行展示，见 proxy 文本）
         meta = rows.first.locator(".proxy-meta").inner_text()
-        assert "http" in meta and "入队" in meta
+        assert "入队" in meta
         box = page.locator('[data-testid="strip-latency"] .sparkline').first.bounding_box()
         assert box["width"] > 100 and box["height"] > 20, "行内趋势图应有可用尺寸"
         # 图左侧标出数据值区间（上=最大 / 下=最小）：迷你图没有坐标轴，不标就读不出量级；

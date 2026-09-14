@@ -84,7 +84,8 @@ export const api = {
   settings: (patch: Partial<ScheduleSettings>) =>
     post<{ ok: boolean; changed: Record<string, unknown>; settings: ScheduleSettings }>('/api/settings', patch),
 
-  speedTest: (bind: string) => post<SpeedTestResult>('/api/proxy/speedtest', { bind }),
+  /** 测速：进行中（幂等）时后端返回 {"status":"running"} */
+  speedTest: (bind: string) => post<SpeedTestResult | { status: 'running' }>('/api/proxy/speedtest', { bind }),
 
   purity: (bind: string) => post<Record<string, unknown>>('/api/proxy/purity', { bind }),
 

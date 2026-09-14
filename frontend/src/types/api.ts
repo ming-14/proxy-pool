@@ -38,6 +38,8 @@ export interface StandbyEntry {
   purity: PurityInfo | null;   // 缓存的纯洁度（无缓存为 null）
   protocol: string;            // 协议类型（scheme，如 http / socks5 / https）
   joined_at: number | null;    // 进入队列组的时间（秒）；锁定行的值即锁定时刻
+  speedtest?: SpeedTestStatus | null;  // 后端测速任务状态（刷新后恢复；无记录为 undefined/null）
+  purity_state?: PurityState | null;   // 后端纯洁度检查中间态（checking/error；无记录为 undefined/null）
 }
 
 /** 单代理序列点：[时间戳（秒）, 值]；延时序列的值为 null 表示该轮探测失败 */
@@ -179,6 +181,20 @@ export interface SpeedTestResult {
   proxy: string;
   download: SpeedLeg | null;
   upload: SpeedLeg | null;
+}
+
+/** 后端任务状态：测速（/api/status standby 行 + POST /api/proxy/speedtest 响应） */
+export interface SpeedTestStatus {
+  status: 'running' | 'done' | 'error';
+  result?: SpeedTestResult | null;
+  error?: string | null;
+  ts?: number | null;   // 完成时间戳（秒，前端格式化显示"什么时候测的"）
+}
+
+/** 后端任务状态：纯洁度检查中间态（/api/status standby 行；结果由 SQLite 缓存承载） */
+export interface PurityState {
+  status: 'checking' | 'error';
+  error?: string | null;
 }
 
 /** GET /api/geo/map */
