@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
         <div>
           <div class="card-title">代理服务队列</div>
           <div class="card-subtitle">
-            {{ hasLock ? '已锁定单一上游：无论心跳是否成功，只使用此代理' : 'pproxy 队列' }}
+            {{ hasLock ? '已锁定单一上游代理' : 'pproxy 队列' }}
           </div>
         </div>
         <button
@@ -413,12 +413,12 @@ onBeforeUnmount(() => {
                       :disabled="rowPurity(p)?.status === 'checking'"
                       title="查询 IP 滥用置信度与类型（结果写入 30 天缓存）"
                       @click="checkPurity(p.proxy)"
-                    >{{ rowPurity(p)?.status === 'checking' ? '检查中' : '纯洁' }}</button>
+                    >{{ rowPurity(p)?.status === 'checking' ? '检查中' : '检查纯净度' }}</button>
                     <button
                       class="btn btn-ghost btn-sm"
                       data-action="speedtest"
                       :disabled="rowSpeedTest(p)?.status === 'running'"
-                      title="Cloudflare 上传/下载测速（最多 10s）"
+                      title="上传/下载测速"
                       @click="runSpeedTest(bindOf(p.proxy))"
                     >{{ rowSpeedTest(p)?.status === 'running' ? '测速中' : '测速' }}</button>
                     <!-- 锁定行只能解锁（换锁需先解锁）；其余行固定/解固 + 锁定 -->
@@ -484,13 +484,13 @@ onBeforeUnmount(() => {
                       </span>
                     </template>
                     <span v-else class="badge badge-muted" data-testid="strip-purity">纯洁度未检查</span>
-                    <span v-if="rowSpeedTest(p)?.status === 'running'" class="badge badge-muted" data-testid="strip-speedtest">测速中…（最多 10s）</span>
+                    <span v-if="rowSpeedTest(p)?.status === 'running'" class="badge badge-muted" data-testid="strip-speedtest">测速中…</span>
                     <span v-else-if="rowSpeedTest(p)?.error" class="badge badge-danger" data-testid="strip-speedtest">
                       测速失败：{{ rowSpeedTest(p)!.error }}
                     </span>
                     <span v-else-if="rowSpeedTest(p)?.result" class="badge badge-info" data-testid="strip-speedtest">
                       ↓{{ rowSpeedTest(p)!.result!.download?.best_mbps?.toFixed(1) ?? '-' }}
-                      ↑{{ rowSpeedTest(p)!.result!.upload?.best_mbps?.toFixed(1) ?? '-' }} Mbps
+                      ↑{{ rowSpeedTest(p)!.result!.upload?.best_mbps?.toFixed(1) ?? '-' }} · Mbps
                       · {{ rowSpeedTest(p)!.time }}
                     </span>
                     <span v-else class="badge badge-muted" data-testid="strip-speedtest">未测速</span>
