@@ -14,8 +14,10 @@ import asyncio
 import logging
 import os
 import sys
+import time
 import unittest
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 logging.disable(logging.WARNING)
@@ -24,6 +26,7 @@ from src.domain.proxy_pool import ProxyPool
 from src.interfaces.proxy_server import PproxyServer
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.framework import config
+from src.framework.serve import _run
 from src.use_cases.standby import StandbyQueueUseCase
 
 from tests.e2e.mock_upstream import MOCK_BODY, start_mock_upstream
@@ -95,6 +98,46 @@ class _FakeCheck:
             for p in proxies:
                 on_result(p, results[p])
         return results
+
+
+class _FakeServer:
+    """serve._run 内的 PproxyServer 替身：记录 sample_traffic 调用时刻（monotonic）"""
+
+    def __init__(self, *args, **kwargs):
+        self.sample_ts: list[float] = []
+
+    def sync(self, proxies):
+        pass
+
+    async def start(self, proxies):
+        pass
+
+    def sample_traffic(self):
+        self.sample_ts.append(time.monotonic())
+
+    async def close(self):
+        pass
+
+
+async def _wait_until(pred, timeout=5.0):
+    """轮询等待条件满足（e2e 里 serve 内部循环异步启动）"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("_wait_until 超时")
+
+
+def make_min_container(pool, standby):
+    """serve._run 的最小容器替身：真实 standby + 假 save/async_getter"""
+    return SimpleNamespace(
+        pool=pool,
+        standby=standby,
+        save=lambda: None,
+        save_full=lambda: None,
+        async_getter=AsyncMock(),
+    )
 
 
 class TestServeMainLoop(unittest.TestCase):
@@ -175,7 +218,7 @@ class TestServeMainLoop(unittest.TestCase):
 
             c = make_standby(pool, record, check)
             task = asyncio.create_task(
-                _cancel_test(c, check)
+                _cancel_test(c)
             )
             await asyncio.sleep(0.3)
             task.cancel()
@@ -184,8 +227,51 @@ class TestServeMainLoop(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_locked_traffic_sampling_keeps_interval(self):
+        """锁定单一上游后流量采样不随心跳放宽：仍按固定间隔（而非 30s 心跳间隔）采样
 
-async def _cancel_test(c, check):
+        回归：采样原挂在心跳轮次上，锁定时心跳放宽到 heartbeat_lock_interval，
+        正被使用的锁定代理流量图跟着变稀疏。独立采样循环后锁定期间 ~2s/点。
+        """
+        async def run():
+            upstream, mock_port = await start_mock_upstream()
+            good = f"http://127.0.0.1:{mock_port}"
+            pool = make_pool()
+            pool.add_to_group("default-http", good)
+            record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
+            standby = make_standby(pool, record, _FakeCheck([good]))
+            fake_server = _FakeServer()
+
+            with patch("src.framework.serve.PproxyServer", return_value=fake_server):
+                c = make_min_container(pool, standby)
+                task = asyncio.create_task(
+                    _run(c, interval=2, probe_url="http://probe.local", allowed_types={"http"},
+                         concurrency=2, host="127.0.0.1", port=0, capacity=5, web_enabled=False)
+                )
+                await _wait_until(lambda: standby_list(pool) == [good])
+                await asyncio.sleep(1.0)  # 首轮心跳完成，采样循环稳定运行
+
+                standby.lock(good)
+                lock_ts = time.monotonic()
+                # 锁定时长 > 一个心跳轮次（heartbeat_lock_interval=30s）内：心跳不跑，
+                # 采样应保持 ~2s 间隔继续产生点
+                await asyncio.sleep(7.0)
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                # 干净退出：采样循环在 cancel 时正常终止（CancelledError 传播，无其它异常）
+                self.assertTrue(task.cancelled(), "serve._run 应被取消干净退出")
+
+            after = [t for t in fake_server.sample_ts if t >= lock_ts]
+            self.assertGreaterEqual(len(after), 2, "锁定期间流量采样应持续产生点")
+            gaps = [b - a for a, b in zip(after, after[1:])]
+            self.assertTrue(all(g < 5.0 for g in gaps), f"锁定期间采样间隔应 ~2s，实际 {gaps}")
+
+            await close_server(upstream)
+
+        asyncio.run(run())
+
+
+async def _cancel_test(c):
     """模拟 serve._run 的核心循环，验证取消能干净退出"""
     await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
     try:

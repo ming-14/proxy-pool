@@ -19,7 +19,7 @@
 | 数据 | 现状 | 来源 | 缺口 |
 |---|---|---|---|
 | 延时采样 | 仅悬浮面板按需查 | `StandbyQueueUseCase._per_proxy_latency_history`，探测**成功**时记点 | 失败不记点 → 曲线拉直，看不出掉线、算不出成功率 |
-| 流量采样 | 仅悬浮面板按需查 | `PproxyServer._per_proxy_traffic_history`，每心跳轮采累计字节 | 无 |
+| 流量采样 | 仅悬浮面板按需查 | `PproxyServer._per_proxy_traffic_history`，独立采样循环固定 2s 采累计字节（不随心跳放宽，锁定时流量照常采） | 无 |
 | 归属地 | 队列页没有 | `.cache.db` 的 `ip_geo_cache`（代理组页在用） | 队列页未下发 |
 | 协议 / 来源 / 入队时长 | 队列页没有 | 组内条目字段（代理组页在用） | 队列页未下发 |
 | 纯洁度 | 有（30 天缓存） | `_purity_cached()` | 未检查过的行是空的 |

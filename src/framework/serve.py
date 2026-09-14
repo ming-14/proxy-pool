@@ -4,6 +4,7 @@
 STANDBY_QUEUE_CAPACITY）。队列维护业务（探测补入/心跳淘汰/退避补测）
 在 StandbyQueueUseCase（use_cases 层），本模块只负责：
     调度：启动填充 → 周期心跳 → 为待补测代理启动独立复核任务 → 同步上游；
+    采样：流量采样独立循环（固定间隔，不随心跳放宽——锁定时心跳降频但流量照常采）；
     生命周期：启动/停止事件循环。
 """
 
@@ -21,6 +22,11 @@ from src.framework.web.panel_state import PanelTasks
 from src.interfaces.proxy_server import PproxyServer
 
 logger = logging.getLogger(__name__)
+
+# 流量采样间隔秒：独立于心跳节奏。流量采样只读内存计数器（开销极小），
+# 锁定单一上游时心跳放宽到 heartbeat_lock_interval 但采样保持此频率——否则
+# 正被使用的锁定代理流量图会跟着变稀疏（见 traffic_sample_loop）
+TRAFFIC_SAMPLE_INTERVAL = 2.0
 
 
 async def _run(
@@ -154,7 +160,6 @@ async def _run(
                 if standby.upstream_proxies():
                     await standby.heartbeat(control.probe_url, control.timeout, control.concurrency)
                 await fill_if_needed()
-                server.sample_traffic()
                 # 为失败后进入退避补测的代理启动独立复核任务（已启动的跳过），
                 # 复核成功恢复 / 达到阈值拉黑，期间不占心跳轮次。
                 for p in standby.pending_retries():
@@ -168,10 +173,28 @@ async def _run(
             except Exception as e:
                 logger.warning("心跳循环异常: %s", e)
             # 下一轮最早从本轮开始时刻 + interval 起算（间隔至少 interval，绝不重叠）
-            interval = max(control.interval, config.HEARTBEAT_LOCK_INTERVAL if standby.is_locked() else 0)
-            next_round = max(time.monotonic(), round_start + interval)
+            # round_interval 为局部值：锁定放宽只影响本循环的轮次间隔，不遮蔽外层 interval 参数
+            round_interval = max(control.interval, config.HEARTBEAT_LOCK_INTERVAL if standby.is_locked() else 0)
+            next_round = max(time.monotonic(), round_start + round_interval)
+
+    async def traffic_sample_loop():
+        """周期流量采样：固定间隔（TRAFFIC_SAMPLE_INTERVAL），不随心跳节奏放宽
+
+        流量采样只读内存计数器（sample_traffic 累计值 + 裁剪 deque），与探测解耦——
+        锁定单一上游时心跳放宽到 heartbeat_lock_interval（30s），若采样挂在心跳轮次上，
+        正被使用的锁定代理流量图会跟着变稀疏；探测阻塞/退避期间采样也不中断。
+        """
+        while True:
+            try:
+                server.sample_traffic()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("流量采样异常: %s", e)
+            await asyncio.sleep(TRAFFIC_SAMPLE_INTERVAL)
 
     hb_task = asyncio.create_task(heartbeat_loop())
+    sample_task = asyncio.create_task(traffic_sample_loop())
     loop = asyncio.get_running_loop()
 
     # 退出信号处理：Linux/systemd/docker 发 SIGTERM 时完成 stop_future 触发优雅退出
@@ -191,11 +214,12 @@ async def _run(
     try:
         await stop_future  # 永久运行（收到退出信号时完成）
     finally:
-        # 清理：停止心跳与补测任务 → 关闭服务器 → 关闭 async session → 保存
+        # 清理：停止心跳/采样/补测任务 → 关闭服务器 → 关闭 async session → 保存
         hb_task.cancel()
+        sample_task.cancel()
         for t in retry_tasks.values():
             t.cancel()
-        await asyncio.gather(hb_task, *retry_tasks.values(), return_exceptions=True)
+        await asyncio.gather(hb_task, sample_task, *retry_tasks.values(), return_exceptions=True)
         try:
             await server.close()
         except Exception as e:

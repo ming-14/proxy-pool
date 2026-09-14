@@ -52,7 +52,7 @@ proxy-pool/
 │       ├── config.py              # 配置加载（config/ 领域拆分多文件，固定节归属）
 │       ├── container.py           # 组合根（依赖组装；purity/geo 按 WEB_ENABLED 门控构造、重依赖分支内惰性导入）
 │       ├── cli.py                 # argparse 命令处理
-│       ├── serve.py               # serve 主循环（调度 fill/heartbeat/补测 + 上游同步）
+│       ├── serve.py               # serve 主循环（调度 fill/heartbeat/补测 + 独立流量采样循环 + 上游同步）
 │       ├── logging.py             # 日志模块（双通道分档 + 逐 logger 覆盖）
 │       ├── logbuffer.py           # 面板日志缓冲（root 镜像 → 有界环形缓冲 + seq 游标增量拉取，供 /api/logs）
 │       └── web/                   # Web 控制面板（serve 模式）
