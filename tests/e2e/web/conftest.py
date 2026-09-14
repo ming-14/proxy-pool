@@ -118,12 +118,15 @@ def _make_config_dir(tmpdir: Path, probe_port: int) -> Path:
 
 
 @pytest.fixture(scope="session")
-def panel():
+def panel(request):
     """启动 mock 上游 + serve 子进程，种入代理并等待队列填充；返回 base_url
 
     种入策略：standby fill 会把可请求组代理 move 进队列组，故分两路——
     前 3 个进 default-http（被心跳补入队列，供队列页测试），
     后 3 个进 staging（非可请求组不被清空，供代理组页测试）。
+
+    临时目录（配置副本 + cache_db + serve.out）在会话结束时清理；有失败用例时保留并打印
+    路径——serve.out 是启动失败的唯一线索，不能随成功用例一起删掉。
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="proxy-pool-e2e-"))
     # 防呆：Windows SO_REUSEADDR 允许后起进程绑同端口并劫持连接，若面板/代理端口
@@ -164,6 +167,10 @@ def panel():
         except subprocess.TimeoutExpired:
             proc.kill()
         mocks.stop()
+        if request.session.testsfailed:
+            print(f"\n[e2e] 有失败用例，保留临时目录供排查：{tmpdir}")
+        else:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _wait_panel(proc: subprocess.Popen) -> None:

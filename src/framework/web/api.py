@@ -20,7 +20,7 @@ from typing import Callable
 
 from aiohttp import web
 
-from src.domain.models import bind_of, normalize_proxy, proxy_to_ip
+from src.domain.models import bind_of, normalize_proxy, proxy_to_ip, proxy_type
 from src.domain.proxy_pool import LOCKED_GROUP
 from src.framework import config, logbuffer
 from src.interfaces.proxy_server import PproxyServer
@@ -81,6 +81,31 @@ def _purity_cached(ctx: PanelContext, proxy: str) -> dict | None:
     }
 
 
+def _standby_rows(ctx: PanelContext) -> list[str]:
+    """面板队列行：锁定代理置首 + 队列成员（去重）
+
+    锁定代理已 move 出队列组，只有 upstream_proxies() 能取到，故并入下发；历史数据
+    可能在队列组留有副本，按地址去重避免同一代理出现两行（前端以 proxy 为 :key）。
+    """
+    rows = list(ctx.standby.standby_proxies(truncate=False))
+    if ctx.standby.is_locked():
+        locked = ctx.standby.upstream_proxies()
+        rows = locked + [p for p in rows if p not in locked]
+    return rows
+
+
+def _geo_payload(geo: dict | None) -> dict | None:
+    """IP 归属下发字段（只取展示需要的国家/省市，不带经纬度与缓存时间）"""
+    if not geo:
+        return None
+    return {
+        "country": geo["country"],
+        "country_code": geo["country_code"],
+        "province": geo.get("province"),
+        "city": geo.get("city"),
+    }
+
+
 def _status_snapshot(ctx: PanelContext) -> dict:
     """全量状态快照：组统计 / 可用数 / 代理服务队列（含锁定行）/ 待补测 / 源暂停 / 调度参数"""
     pool = ctx.pool
@@ -107,24 +132,28 @@ def _status_snapshot(ctx: PanelContext) -> dict:
 
     # 锁定代理作为 pproxy 唯一上游，物理上已移出队列组；面板把它显示为队列首行
     # （行内标记已锁定、其余行灰显），故并入 standby 下发，省得前端拼接两处数据。
-    locked_proxy = None
-    if ctx.standby.is_locked():
-        locked_group = ctx.standby.upstream_proxies()
-        locked_proxy = locked_group[0]  # is_locked 为真即该组非空
+    locked_proxy = ctx.standby.upstream_proxies()[0] if ctx.standby.is_locked() else None
 
     def _standby_entry(p: str, *, locked: bool) -> dict:
+        """队列行：单次 find_proxy 取全部条目字段（joined_at 供前端算入队时长）
+
+        不下发 source_group：move_proxy 不保留该字段（仅黑名单条目记录来源组），
+        队列行的值恒为 None，发死字段不如不发。
+        """
+        _, info = pool.find_proxy(p)
+        info = info or {}
         return {
             "proxy": p,
-            "latency": pool.get_latency(p),
-            "consecutive_fails": pool.get_consecutive_fail_count(p),
-            "pinned": pool.is_pinned(p),
+            "latency": info.get("latency"),
+            "consecutive_fails": info.get("consecutive_fails", 0),
+            "pinned": info.get("pinned", False),
             "purity": _purity_cached(ctx, p),
             "locked": locked,
+            "protocol": proxy_type(p),
+            "joined_at": info.get("joined_at"),
         }
 
-    standby = [_standby_entry(p, locked=False) for p in ctx.standby.standby_proxies(truncate=False)]
-    if locked_proxy:
-        standby.insert(0, _standby_entry(locked_proxy, locked=True))
+    standby = [_standby_entry(p, locked=(p == locked_proxy)) for p in _standby_rows(ctx)]
     traffic_upload, traffic_download = ctx.server.traffic_total()
     sources = []
     for s in config.SOURCES:
@@ -167,6 +196,40 @@ def _status_history(ctx: PanelContext, since: float | None) -> dict:
     }
 
 
+def _standby_series(ctx: PanelContext, since: float | None) -> dict:
+    """队列逐代理序列（延时 + 累计流量），供面板每行内联绘制趋势
+
+    since 指定时只返回 ts > since 的点（前端增量追加），缺省返回窗口内全量；
+    cursor 为本次下发点的最大时间戳，前端下轮以此为 since。
+
+    - 延时序列的 latency 为 None 表示该轮探测失败，前端据此断开曲线；
+    - 流量为累计字节，前端差分算速率；
+    - 逐代理全量体量大（队列 30 × 2 序列 × 900 点），故与 /api/status/history 同机制
+      走游标增量；代理离队后其序列自然不再出现，前端按现存行裁剪本地缓冲。
+    """
+    series: dict[str, dict[str, list]] = {}
+    cursor = since or 0.0
+    for proxy in _standby_rows(ctx):
+        bind = bind_of(proxy)
+        lat = [[s.ts, s.latency] for s in ctx.standby.per_proxy_latency_history(bind)
+               if since is None or s.ts > since]
+        # 仅统计有流量的代理（无流量代理的序列为空，前端显示"无流量"）
+        traffic = [s for s in ctx.server.per_proxy_traffic_history(bind)
+                   if since is None or s.ts > since]
+        if not lat and not traffic:
+            continue
+        entry: dict[str, list] = {}
+        if lat:
+            entry["lat"] = lat
+            cursor = max(cursor, lat[-1][0])
+        if traffic:
+            entry["up"] = [[s.ts, s.total_upload] for s in traffic]
+            entry["down"] = [[s.ts, s.total_download] for s in traffic]
+            cursor = max(cursor, traffic[-1].ts)
+        series[bind] = entry
+    return {"cursor": cursor, "series": series}
+
+
 async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
     """单组代理明细（地址/加入时间/连续失败数/latency/过期倒计时/来源组/IP 归属）
 
@@ -206,12 +269,7 @@ async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
         except Exception:
             logger.exception("代理组 IP 归属查询失败 group=%s", name)
     for x in proxies:
-        geo = geo_map.get(proxy_to_ip(x["proxy"]))
-        x["geo"] = (
-            {"country": geo["country"], "country_code": geo["country_code"],
-             "province": geo.get("province"), "city": geo.get("city")}
-            if geo else None
-        )
+        x["geo"] = _geo_payload(geo_map.get(proxy_to_ip(x["proxy"])))
     return {"group": name, "ttl": ttl, "count": len(proxies), "proxies": proxies}
 
 
@@ -269,6 +327,17 @@ async def _logs_clear(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _since_param(request: web.Request) -> float | None:
+    """解析 ?since=<ts> 增量游标（缺省 None 表示返回窗口内全量；非法值 400）"""
+    raw = request.query.get("since")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise web.HTTPBadRequest(text="since 必须为数字")
+
+
 async def _status(request: web.Request) -> web.Response:
     ctx = request.app[_PANEL_KEY]
     return web.json_response(_status_snapshot(ctx))
@@ -277,9 +346,38 @@ async def _status(request: web.Request) -> web.Response:
 async def _status_history_route(request: web.Request) -> web.Response:
     """队列指标/流量历史：?since=<ts> 增量拉取（只返回 ts > since 的点），缺省返回全量"""
     ctx = request.app[_PANEL_KEY]
-    since_raw = request.query.get("since")
-    since = float(since_raw) if since_raw is not None else None
-    return web.json_response(_status_history(ctx, since))
+    return web.json_response(_status_history(ctx, _since_param(request)))
+
+
+async def _standby_series_route(request: web.Request) -> web.Response:
+    """队列逐代理序列：?since=<ts> 增量拉取（只返回 ts > since 的点），缺省返回全量"""
+    ctx = request.app[_PANEL_KEY]
+    return web.json_response(_standby_series(ctx, _since_param(request)))
+
+
+async def _standby_geo(request: web.Request) -> web.Response:
+    """代理服务队列的 IP 归属（bind → {country, country_code, province, city}）
+
+    与 _group_detail 同一套三步编排（SQLite 连接线程绑定）：主线程读缓存 → executor
+    定位缺失 IP（纯 mmdb）→ 主线程写缓存。归属变化以月计，前端 5 分钟拉一次，不进
+    /api/status 的 2s 热路径；geoip 关闭时不注册本路由（前端按 geo_enabled 跳过）。
+    """
+    ctx = request.app[_PANEL_KEY]
+    proxies = _standby_rows(ctx)
+    ips = [proxy_to_ip(p) for p in proxies]
+    cached: dict[str, dict] = {}
+    located: dict[str, dict] = {}
+    try:
+        cached, missing = ctx.geo.query_cache(ips)
+        if missing:
+            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
+            ctx.geo.save_cache(located)
+    except Exception:
+        logger.exception("代理服务队列 IP 归属查询失败")
+    geo_map = {**cached, **located}
+    return web.json_response({
+        "geo": {bind_of(p): _geo_payload(geo_map.get(proxy_to_ip(p))) for p in proxies},
+    })
 
 
 async def _group(request: web.Request) -> web.Response:
@@ -332,15 +430,8 @@ async def _proxy_history(request: web.Request) -> web.Response:
 
 # ------------------------------------------------------------------ 测速
 def _find_proxy_by_bind(ctx: PanelContext, bind: str) -> str | None:
-    """从 standby 队列 + 锁定代理中按 bind（地址，不含 scheme）反查完整 proxy URL"""
-    for p in ctx.standby.standby_proxies(truncate=False):
-        if bind_of(p) == bind:
-            return p
-    if ctx.standby.is_locked():
-        for p in ctx.standby.upstream_proxies():
-            if bind_of(p) == bind:
-                return p
-    return None
+    """从面板队列行（含锁定代理）按 bind（地址，不含 scheme）反查完整 proxy URL"""
+    return next((p for p in _standby_rows(ctx) if bind_of(p) == bind), None)
 
 
 def _simplify_speed_result(d: dict | None) -> dict | None:
@@ -680,6 +771,7 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/", _index)
     app.router.add_get("/api/status", _status)
     app.router.add_get("/api/status/history", _status_history_route)
+    app.router.add_get("/api/standby/series", _standby_series_route)
     app.router.add_get("/api/logs", _logs)
     app.router.add_post("/api/logs/clear", _logs_clear)
     app.router.add_get("/api/group/{name}", _group)
@@ -687,9 +779,10 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/api/proxy/history", _proxy_history)
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
     app.router.add_post("/api/proxy/purity", _do_purity)
-    # geoip.enabled=false 时不注册地图路由（前端按 /api/status 的 geo_enabled 隐藏区块）
+    # geoip.enabled=false 时不注册地图/归属路由（前端按 /api/status 的 geo_enabled 跳过）
     if ctx.geo is not None:
         app.router.add_get("/api/geo/map", _geo_map)
+        app.router.add_get("/api/standby/geo", _standby_geo)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)
     app.router.add_post("/api/proxy/move", _do_proxy_move)

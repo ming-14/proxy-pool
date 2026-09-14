@@ -261,19 +261,19 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
     }
   }
 
-  /** 点击容器外空白 → 清空选中；排除交互控件与浮动层（菜单/浮窗/模态/框选矩形） */
-  function onDocMouseDown(e: MouseEvent) {
-    if (e.button !== 0) return;
-    const container = opts.container.value;
-    if (!container || container.contains(e.target as Node)) return;
-    if (
-      (e.target as HTMLElement).closest(
-        'button, input, select, textarea, .context-menu, .proxy-tooltip, .modal-overlay, .marquee-select',
-      )
+/** 点击容器外空白 → 清空选中；排除交互控件与浮动层（菜单/模态/框选矩形） */
+function onDocMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return;
+  const container = opts.container.value;
+  if (!container || container.contains(e.target as Node)) return;
+  if (
+    (e.target as HTMLElement).closest(
+      'button, input, select, textarea, .context-menu, .modal-overlay, .marquee-select',
     )
-      return;
-    clear();
-  }
+  )
+    return;
+  clear();
+}
 
   onMounted(() => {
     opts.container.value?.addEventListener('mousedown', onMouseDown);

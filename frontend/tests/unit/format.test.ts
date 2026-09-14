@@ -4,6 +4,7 @@ import {
   bindOf,
   displayCountryName,
   escapeHtml,
+  fmtAge,
   fmtBytes,
   fmtBytesSpaced,
   fmtDuration,
@@ -36,6 +37,19 @@ describe('fmtDuration', () => {
     expect(fmtDuration(59)).toBe('59s');
     expect(fmtDuration(125)).toBe('2m 5s');
     expect(fmtDuration(120)).toBe('2m');
+  });
+});
+
+describe('fmtAge', () => {
+  it('粗粒度时长：分钟/小时/天（秒级粒度不进展示）', () => {
+    expect(fmtAge(null)).toBe('-');
+    expect(fmtAge(-1)).toBe('-');
+    expect(fmtAge(0)).toBe('不到 1 分钟');
+    expect(fmtAge(59)).toBe('不到 1 分钟');
+    expect(fmtAge(600)).toBe('10 分钟');
+    expect(fmtAge(3600)).toBe('1 小时 0 分');
+    expect(fmtAge(9000)).toBe('2 小时 30 分');
+    expect(fmtAge(90000)).toBe('1 天 1 小时');
   });
 });
 

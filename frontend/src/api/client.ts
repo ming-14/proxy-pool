@@ -6,9 +6,10 @@ import type {
   GeoMapData,
   GroupDetail,
   LogsResponse,
-  ProxyHistory,
   ScheduleSettings,
   SpeedTestResult,
+  StandbyGeoMap,
+  StandbySeries,
   StatusHistory,
   StatusSnapshot,
 } from '@/types/api';
@@ -51,6 +52,13 @@ export const api = {
   statusHistory: (since?: number) =>
     request<StatusHistory>(`/api/status/history${since ? `?since=${encodeURIComponent(since)}` : ''}`),
 
+  /** 队列逐代理序列（行内趋势图）：缺省全量，since 为增量游标 */
+  standbySeries: (since?: number) =>
+    request<StandbySeries>(`/api/standby/series${since ? `?since=${encodeURIComponent(since)}` : ''}`),
+
+  /** 队列代理归属地（bind → geo，5 分钟节拍拉取；geoip 关闭时该路由不存在） */
+  standbyGeo: () => request<StandbyGeoMap>('/api/standby/geo'),
+
   group: (name: string) => request<GroupDetail>(`/api/group/${encodeURIComponent(name)}`),
 
   addProxy: (group: string, proxies: string[]) =>
@@ -75,9 +83,6 @@ export const api = {
 
   settings: (patch: Partial<ScheduleSettings>) =>
     post<{ ok: boolean; changed: Record<string, unknown>; settings: ScheduleSettings }>('/api/settings', patch),
-
-  proxyHistory: (bind: string) =>
-    request<ProxyHistory>(`/api/proxy/history?bind=${encodeURIComponent(bind)}`),
 
   speedTest: (bind: string) => post<SpeedTestResult>('/api/proxy/speedtest', { bind }),
 

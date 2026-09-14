@@ -31,7 +31,7 @@ from collections import deque
 from typing import Callable, NamedTuple
 
 from src.domain.proxy_pool import ProxyPool, LOCKED_GROUP
-from src.domain.models import bind_of
+from src.domain.models import bind_of, proxy_type
 from src.use_cases.network_gate import LocalNetworkGate
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
@@ -62,16 +62,12 @@ class StandbySample(NamedTuple):
 class ProxyLatencySample(NamedTuple):
     """单代理延时采样点（per-proxy latency history）
 
-    heartbeat/retry_probe 成功时记一笔，按 metrics_window 时间窗口保留。
+    每次心跳/补测探测记一笔：成功记响应时间，失败记 None——失败也是探测结果，
+    缺采样点会让前端曲线被拉直、也算不出成功率。按 metrics_window 时间窗口保留。
     key 为 bind_of(proxy)（地址，不含 scheme），与 per-proxy 流量历史统一 key。
     """
     ts: float                  # 采样时间戳
-    latency: float             # 探测响应时间（秒）
-
-
-def _proxy_type(proxy: str) -> str:
-    """提取代理类型（scheme 前缀，池内代理均已带 scheme）"""
-    return proxy.split("://", 1)[0]
+    latency: float | None      # 探测响应时间（秒），None = 该轮探测失败
 
 
 class StandbyQueueUseCase:
@@ -144,8 +140,8 @@ class StandbyQueueUseCase:
         """
         return list(self._per_proxy_latency_history.get(bind, ()))
 
-    def _append_per_proxy_latency(self, proxy: str, latency: float) -> None:
-        """记录单代理延时采样点并按时间窗口清理过期点（heartbeat/retry_probe 成功时调）"""
+    def _append_per_proxy_latency(self, proxy: str, latency: float | None) -> None:
+        """记录单代理延时采样点并按时间窗口清理过期点（每次探测调用，失败记 None）"""
         bind = bind_of(proxy)
         dq = self._per_proxy_latency_history.get(bind)
         if dq is None:
@@ -316,7 +312,7 @@ class StandbyQueueUseCase:
                 if len(candidates) >= probe_count:
                     break
                 if (info["group"] == group_name and p not in candidates
-                        and p not in current_standby and _proxy_type(p) in allowed_types):
+                        and p not in current_standby and proxy_type(p) in allowed_types):
                     candidates.append(p)
             if len(candidates) >= probe_count:
                 break
@@ -422,6 +418,7 @@ class StandbyQueueUseCase:
             else:
                 reason = info.get("error") if info else "无探测结果"
                 self._record.record_fail(proxy)
+                self._append_per_proxy_latency(proxy, None)  # 失败也记采样点：曲线断开 + 成功率可算
                 if locked or self._pool.is_pinned(proxy):
                     # 锁定/固定代理：只计数，不补测、不拉黑、不移出，下轮心跳再探测
                     logger.warning("代理 %s 心跳失败: %s, 锁定/固定代理仅计数 (consecutive_fails=%d)",
@@ -468,6 +465,7 @@ class StandbyQueueUseCase:
                     logger.info("代理 %s 补测成功, 恢复使用", proxy)
                     return
                 self._record.record_fail(proxy)
+                self._append_per_proxy_latency(proxy, None)  # 补测失败同样记采样点
                 if self._pool.is_pinned(proxy):
                     # 固定代理不拉黑（防御：固定代理不进 _retrying，正常不会被补测）
                     logger.warning("代理 %s 补测失败, 固定代理不拉黑 (consecutive_fails=%d)",

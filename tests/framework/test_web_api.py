@@ -32,6 +32,8 @@ from src.framework.config import (
 from src.framework.web.control import ServeControl
 from src.framework.web.api import build_app, PanelContext
 from src.framework import logbuffer
+from src.use_cases.standby import ProxyLatencySample
+from src.interfaces.proxy_server import TrafficSample
 
 
 def make_pool():
@@ -173,6 +175,84 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data2["standby_history"] == []
         assert data2["traffic_history"] == []
 
+    async def test_status_history_invalid_since(self):
+        """since 非数字 → 400（不落成 500）"""
+        resp = await self.client.get("/api/status/history?since=abc")
+        assert resp.status == 400
+
+    async def test_standby_series_full_and_incremental(self):
+        """逐代理序列：首次全量（含失败点 latency=None），游标增量只返回新点"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.standby.per_proxy_latency_history = MagicMock(return_value=[
+            ProxyLatencySample(1000.0, 0.2), ProxyLatencySample(1002.0, None)])
+        self.server.per_proxy_traffic_history = MagicMock(return_value=[
+            TrafficSample(1000.0, 10, 20), TrafficSample(1002.0, 30, 40)])
+        resp = await self.client.get("/api/standby/series")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["cursor"] == 1002.0
+        s = data["series"]["1.2.3.4:8080"]
+        assert s["lat"] == [[1000.0, 0.2], [1002.0, None]]
+        assert s["up"] == [[1000.0, 10], [1002.0, 30]]
+        assert s["down"] == [[1000.0, 20], [1002.0, 40]]
+        # 增量：窗口内无新点 → 序列为空、游标保持不变
+        data2 = await (await self.client.get("/api/standby/series?since=1002")).json()
+        assert data2["series"] == {}
+        assert data2["cursor"] == 1002.0
+
+    async def test_standby_series_includes_locked_proxy(self):
+        """锁定代理已移出队列组，序列仍须下发（面板首行也要画图）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.pool.move_proxy("http://1.2.3.4:8080", LOCKED_GROUP, consecutive_fails=0)
+        self.standby.per_proxy_latency_history = MagicMock(
+            return_value=[ProxyLatencySample(1000.0, 0.2)])
+        data = await (await self.client.get("/api/standby/series")).json()
+        assert list(data["series"]) == ["1.2.3.4:8080"]
+
+    async def test_standby_series_skips_proxy_without_data(self):
+        """既无延时也无流量的代理不下发空序列（省 payload）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        data = await (await self.client.get("/api/standby/series")).json()
+        assert data["series"] == {}
+        assert data["cursor"] == 0.0
+
+    async def test_standby_series_invalid_since(self):
+        resp = await self.client.get("/api/standby/series?since=abc")
+        assert resp.status == 400
+
+    async def test_standby_geo_from_cache(self):
+        """队列归属地按 bind 下发（前端行内展示国家/城市）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.geo.query_cache = MagicMock(return_value=(
+            {"1.2.3.4": {"country": "美国", "country_code": "US",
+                         "province": "加州", "city": "洛杉矶", "lat": 34.0, "lng": -118.0}}, []))
+        resp = await self.client.get("/api/standby/geo")
+        assert resp.status == 200
+        geo = (await resp.json())["geo"]
+        assert geo["1.2.3.4:8080"] == {"country": "美国", "country_code": "US",
+                                       "province": "加州", "city": "洛杉矶"}
+
+    async def test_standby_geo_missing_triggers_locate(self):
+        """缓存未命中 → executor 定位并落缓存；未解析出的 IP 下发 None"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:8080", consecutive_fails=0)
+        self.ctx.geo.query_cache = MagicMock(return_value=({}, ["1.2.3.4", "5.6.7.8"]))
+        self.ctx.geo.locate = MagicMock(return_value={
+            "1.2.3.4": {"country": "日本", "country_code": "JP", "province": None, "city": "东京"}})
+        data = await (await self.client.get("/api/standby/geo")).json()
+        self.ctx.geo.locate.assert_called_once_with(["1.2.3.4", "5.6.7.8"])
+        self.ctx.geo.save_cache.assert_called_once()
+        assert data["geo"]["1.2.3.4:8080"]["city"] == "东京"
+        assert data["geo"]["5.6.7.8:8080"] is None
+
+    async def test_standby_geo_locate_failure_does_not_break(self):
+        """归属定位异常时返回空映射（面板归位列显示 -，不影响其余功能）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.ctx.geo.query_cache = MagicMock(side_effect=RuntimeError("mmdb 挂了"))
+        resp = await self.client.get("/api/standby/geo")
+        assert resp.status == 200
+        assert (await resp.json())["geo"] == {"1.2.3.4:8080": None}
+
     async def test_status_with_purity_cache(self):
         """status 快照带 purity 缓存数据（历史有数据时前端直接显示 tag，无需手动点击）"""
         self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
@@ -194,6 +274,28 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert resp.status == 200
         data = await resp.json()
         assert data["standby"][0]["purity"] is None
+
+    async def test_status_standby_entry_fields(self):
+        """队列行带协议/入队时间（面板展示代理信息，不再只有地址与延迟）"""
+        self.pool.add_to_group(STANDBY_GROUP, "socks5://1.2.3.4:1080",
+                               consecutive_fails=0, latency=0.5)
+        row = (await (await self.client.get("/api/status")).json())["standby"][0]
+        assert row["protocol"] == "socks5"
+        assert row["pinned"] is False
+        assert row["joined_at"] is not None
+        # source_group 不下发：move_proxy 不保留它，队列行取值恒为空（发死字段无意义）
+        assert "source_group" not in row
+
+    async def test_status_locked_row_first_and_deduped(self):
+        """锁定代理置首；队列组留有历史副本时不重复出行（前端以 proxy 为 :key）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:8080", consecutive_fails=0)
+        self.pool.move_proxy("http://1.2.3.4:8080", LOCKED_GROUP, consecutive_fails=0)
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        data = await (await self.client.get("/api/status")).json()
+        assert [r["proxy"] for r in data["standby"]] == ["http://1.2.3.4:8080", "http://5.6.7.8:8080"]
+        assert [r["locked"] for r in data["standby"]] == [True, False]
+        assert data["locked_proxy"] == "http://1.2.3.4:8080"
 
     async def test_logs_endpoint(self):
         """日志端点：全量拉取 / since 增量过滤 / entry 结构契约"""
@@ -586,7 +688,7 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
 
 
 class WebApiGeoDisabledTest(unittest.IsolatedAsyncioTestCase):
-    """geoip.enabled=false 场景：geo=None 时不注册地图路由、组明细不带 geo 字段"""
+    """geoip.enabled=false 场景：geo=None 时不注册地图/归属路由、归属字段恒为 null"""
 
     async def asyncSetUp(self):
         self.pool = make_pool()
@@ -603,6 +705,11 @@ class WebApiGeoDisabledTest(unittest.IsolatedAsyncioTestCase):
         resp = await self.client.get("/api/geo/map")
         assert resp.status == 404
 
+    async def test_standby_geo_route_not_registered(self):
+        """队列归属路由未注册：/api/standby/geo 返回 404（前端按 geo_enabled 跳过）"""
+        resp = await self.client.get("/api/standby/geo")
+        assert resp.status == 404
+
     async def test_status_geo_enabled_false(self):
         """status 快照 geo_enabled=false，前端据此隐藏地图区块"""
         resp = await self.client.get("/api/status")
@@ -610,13 +717,14 @@ class WebApiGeoDisabledTest(unittest.IsolatedAsyncioTestCase):
         data = await resp.json()
         assert data["geo_enabled"] is False
 
-    async def test_group_detail_without_geo_field(self):
-        """组明细不带 geo 字段（归属查询跳过）"""
+    async def test_group_detail_geo_is_null(self):
+        """组明细的 geo 恒为 null（归属查询跳过）"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=0)
         resp = await self.client.get("/api/group/default-http")
         assert resp.status == 200
         data = await resp.json()
-        for p in data["proxies"]:
-            assert "geo" not in p
+        assert len(data["proxies"]) == 1
+        assert data["proxies"][0]["geo"] is None
 
 
 if __name__ == "__main__":

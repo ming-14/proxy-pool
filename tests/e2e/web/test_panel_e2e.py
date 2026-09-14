@@ -1,7 +1,7 @@
 """Web 面板浏览器 e2e：真实 serve 子进程（端口见 conftest，默认空闲端口）+ mock 上游代理 + Playwright Chromium
 
 覆盖：壳层导航/主题/暂停轮询、仪表盘 KPI 与三趋势图与地图、代理组（过滤/排序/添加/
-右键拉黑还原/框选/导出）、队列（表格/固定置顶/锁定/右键菜单夹取/hover 浮窗）、
+右键拉黑还原/框选/导出）、队列（表格/行下质量带常显与低质量标记/固定置顶/锁定/右键菜单夹取）、
 设置页（调度参数保存）、代理源（暂停恢复）。截图输出到 build-artifacts/e2e-screenshots/
 供与参考图人工比对。
 """
@@ -290,22 +290,85 @@ class TestStandby:
         n = page.locator('[data-testid="sb-table"] tbody tr[data-proxy]').count()
         assert n == api_status()["standby_count"] >= 1
 
-    def test_hover_tooltip_with_charts(self, page, shot):
-        code = page.locator('[data-testid="sb-table"] tbody tr code').first
-        code.hover()
-        tip = page.locator(".proxy-tooltip")
-        tip.wait_for(state="visible", timeout=5000)
-        assert tip.locator("canvas").count() == 2
-        assert "测速" in tip.inner_text()
-        # 定位必须在视口内（曾因 left/top 拼出非法值 "258px}" 被浏览器忽略，
-        # 浮窗落回静态位置；mock 行数少恰好可见，真实数据下移出屏幕）
-        box = tip.bounding_box()
-        vp = page.evaluate("[innerWidth, innerHeight]")
-        assert 0 <= box["x"] and box["x"] + box["width"] <= vp[0]
-        assert 0 <= box["y"] and box["y"] + box["height"] <= vp[1]
-        shot("tooltip-dark")
-        page.mouse.move(5, 5)
-        tip.wait_for(state="hidden", timeout=5000)
+    def test_inline_quality_strip(self, page, shot):
+        """质量内联在每行下方：不再有悬浮浮窗，延时趋势默认展开且可见"""
+        rows = standby_rows(page)
+        assert rows.count() >= 1
+        assert page.locator(".proxy-tooltip").count() == 0, "悬浮浮窗已移除"
+        # 序列是异步增量拉取的：先确认后端有采样下发，再等每行都画出曲线
+        # （serve 的 fill 随时可能补入新代理，其首帧还没有采样点，故等数量对齐而不是等一条就断言）
+        series = requests.get(f"{BASE_URL}/api/standby/series", timeout=5).json()["series"]
+        assert any("lat" in s for s in series.values()), f"后端未下发延时序列: {series}"
+        page.wait_for_function(
+            """() => {
+                const rows = document.querySelectorAll('[data-testid=sb-table] tbody tr[data-proxy]').length;
+                const lines = document.querySelectorAll('[data-testid=strip-latency] .sparkline').length;
+                return rows > 0 && rows === lines;
+            }""",
+            timeout=15000,
+        )
+        assert page.locator('[data-testid="strip-latency"] .sparkline').count() == rows.count()
+        # 摘要行带代理信息：协议 + 入队时长（不需要点进去看）
+        meta = rows.first.locator(".proxy-meta").inner_text()
+        assert "http" in meta and "入队" in meta
+        box = page.locator('[data-testid="strip-latency"] .sparkline').first.bounding_box()
+        assert box["width"] > 100 and box["height"] > 20, "行内趋势图应有可用尺寸"
+        shot("standby-inline")
+
+    def test_quality_strip_always_visible(self, page):
+        """质量带常显：四个指标区块都渲染；无指标开关，唯一的控制是收起/展开"""
+        rows = standby_rows(page)
+        for block in ("strip-latency", "strip-traffic", "strip-side"):
+            assert page.locator(f'[data-testid="{block}"]').count() == rows.count(), block
+        # 未采集的行显示占位而非留空
+        assert page.locator('[data-testid="strip-purity"]').count() == rows.count()
+        assert page.locator('[data-testid="strip-speedtest"]').count() == rows.count()
+        # 逐项指标开关已移除（只保留收起/展开）
+        assert page.locator("[data-testid^='metric-']").count() == 0
+
+        expanded_h = rows.first.bounding_box()["height"]
+        page.click('[data-testid="btn-toggle-strip"]')
+        page.wait_for_timeout(200)
+        assert page.locator('[data-testid="strip-latency"]').count() == 0
+        assert rows.first.bounding_box()["height"] < expanded_h, "收起后行高应回落"
+        page.click('[data-testid="btn-toggle-strip"]')
+        page.wait_for_timeout(200)
+        assert page.locator('[data-testid="strip-latency"]').count() == rows.count()
+
+    def test_context_menu_move_out(self, page):
+        """右键「移出」把该行代理移到目标组，列表随即刷新掉这一行
+
+        目标选 staging：它是非可请求组、不在队列填充候选里，代理不会立刻被 fill 抢回队列
+        （移到 trusted/default-* 会被 fill 当作候选重新补入，断言必然不稳）。
+        """
+        staging = next(n for n, g in api_status()["groups"].items() if g["kind"] == "staging")
+        row = standby_rows(page).first
+        proxy = row.get_attribute("data-proxy")
+        try:
+            row.locator("code").first.click(button="right")
+            page.wait_for_selector(".context-menu")
+            page.hover(".context-menu-item:has-text('移出')")
+            page.wait_for_selector(".context-submenu .context-menu-item")
+            page.click(f".context-submenu .context-menu-item:has-text('{api_status()['groups'][staging]['label']}')")
+            page.wait_for_selector(".toast-success", timeout=8000)
+            assert proxy in group_proxies(staging), f"代理未落到 {staging}"
+            page.wait_for_function(
+                "p => !document.querySelector(`[data-testid=sb-table] tbody tr[data-proxy=\"${p}\"]`)",
+                arg=proxy, timeout=8000,
+            )
+        finally:
+            # 还原：从 staging 移回队列（staging 是代理组页用例的数据源，不能少行）
+            requests.post(
+                f"{BASE_URL}/api/proxy/move",
+                json={"proxies": [proxy], "target_group": standby_group_name()}, timeout=5,
+            )
+
+    def test_flagged_row_marked(self, page):
+        """低质量行带 data-flagged 标记与原因标签（画的就是判定依据）"""
+        # 触发方式无关：只验证标记与原因标签的一致性（无质量问题时不出现标记）
+        flagged = page.locator('[data-testid="sb-table"] tbody tr[data-flagged]')
+        for i in range(flagged.count()):
+            assert flagged.nth(i).locator(".badge-danger").count() >= 1
 
     def test_pin_unpin(self, page):
         """固定后立即置顶（写动作穿透顺序冻结），解固后固定标记消失"""
@@ -364,16 +427,11 @@ class TestStandby:
         page.mouse.click(code["x"] + code["width"] / 2, code["y"] + code["height"] / 2, button="right")
         page.wait_for_selector(".context-menu", state="visible")
         menu = page.locator(".context-menu").bounding_box()
-        # 第二次右键落在下一行最右单元格：既能避开已展开的菜单，点击点又会让菜单纵向溢出视口
-        tds = rows.nth(1).locator("td")
-        boxes = []
-        for i in range(tds.count()):
-            b = tds.nth(i).bounding_box()
-            if b:
-                boxes.append(b)
-        cell = max(boxes, key=lambda b: b["x"])
-        cell_x, cell_y = cell["x"] + cell["width"] / 2, cell["y"] + cell["height"] / 2
-        assert cell_x > menu["x"] + menu["width"], "候选单元格落在菜单内，第二次右键会命中菜单"
+        # 第二次右键落在同一块的下部左侧：既能避开已展开的菜单，点击点又会让菜单纵向溢出视口
+        block = rows.first.locator("td.pblock").bounding_box()
+        cell_x = block["x"] + 20
+        cell_y = block["y"] + block["height"] - 6
+        assert cell_x < menu["x"], "候选点击点落在菜单内，第二次右键会命中菜单"
         assert cell_y + menu["height"] > vh, f"候选点击点 y={cell_y:.0f} 不会让菜单溢出视口（高 {vh}），用例失效"
         page.mouse.click(cell_x, cell_y, button="right")
         wait_layout_stable(page, ".context-menu")  # slideIn 动画（0.1s）结束后再量
@@ -430,7 +488,10 @@ class TestStandby:
         assert page.input_value('[data-testid="set-interval"]') == "2"
 
     def test_standby_dark_screenshot(self, page, shot):
+        """暗色截图：质量带全指标常显（含纯洁度/测速占位）供人工比对"""
         page.click('[data-testid="btn-theme"]')
+        # 等序列首拉完成再截图，否则参考图里是"暂无采样"空图
+        page.wait_for_selector('[data-testid="strip-latency"] .sparkline', timeout=15000)
         shot("standby-dark")
         page.click('[data-testid="btn-theme"]')
 

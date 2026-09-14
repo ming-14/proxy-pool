@@ -749,11 +749,13 @@ class TestPerProxyLatencyHistory(unittest.TestCase):
         self.assertEqual(len(c.per_proxy_latency_history("1.2.3.4:8080")), 1)
         self.assertEqual(len(c.per_proxy_latency_history("http://1.2.3.4:8080")), 0)
 
-    def test_heartbeat_failure_not_recorded(self):
-        """heartbeat 失败不记延时历史"""
+    def test_heartbeat_failure_records_none(self):
+        """heartbeat 失败也记一笔（latency=None）：否则曲线被拉直、算不出成功率"""
         c = make_standby(self.pool, make_check(set()))
         asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
-        self.assertEqual(c.per_proxy_latency_history("1.2.3.4:8080"), [])
+        h = c.per_proxy_latency_history("1.2.3.4:8080")
+        self.assertEqual(len(h), 1)
+        self.assertIsNone(h[0].latency)
 
     def test_multiple_heartbeats_accumulate(self):
         """多轮 heartbeat 各记一笔"""
@@ -773,6 +775,17 @@ class TestPerProxyLatencyHistory(unittest.TestCase):
         h = c.per_proxy_latency_history("1.2.3.4:8080")
         self.assertEqual(len(h), 1)
         self.assertAlmostEqual(h[0].latency, 0.6)
+
+    def test_retry_probe_failure_records_none(self):
+        """retry_probe 补测失败同样记一笔（latency=None）"""
+        # 失败计数置于阈值前一位：本次失败即达阈值拉黑，补测只跑一轮（控时）
+        self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"][
+            "consecutive_fails"] = MAX_CONSECUTIVE_FAILS - 1
+        c = make_standby(self.pool, make_check(set()))
+        asyncio.run(c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3))
+        h = c.per_proxy_latency_history("1.2.3.4:8080")
+        self.assertEqual(len(h), 1)
+        self.assertIsNone(h[0].latency)
 
     def test_window_cleanup(self):
         """超出 metrics_window 的采样点自动清理"""

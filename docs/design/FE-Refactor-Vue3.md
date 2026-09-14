@@ -1,5 +1,9 @@
 # 前端重构设计方案：Vue 3 + Vite + TypeScript + Tailwind 4
 
+> 本文是 Vue 重构当时的设计记录，保留原文以说明当时的决策。
+> 后续变更见 `FE-StandbyQualityInline.md`：其中队列页的 hover 统计浮窗与 `useProxyTooltip`
+> 已整体移除，改为行下质量带（本文提到的浮窗相关条目仅代表重构当期的形态）。
+
 > 决策已与用户对齐：统一 ECharts（含折线图，弃用 Chart.js）；顶层 `frontend/` 工程，
 > Vite 构建输出到 `src/framework/web/static/` 由 aiohttp 直接 serve；后端 /api/* 允许为
 > 前端体验微调；现有交互功能全部保留；Playwright E2E + Vitest 单测；默认端口改为
@@ -83,7 +87,7 @@ frontend/src/
   `GET /api/proxy/history?bind=`。文本选择冻结补丁**全部删除**——Vue 只更新绑定节点，
   重渲染不再重建 `<code>` 文本节点，选区天然不丢。
 
-## 3. 视觉还原基线（对照旧面板参考截图）
+## 3. 视觉还原基线（对照旧面板参考截图，本地存档不入库）
 
 折线图统一由共享 option 工厂产出，关键参数对齐 Chart.js 旧渲染效果：
 

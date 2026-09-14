@@ -36,6 +36,28 @@ export interface StandbyEntry {
   pinned: boolean;
   locked: boolean;             // 锁定为 pproxy 唯一上游（列表置顶显示，其余行灰显）
   purity: PurityInfo | null;   // 缓存的纯洁度（无缓存为 null）
+  protocol: string;            // 协议类型（scheme，如 http / socks5 / https）
+  joined_at: number | null;    // 进入队列组的时间（秒）；锁定行的值即锁定时刻
+}
+
+/** 单代理序列点：[时间戳（秒）, 值]；延时序列的值为 null 表示该轮探测失败 */
+export type SeriesPoint = [number, number | null];
+
+/** GET /api/standby/series?since=<ts> 的逐代理序列（缺字段表示该代理无此序列） */
+export interface StandbySeriesEntry {
+  lat?: SeriesPoint[];                // 延时采样（失败点值为 null，前端断线渲染）
+  up?: [number, number][];            // 累计上行字节（前端差分算速率）
+  down?: [number, number][];          // 累计下行字节
+}
+
+export interface StandbySeries {
+  cursor: number;                     // 本次下发点的最大时间戳（下轮 since）
+  series: Record<string, StandbySeriesEntry>;  // key 为 bind（地址，不含 scheme）
+}
+
+/** GET /api/standby/geo：bind → 归属地（未解析出为 null） */
+export interface StandbyGeoMap {
+  geo: Record<string, GeoInfo | null>;
 }
 
 export interface PurityInfo {

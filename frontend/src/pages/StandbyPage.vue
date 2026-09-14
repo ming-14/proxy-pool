@@ -1,39 +1,54 @@
 <script setup lang="ts">
 /**
- * 代理服务队列页：队列表格（框选/右键/固定/锁定/纯洁度）、待补测。
- * 锁定单一上游时锁定代理作为列表首行（行内「已锁定」标记，操作列只剩纯洁/解锁），
- * 其余行灰显且不可交互——不单独开锁定卡片。
+ * 代理服务队列页：每个代理一块 = 摘要行 + 行下质量带。
  *
- * 旧版 934 行补丁集（文本选区冻结×2、hover 冻结、innerHTML 重建跳过、focus 跳过…）
- * 由 Vue 响应式渲染天然消解；仅保留"选中/拖拽/悬浮时冻结顺序"这一 UX 语义
- * （mergeKeepOrder 纯函数），且写动作后由 refreshQueueOrder 穿透冻结即时回正。
+ * 摘要行：序号 / 代理（地址 + 协议·归属地·入队时长 + 纯洁度 tag）/ 延迟 / 连续失败 /
+ *         操作（纯洁 · 测速 · 固定 · 锁定）。
+ * 质量带：行下常显的行内趋势图（延时趋势 / 流量速率）与质量指标（纯洁度 / 测速结果）——
+ *         不做逐项显示开关（进页面即全部可见），只有「收起/展开图表」一个密度开关：
+ *         收起后回到单行密度便于纵览全队列，展开与否跨会话记住。
+ *         没有采样的区块显示"暂无采样/未检查/未测速"占位。
+ *
+ * 数据来源：
+ * - 状态（延迟/失败/固定/锁定）走 store 的 /api/status 2s 轮询；
+ * - 逐代理序列走 /api/standby/series 增量（同一 2s 节拍驱动，见 useStandbySeries）；
+ * - 归属地 5 分钟节流拉取（useStandbyGeo）；
+ * - 纯洁度与测速是手动触发的重操作，结果就地展示（不做后台轮询）。
+ *
+ * 顺序冻结：选中/拖拽/悬浮期间按旧顺序渲染——值随轮询更新、行不跑位（否则 2s 一轮的
+ * 延迟排序会把正在读的行从光标下挪走）；固定/锁定等写动作随后 refreshNow 穿透冻结回正。
+ *
+ * 锁定单一上游时锁定代理作为列表首行（行内「已锁定」标记，操作列只剩纯洁/测速/解锁），
+ * 其余行灰显且不可交互——不单独开锁定卡片。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
-import { checkPurity, purityCache, type PurityEntry } from '@/composables/usePurity';
 import {
-  cancelShow,
-  hideTooltip,
-  pinTooltip,
-  runSpeedTest,
-  scheduleHide,
-  scheduleShow,
-  showTooltip,
-  tooltipState,
-} from '@/composables/useProxyTooltip';
+  checkPurity,
+  purityCache,
+  purityScoreClass,
+  usageTypeShort,
+  type PurityEntry,
+} from '@/composables/usePurity';
+import { runSpeedTest, speedTestOf } from '@/composables/useSpeedTest';
+import { GEO_REFRESH_MS, geoText, refreshStandbyGeo, standbyGeo } from '@/composables/useStandbyGeo';
+import { refreshStandbySeries, seriesBuffers } from '@/composables/useStandbySeries';
 import ContextMenu from '@/components/ui/ContextMenu.vue';
 import PurityTags from '@/components/PurityTags.vue';
-import ProxyTooltip from '@/components/ProxyTooltip.vue';
-import { bindOf, fmtLatency } from '@/utils/format';
+import Sparkline from '@/components/Sparkline.vue';
+import { bindOf, fmtAge, fmtBytes, fmtLatency } from '@/utils/format';
 import { mergeKeepOrder } from '@/utils/merge';
+import { hasQualityIssue, qualityFlags, type QualityFlags } from '@/utils/quality';
+import { sparkStats, toRates, type NumericPoint } from '@/utils/series';
 import type { MenuItem } from '@/types/ui';
 import type { StandbyEntry } from '@/types/api';
 
 const store = useStatusStore();
 const toast = useToastStore();
+const GEO_TIP = `归属地每 ${Math.round(GEO_REFRESH_MS / 60000)} 分钟刷新`;
 
 const status = computed(() => store.status);
 const standbyList = computed(() => status.value?.standby ?? []);
@@ -42,8 +57,14 @@ const standbyList = computed(() => status.value?.standby ?? []);
 const hasLock = computed(() => store.lockedProxy !== null);
 const groups = computed(() => status.value?.groups ?? {});
 const pending = computed(() => status.value?.pending_retries ?? []);
+const geoEnabled = computed(() => status.value?.geo_enabled === true);
 
 const tableWrapRef = ref<HTMLElement | null>(null);
+/** 质量带展开态：收起后每代理只占一行，便于纵览全队列（跨会话记住选择） */
+const STRIP_KEY = 'proxy-pool-standby-strip';
+const stripExpanded = ref(localStorage.getItem(STRIP_KEY) !== '0');
+watch(stripExpanded, (v) => localStorage.setItem(STRIP_KEY, v ? '1' : '0'));
+/** 鼠标所在行：停在表内时冻结顺序（值照常更新，行不跑位） */
 const hoveredProxy = ref<string | null>(null);
 const menu = ref<{ items: MenuItem[]; x: number; y: number } | null>(null);
 const contextProxy = ref('');
@@ -72,9 +93,8 @@ const selection = useRowSelection<StandbyEntry>({
   getRows: () => displayStandby.value,
   proxyOf: (r) => r.proxy,
   indexAtY,
-  // 锁定期间队列行不参与框选/多选（等价旧版"整卡禁用"；锁定行的按钮与浮窗仍可用）
+  // 锁定期间队列行不参与框选/多选（等价旧版"整卡禁用"；锁定行的按钮仍可用）
   isExcludedTarget: (e) => hasLock.value || !!(e.target as HTMLElement).closest('code, button'),
-  onDragStart: hideTooltip, // 框选出现立即关浮窗
 });
 
 // ---------------- 顺序冻结（选中/拖拽/悬浮期间行不跑位） ----------------
@@ -93,6 +113,19 @@ watch(
 watch(hasLock, (locked) => {
   if (locked) selection.clear();
 });
+
+// ---------------- 逐代理序列 / 归属地（随 2s 状态节拍刷新） ----------------
+/** 状态对象每轮轮询都是新引用 → 以此节拍驱动序列增量与归属地（内部节流）刷新；
+ *  immediate 让进入页面时立刻取一次，不必等下一个 2s 轮询 */
+watch(
+  status,
+  (snap) => {
+    if (!snap) return;
+    void refreshStandbySeries(displayStandby.value.map((p) => bindOf(p.proxy)));
+    void refreshStandbyGeo(geoEnabled.value);
+  },
+  { immediate: true },
+);
 
 // ---------------- 队列动作 ----------------
 /**
@@ -146,8 +179,79 @@ async function doUnlock() {
   }
 }
 
-function purityOf(proxy: string): PurityEntry | undefined {
-  return purityCache.get(bindOf(proxy));
+// ---------------- 每块的质量视图（一次算好，模板直接取） ----------------
+interface RowView {
+  lat: NumericPoint[];
+  latNote: string;
+  traffic: { pts: NumericPoint[]; color: string }[];
+  trafficNote: string;
+  flags: QualityFlags;
+}
+
+const EMPTY_VIEW: RowView = {
+  lat: [],
+  latNote: '窗口内无探测',
+  traffic: [],
+  trafficNote: '窗口内无流量',
+  flags: { failing: false, slow: false, unstable: false, dirty: false },
+};
+
+const viewByBind = computed(() => {
+  const out = new Map<string, RowView>();
+  for (const row of displayStandby.value) {
+    const bind = bindOf(row.proxy);
+    const buf = seriesBuffers.get(bind);
+    const lat = buf?.lat ?? [];
+    const stats = sparkStats(lat);
+    const lastUp = buf?.up.length ? buf.up[buf.up.length - 1][1] : 0;
+    const lastDown = buf?.down.length ? buf.down[buf.down.length - 1][1] : 0;
+    const hasTraffic = !!buf?.up.length || !!buf?.down.length;
+    out.set(bind, {
+      lat,
+      latNote: stats.rate === null ? '窗口内无探测' : `成功率 ${stats.rate}%（${stats.total} 次探测）`,
+      traffic: [
+        { pts: toRates(buf?.up ?? []), color: 'var(--color-primary-600)' },   // 上行
+        { pts: toRates(buf?.down ?? []), color: 'var(--color-success)' },     // 下行
+      ],
+      trafficNote: hasTraffic ? `累计 ↑${fmtBytes(lastUp)} ↓${fmtBytes(lastDown)}` : '窗口内无流量',
+      flags: qualityFlags(row, stats.rate),
+    });
+  }
+  return out;
+});
+
+function viewOf(row: StandbyEntry): RowView {
+  return viewByBind.value.get(bindOf(row.proxy)) ?? EMPTY_VIEW;
+}
+
+/** 低质量标记（失败 / 慢 / 不稳 / 脏，阈值见 utils/quality.ts） */
+function isFlagged(row: StandbyEntry): boolean {
+  return hasQualityIssue(viewOf(row).flags);
+}
+
+/** 命中原因（行内小标签，让色条有解释） */
+function flagText(row: StandbyEntry): string {
+  const f = viewOf(row).flags;
+  return [
+    f.failing ? '失败' : '',
+    f.slow ? '慢' : '',
+    f.unstable ? '不稳' : '',
+    f.dirty ? '脏' : '',
+  ].filter(Boolean).join(' · ');
+}
+
+function geoTextOf(row: StandbyEntry): string | null {
+  return geoText(standbyGeo.get(bindOf(row.proxy)));
+}
+
+/** 入队时长（锁定行的 joined_at 是锁定时刻，语义不同故不展示） */
+function joinedTextOf(row: StandbyEntry): string | null {
+  if (row.locked || row.joined_at === null) return null;
+  return `入队 ${fmtAge(Date.now() / 1000 - row.joined_at)}`;
+}
+
+function purityEntryOf(row: StandbyEntry): PurityEntry | null | undefined {
+  return purityCache.get(bindOf(row.proxy)) ?? row.purity;
 }
 
 // ---------------- 右键菜单 ----------------
@@ -175,119 +279,66 @@ function buildMenuItems(): MenuItem[] {
   return items;
 }
 
-function onMenuAction(item: MenuItem) {
-  const pos = { x: menu.value?.x ?? 0, y: menu.value?.y ?? 0 };
+async function onMenuAction(item: MenuItem) {
   menu.value = null;
   const proxies = selection.getSelectedArray();
   const list = proxies.length ? proxies : [contextProxy.value];
+  if (item.action === 'speedtest') {
+    void runSpeedTest(bindOf(contextProxy.value)); // 测速不改队列，无需回正顺序
+    return;
+  }
   if (item.action === 'move' && item.group) {
-    api.moveProxy(list, item.group)
-      .then((d) => {
-        toast.success('已移出', `已将 ${d.count} 个代理移到 ${groups.value[item.group!]?.label ?? item.group}`);
-        selection.clear();
-      })
-      .catch((err: Error) => toast.error('移出失败', err.message));
-  } else if (item.action === 'blacklist') {
-    api.blacklist(list)
-      .then((d) => {
-        toast.success('已拉黑', `已将 ${d.count} 个代理加入黑名单`);
-        selection.clear();
-      })
-      .catch((err: Error) => toast.error('拉黑失败', err.message));
-  } else if (item.action === 'speedtest') {
-    const bind = bindOf(contextProxy.value);
-    showTooltip(bind, pos.x, pos.y, true);
-    runSpeedTest(bind);
+    const target = item.group;
+    try {
+      const d = await api.moveProxy(list, target);
+      toast.success('已移出', `已将 ${d.count} 个代理移到 ${groups.value[target]?.label ?? target}`);
+      selection.clear();
+      await refreshQueueOrder();
+    } catch (e) {
+      toast.error('移出失败', e instanceof Error ? e.message : String(e));
+    }
+    return;
+  }
+  if (item.action === 'blacklist') {
+    try {
+      const d = await api.blacklist(list);
+      toast.success('已拉黑', `已将 ${d.count} 个代理加入黑名单`);
+      selection.clear();
+      await refreshQueueOrder();
+    } catch (e) {
+      toast.error('拉黑失败', e instanceof Error ? e.message : String(e));
+    }
   }
 }
 
-// ---------------- 表格 code 交互（hover 浮窗 / 点击 pin / 拖拽隐藏） ----------------
+// ---------------- 悬浮判定（冻结顺序用） ----------------
 function onTableMouseover(e: MouseEvent) {
   const tr = (e.target as HTMLElement).closest('tbody tr');
   hoveredProxy.value = tr ? ((tr as HTMLElement).dataset.proxy || null) : null;
-  if (selection.isDragging()) {
-    cancelShow();
-    return;
-  }
-  const code = (e.target as HTMLElement).closest('code');
-  if (!code) {
-    cancelShow();
-    return;
-  }
-  if (window.getSelection()?.toString()) {
-    cancelShow();
-    return;
-  }
-  const bind = bindOf(code.textContent || '');
-  if (tooltipState.visible && tooltipState.bind === bind) return;
-  scheduleShow(bind, e.clientX, e.clientY);
 }
 
 function onTableMouseleave() {
   hoveredProxy.value = null;
-  cancelShow();
-  scheduleHide();
 }
 
-function onTableMousedown(e: MouseEvent) {
-  const code = (e.target as HTMLElement).closest('code');
-  if (!code) return;
-  const startX = e.clientX;
-  const startY = e.clientY;
-  let moved = false;
-  const onMove = (ev: MouseEvent) => {
-    if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) {
-      moved = true;
-      hideTooltip(); // 拖选文本：立即关浮窗
-      document.removeEventListener('mousemove', onMove, true);
-    }
-  };
-  const onUp = () => {
-    document.removeEventListener('mousemove', onMove, true);
-    document.removeEventListener('mouseup', onUp, true);
-    if (moved) return;
-    const bind = bindOf(code.textContent || '');
-    if (tooltipState.visible && tooltipState.bind === bind) pinTooltip();
-  };
-  document.addEventListener('mousemove', onMove, true);
-  document.addEventListener('mouseup', onUp, true);
-}
-
-// pin 状态下点击浮窗外部 → 关闭
-function onDocMousedown(e: MouseEvent) {
-  if (!tooltipState.pinned || !tooltipState.visible) return;
-  const target = e.target as HTMLElement;
-  if (target.closest('.proxy-tooltip')) return;
-  if (target.closest('#sb-table code')) return; // 表格 code 的 pin 由 onTableMousedown 处理
-  hideTooltip();
-}
-
-// 主区域滚动：非 pin 时关闭浮窗（fixed 定位不跟随滚动）
+/** 主区域滚动：收回右键菜单（菜单按视口固定定位，不跟随滚动） */
 function onMainScroll() {
-  if (tooltipState.visible && !tooltipState.pinned) hideTooltip();
+  menu.value = null;
 }
-
-// 队列刷新后：hover 的表格代理已离队且未 pin → 销毁浮窗
-watch(displayStandby, (list) => {
-  if (!tooltipState.visible || tooltipState.pinned || !tooltipState.bind) return;
-  if (!list.some((p) => bindOf(p.proxy) === tooltipState.bind)) hideTooltip();
-});
 
 onMounted(() => {
-  document.addEventListener('mousedown', onDocMousedown, true);
   document.getElementById('main-content')?.addEventListener('scroll', onMainScroll, { passive: true });
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', onDocMousedown, true);
   document.getElementById('main-content')?.removeEventListener('scroll', onMainScroll);
-  hideTooltip(); // 离开页面销毁浮窗（模块级状态跨路由保留测速结果）
+  hoveredProxy.value = null; // 离开页面解除冻结，避免串页后仍冻住顺序
 });
 </script>
 
 <template>
   <div class="space-y-5">
-    <!-- 队列卡片：锁定期间锁定行置顶高亮，其余行灰显且不可交互 -->
+    <!-- 队列卡片：每块 = 摘要行 + 行下质量带（锁定期间锁定行置顶高亮，其余行灰显） -->
     <div class="card">
       <div class="card-header">
         <div>
@@ -296,15 +347,20 @@ onBeforeUnmount(() => {
             {{ hasLock ? '已锁定单一上游：无论心跳是否成功，只使用此代理' : 'pproxy 队列' }}
           </div>
         </div>
+        <button
+          class="btn btn-ghost btn-sm"
+          data-testid="btn-toggle-strip"
+          :title="stripExpanded ? '收起质量带，回到单行密度' : '展开质量带，查看每行趋势图'"
+          @click="stripExpanded = !stripExpanded"
+        >{{ stripExpanded ? '收起图表' : '展开图表' }}</button>
       </div>
       <div
         id="sb-table"
         ref="tableWrapRef"
         data-testid="sb-table"
-        class="table-wrap border-0 rounded-t-none"
+        class="table-wrap sb-table border-0 rounded-t-none"
         @mouseover="onTableMouseover"
         @mouseleave="onTableMouseleave"
-        @mousedown="onTableMousedown"
         @contextmenu="onContextmenu"
       >
         <div v-if="!displayStandby.length" class="empty-state">
@@ -323,50 +379,120 @@ onBeforeUnmount(() => {
               :data-idx="i"
               :data-proxy="p.proxy"
               :data-locked="p.locked ? '1' : null"
+              :data-flagged="isFlagged(p) ? '1' : null"
               :class="{
                 selected: selection.has(p.proxy),
                 'row-locked': p.locked,
                 'row-dimmed': hasLock && !p.locked,
+                'row-flag': isFlagged(p),
               }"
             >
-              <td class="text-[var(--color-t-muted)] w-12">{{ i + 1 }}</td>
-              <td>
-                <code>{{ p.proxy }}</code>
-                <span
-                  v-if="p.locked"
-                  class="badge badge-warning ml-2"
-                  title="无论心跳是否成功，只使用此代理"
-                >已锁定</span>
-                <PurityTags :data="purityOf(p.proxy) ?? p.purity" />
-              </td>
-              <td>{{ fmtLatency(p.latency) }}</td>
-              <td>{{ p.consecutive_fails ?? 0 }}</td>
-              <td class="text-right whitespace-nowrap">
-                <button
-                  class="btn btn-ghost btn-sm"
-                  data-action="purity"
-                  :disabled="purityOf(p.proxy)?.status === 'checking'"
-                  @click="checkPurity(p.proxy)"
-                >
-                  {{ purityOf(p.proxy)?.status === 'checking' ? '检查中' : '纯洁' }}
-                </button>
-                <!-- 锁定行只能解锁（换锁需先解锁）；其余行固定/解固 + 锁定 -->
-                <button
-                  v-if="p.locked"
-                  class="btn btn-warning btn-sm"
-                  data-testid="unlock-btn"
-                  @click="doUnlock"
-                >解锁</button>
-                <template v-else>
-                  <button
-                    v-if="p.pinned"
-                    class="btn btn-ghost btn-sm"
-                    data-action="unpin"
-                    @click="doUnpin(p.proxy)"
-                  >解固</button>
-                  <button v-else class="btn btn-warning btn-sm" data-action="pin" @click="doPin(p.proxy)">固定</button>
-                  <button class="btn btn-danger btn-sm" data-action="lock" @click="doLock(p.proxy)">锁定</button>
-                </template>
+              <td colspan="5" class="pblock">
+                <div class="prow">
+                  <span class="prow-idx">{{ i + 1 }}</span>
+                  <div class="prow-proxy">
+                    <div>
+                      <code>{{ p.proxy }}</code>
+                      <span
+                        v-if="p.locked"
+                        class="badge badge-warning ml-2"
+                        title="无论心跳是否成功，只使用此代理"
+                      >已锁定</span>
+                      <PurityTags :data="purityEntryOf(p)" />
+                    </div>
+                    <div class="proxy-meta">
+                      <span>{{ p.protocol }}</span>
+                      <span v-if="geoEnabled" :title="GEO_TIP">{{ geoTextOf(p) ?? '归属未知' }}</span>
+                      <span v-if="joinedTextOf(p)">{{ joinedTextOf(p) }}</span>
+                      <span
+                        v-if="isFlagged(p)"
+                        class="badge badge-danger"
+                        :title="`低质量：${flagText(p)}`"
+                      >{{ flagText(p) }}</span>
+                    </div>
+                  </div>
+                  <div>{{ fmtLatency(p.latency) }}</div>
+                  <div>{{ p.consecutive_fails ?? 0 }}</div>
+                  <div class="prow-actions">
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      data-action="purity"
+                      :disabled="purityEntryOf(p)?.status === 'checking'"
+                      title="查询 IP 滥用置信度与类型（结果写入 30 天缓存）"
+                      @click="checkPurity(p.proxy)"
+                    >{{ purityEntryOf(p)?.status === 'checking' ? '检查中' : '纯洁' }}</button>
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      data-action="speedtest"
+                      :disabled="speedTestOf(bindOf(p.proxy))?.status === 'running'"
+                      title="Cloudflare 上传/下载测速（最多 10s）"
+                      @click="runSpeedTest(bindOf(p.proxy))"
+                    >{{ speedTestOf(bindOf(p.proxy))?.status === 'running' ? '测速中' : '测速' }}</button>
+                    <!-- 锁定行只能解锁（换锁需先解锁）；其余行固定/解固 + 锁定 -->
+                    <button
+                      v-if="p.locked"
+                      class="btn btn-warning btn-sm"
+                      data-testid="unlock-btn"
+                      @click="doUnlock"
+                    >解锁</button>
+                    <template v-else>
+                      <button
+                        v-if="p.pinned"
+                        class="btn btn-ghost btn-sm"
+                        data-action="unpin"
+                        @click="doUnpin(p.proxy)"
+                      >解固</button>
+                      <button v-else class="btn btn-warning btn-sm" data-action="pin" @click="doPin(p.proxy)">固定</button>
+                      <button class="btn btn-danger btn-sm" data-action="lock" @click="doLock(p.proxy)">锁定</button>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- 质量带：行内趋势图 + 质量指标（常显，仅整体收起/展开） -->
+                <div v-if="stripExpanded" class="pstrip">
+                  <div class="pstrip-chart" data-testid="strip-latency">
+                    <div class="pstrip-label">
+                      <span>延时趋势</span>
+                      <span class="pstrip-note">{{ viewOf(p).latNote }}</span>
+                    </div>
+                    <Sparkline :series="[{ pts: viewOf(p).lat, color: 'var(--color-primary-600)' }]" log />
+                  </div>
+                  <div class="pstrip-chart" data-testid="strip-traffic">
+                    <div class="pstrip-label">
+                      <span>流量速率</span>
+                      <span class="pstrip-note">{{ viewOf(p).trafficNote }}</span>
+                    </div>
+                    <Sparkline :series="viewOf(p).traffic" />
+                  </div>
+                  <div class="pstrip-side" data-testid="strip-side">
+                    <template v-if="purityEntryOf(p)?.status === 'checking'">
+                      <span class="badge badge-muted" data-testid="strip-purity">纯洁度检查中…</span>
+                    </template>
+                    <span v-else-if="purityEntryOf(p)?.error" class="badge badge-danger" data-testid="strip-purity">纯洁度检查失败</span>
+                    <template v-else-if="purityEntryOf(p)?.abuse_confidence_score != null">
+                      <span
+                        class="badge"
+                        :class="purityScoreClass(purityEntryOf(p)!.abuse_confidence_score!)"
+                        data-testid="strip-purity"
+                        title="滥用置信度（0-100，越低越干净）"
+                      >滥用 {{ purityEntryOf(p)!.abuse_confidence_score }}</span>
+                      <span class="badge badge-info" :title="purityEntryOf(p)!.usage_type || ''">
+                        {{ usageTypeShort(purityEntryOf(p)!.usage_type || '') }}
+                      </span>
+                    </template>
+                    <span v-else class="badge badge-muted" data-testid="strip-purity">纯洁度未检查</span>
+                    <span v-if="speedTestOf(bindOf(p.proxy))?.status === 'running'" class="badge badge-muted" data-testid="strip-speedtest">测速中…（最多 10s）</span>
+                    <span v-else-if="speedTestOf(bindOf(p.proxy))?.error" class="badge badge-danger" data-testid="strip-speedtest">
+                      测速失败：{{ speedTestOf(bindOf(p.proxy))!.error }}
+                    </span>
+                    <span v-else-if="speedTestOf(bindOf(p.proxy))?.result" class="badge badge-info" data-testid="strip-speedtest">
+                      ↓{{ speedTestOf(bindOf(p.proxy))!.result!.download?.best_mbps?.toFixed(1) ?? '-' }}
+                      ↑{{ speedTestOf(bindOf(p.proxy))!.result!.upload?.best_mbps?.toFixed(1) ?? '-' }} Mbps
+                      · {{ speedTestOf(bindOf(p.proxy))!.time }}
+                    </span>
+                    <span v-else class="badge badge-muted" data-testid="strip-speedtest">未测速</span>
+                  </div>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -391,6 +517,4 @@ onBeforeUnmount(() => {
     @close="menu = null"
     @select="onMenuAction"
   />
-
-  <ProxyTooltip />
 </template>

@@ -472,71 +472,119 @@ tbody tr.row-dimmed {
   animation: fadeIn 0.25s ease;
 }
 
-/* ---------------- 代理 hover 统计浮窗 ---------------- */
-.proxy-tooltip {
-  position: fixed;
-  z-index: 60;
-  width: 360px;
-  background-color: var(--color-card);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.08);
-  padding: 0.75rem;
-  animation: slideIn 0.15s ease;
+/* ---------------- 代理服务队列：行块（摘要行 + 行下质量带） ----------------
+   作用域限定队列表（.sb-table），不写 .table-wrap 级别的规则——代理组/代理源页也用
+   .table-wrap，作用于它的 table-layout/min-width/列宽会外溢改坏那两张表。
+   列宽单一来源：thead th 设定列宽（table-layout: fixed），摘要行 grid 引用同一组
+   变量 + 相同的单元格内边距 —— 两处列边界因此严格对齐，不存在两套宽度定义。 */
+.sb-table {
+  --sb-col-idx: 56px;
+  --sb-col-lat: 104px;
+  --sb-col-fails: 96px;
+  --sb-col-ops: 236px;
 }
-.dark .proxy-tooltip {
-  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
+.sb-table table {
+  table-layout: fixed;
+  min-width: 900px; /* 窄屏横向滚动，避免操作列按钮被压变形 */
 }
-.proxy-tooltip-header {
-  display: flex;
+.sb-table thead th:nth-child(1) { width: var(--sb-col-idx); }
+.sb-table thead th:nth-child(3) { width: var(--sb-col-lat); }
+.sb-table thead th:nth-child(4) { width: var(--sb-col-fails); }
+.sb-table thead th:nth-child(5) { width: var(--sb-col-ops); }
+
+/* 行块单元格：自身零内边距（内边距交给 grid 子项，保证列边界与表头一致） */
+.sb-table td.pblock {
+  padding: 0;
+  white-space: normal; /* 摘要行第二行元信息可换行 */
+}
+.prow {
+  display: grid;
+  grid-template-columns:
+    var(--sb-col-idx) minmax(0, 1fr) var(--sb-col-lat) var(--sb-col-fails) var(--sb-col-ops);
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-  font-size: 0.75rem;
 }
-.proxy-tooltip-header code {
-  font-size: 0.75rem;
-  font-weight: 600;
+.prow > * {
+  padding: 0.5rem 1rem; /* 与 th 的横向内边距一致 */
+  min-width: 0;
 }
-.proxy-tooltip-stats {
+.prow-idx {
   color: var(--color-t-muted);
-  white-space: nowrap;
 }
-.proxy-tooltip-close {
-  background: transparent;
-  border: none;
-  color: var(--color-t-muted);
-  cursor: pointer;
-  padding: 0.125rem 0.375rem;
-  border-radius: var(--radius-sm);
-  font-size: 0.875rem;
-  line-height: 1;
-  flex-shrink: 0;
-}
-.proxy-tooltip-close:hover {
-  color: var(--color-t-primary);
-  background-color: var(--color-hover);
-}
-.proxy-tooltip-section {
-  margin-bottom: 0.25rem;
-}
-.proxy-tooltip-label {
-  font-size: 0.7rem;
-  color: var(--color-t-muted);
-  margin-bottom: 0.125rem;
-}
-.proxy-tooltip-speedtest {
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--color-line);
-}
-.proxy-tooltip-speedtest-result {
-  margin-top: 0.375rem;
-  font-size: 0.75rem;
+.prow-proxy {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
+}
+.proxy-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.7rem;
+  color: var(--color-t-muted);
+}
+.proxy-meta .badge {
+  margin-left: 0;
+}
+.prow-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+/* 质量带：行内趋势图 + 质量指标（可折叠） */
+.pstrip {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem 0.6rem;
+  border-top: 1px dashed var(--color-line-light);
+  background-color: var(--color-hover);
+}
+.pstrip-chart {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.pstrip-label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-size: 0.7rem;
+  color: var(--color-t-secondary);
+  margin-bottom: 0.125rem;
+}
+.pstrip-note {
+  color: var(--color-t-muted);
+}
+.pstrip-side {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+
+/* 行内迷你趋势图（纯 SVG，见 Sparkline.vue） */
+.sparkline {
+  display: block;
+  width: 100%;
+}
+.sparkline-empty {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  font-size: 0.7rem;
+  color: var(--color-t-muted);
+}
+
+/* 低质量标记：整块左缘色条 + 淡底（面板"一页可见"时直接指向问题代理）。
+   锁定行已有自己的警示底色与左条，不叠加。 */
+.sb-table tbody tr.row-flag:not(.row-locked) td.pblock {
+  background-color: var(--color-danger-bg);
+  box-shadow: inset 3px 0 0 var(--color-danger);
+}
+.sb-table tbody tr.row-flag .pstrip {
+  background-color: transparent;
 }
 
 /* ---------------- 回到顶部 ---------------- */

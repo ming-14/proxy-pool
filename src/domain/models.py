@@ -20,6 +20,14 @@ def bind_of(proxy: str) -> str:
     return proxy.split("://", 1)[1] if "://" in proxy else proxy
 
 
+def proxy_type(proxy: str) -> str:
+    """提取代理协议类型（scheme 前缀，池内代理均已带 scheme）
+
+    "http://1.2.3.4:8080" → "http"；裸 ip:port 视为 http（与 normalize_proxy 的补全规则一致）。
+    """
+    return normalize_proxy(proxy).split("://", 1)[0]
+
+
 def to_proxy_dict(proxy: str) -> dict[str, str]:
     """构造 HTTP 客户端代理字典 {http, https}
 
