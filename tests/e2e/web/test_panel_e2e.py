@@ -375,13 +375,6 @@ class TestStandby:
                 json={"proxies": [proxy], "target_group": standby_group_name()}, timeout=5,
             )
 
-    def test_flagged_row_marked(self, page):
-        """低质量行带 data-flagged 标记与原因标签（画的就是判定依据）"""
-        # 触发方式无关：只验证标记与原因标签的一致性（无质量问题时不出现标记）
-        flagged = page.locator('[data-testid="sb-table"] tbody tr[data-flagged]')
-        for i in range(flagged.count()):
-            assert flagged.nth(i).locator(".badge-danger").count() >= 1
-
     def test_pin_unpin(self, page):
         """固定后立即置顶（写动作穿透顺序冻结），解固后固定标记消失"""
         row = standby_rows(page).last

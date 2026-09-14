@@ -532,13 +532,20 @@ tbody tr.row-dimmed {
   gap: 0.25rem;
 }
 
-/* 质量带：行内趋势图 + 质量指标（可折叠） */
+/* 质量带：行内趋势图 + 质量指标（可折叠）。
+   背景用内嵌面板色（--color-surface），与行 hover 高亮（--color-hover）区分——
+   否则 dark 下图表区与行高亮同色，看着像整行一直高亮 */
 .pstrip {
   display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.5rem 1rem 0.6rem;
   border-top: 1px dashed var(--color-line-light);
+  background-color: var(--color-surface);
+}
+/* 行 hover 时质量带随行一起高亮（整体一行）；选中行保持蓝底贯穿，
+   锁定行保持自己的警示橙底（摘要行已是橙底，质量带不变灰） */
+.sb-table tbody tr:hover:not(.selected):not(.row-locked) .pstrip {
   background-color: var(--color-hover);
 }
 .pstrip-chart {
@@ -597,13 +604,27 @@ tbody tr.row-dimmed {
   color: var(--color-t-muted);
 }
 
-/* 低质量标记：整块左缘色条 + 淡底（面板"一页可见"时直接指向问题代理）。
-   锁定行已有自己的警示底色与左条，不叠加。 */
-.sb-table tbody tr.row-flag:not(.row-locked) td.pblock {
-  background-color: var(--color-danger-bg);
-  box-shadow: inset 3px 0 0 var(--color-danger);
+/* 选中态蓝色覆盖整行（含质量带）：td.pblock 直接铺蓝底（不依赖 tr 背景透传），
+   .pstrip 自带灰底让位；左缘蓝条用绝对定位伪元素贯穿整行
+   （border-collapse: collapse 下 box-shadow 在 td/tr 上渲染不可靠，会断/不显示） */
+.sb-table tbody tr.selected,
+.sb-table tbody tr.selected:hover {
+  box-shadow: none;
 }
-.sb-table tbody tr.row-flag .pstrip {
+.sb-table tbody tr.selected td.pblock {
+  position: relative;
+  background-color: var(--color-primary-100);
+}
+.sb-table tbody tr.selected td.pblock::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background-color: var(--color-primary-500);
+}
+.sb-table tbody tr.selected .pstrip {
   background-color: transparent;
 }
 

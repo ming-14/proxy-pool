@@ -11,6 +11,8 @@
   --color-body: #f8fafc;
   --color-card: #ffffff;
   --color-hover: #f1f5f9;
+  /* 内嵌面板背景（质量带等卡片内区块）：比卡片深一级的灰，与 hover 色区分 */
+  --color-surface: #f8fafc;
 
   --color-t-primary: #0f172a;
   --color-t-secondary: #475569;
@@ -47,6 +49,8 @@
   --color-body: #0f172a;
   --color-card: #1e293b;
   --color-hover: #334155;
+  /* 内嵌面板背景（dark）：卡片与 hover 之间的暗档（#212e42），明显区分于行高亮 */
+  --color-surface: #212e42;
 
   --color-t-primary: #f8fafc;
   --color-t-secondary: #cbd5e1;

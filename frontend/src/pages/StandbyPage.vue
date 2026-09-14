@@ -41,7 +41,6 @@ import PurityTags from '@/components/PurityTags.vue';
 import Sparkline from '@/components/Sparkline.vue';
 import { bindOf, fmtAge, fmtBytes, fmtLatency } from '@/utils/format';
 import { mergeKeepOrder } from '@/utils/merge';
-import { hasQualityIssue, qualityFlags, type QualityFlags } from '@/utils/quality';
 import { seriesTimeWindow, sparkStats, toRates, type NumericPoint } from '@/utils/series';
 import type { MenuItem } from '@/types/ui';
 import type { StandbyEntry } from '@/types/api';
@@ -185,7 +184,6 @@ interface RowView {
   latNote: string;
   traffic: { pts: NumericPoint[]; color: string }[];
   trafficNote: string;
-  flags: QualityFlags;
 }
 
 /** 行内流量图左侧数据值：字节/秒（与行内「累计」同一套字节格式化） */
@@ -210,7 +208,6 @@ const EMPTY_VIEW: RowView = {
   latNote: '窗口内无探测',
   traffic: [],
   trafficNote: '窗口内无流量',
-  flags: { failing: false, slow: false, unstable: false, dirty: false },
 };
 
 const viewByBind = computed(() => {
@@ -231,7 +228,6 @@ const viewByBind = computed(() => {
         { pts: toRates(buf?.down ?? []), color: 'var(--color-success)' },     // 下行
       ],
       trafficNote: hasTraffic ? `累计 ↑${fmtBytes(lastUp)} ↓${fmtBytes(lastDown)}` : '窗口内无流量',
-      flags: qualityFlags(row, stats.rate),
     });
   }
   return out;
@@ -239,22 +235,6 @@ const viewByBind = computed(() => {
 
 function viewOf(row: StandbyEntry): RowView {
   return viewByBind.value.get(bindOf(row.proxy)) ?? EMPTY_VIEW;
-}
-
-/** 低质量标记（失败 / 慢 / 不稳 / 脏，阈值见 utils/quality.ts） */
-function isFlagged(row: StandbyEntry): boolean {
-  return hasQualityIssue(viewOf(row).flags);
-}
-
-/** 命中原因（行内小标签，让色条有解释） */
-function flagText(row: StandbyEntry): string {
-  const f = viewOf(row).flags;
-  return [
-    f.failing ? '失败' : '',
-    f.slow ? '慢' : '',
-    f.unstable ? '不稳' : '',
-    f.dirty ? '脏' : '',
-  ].filter(Boolean).join(' · ');
 }
 
 function geoTextOf(row: StandbyEntry): string | null {
@@ -396,12 +376,10 @@ onBeforeUnmount(() => {
               :data-idx="i"
               :data-proxy="p.proxy"
               :data-locked="p.locked ? '1' : null"
-              :data-flagged="isFlagged(p) ? '1' : null"
               :class="{
                 selected: selection.has(p.proxy),
                 'row-locked': p.locked,
                 'row-dimmed': hasLock && !p.locked,
-                'row-flag': isFlagged(p),
               }"
             >
               <td colspan="5" class="pblock">
@@ -418,14 +396,8 @@ onBeforeUnmount(() => {
                       <PurityTags :data="purityEntryOf(p)" />
                     </div>
                     <div class="proxy-meta">
-                      <span>{{ p.protocol }}</span>
                       <span v-if="geoEnabled" :title="GEO_TIP">{{ geoTextOf(p) ?? '归属未知' }}</span>
                       <span v-if="joinedTextOf(p)">{{ joinedTextOf(p) }}</span>
-                      <span
-                        v-if="isFlagged(p)"
-                        class="badge badge-danger"
-                        :title="`低质量：${flagText(p)}`"
-                      >{{ flagText(p) }}</span>
                     </div>
                   </div>
                   <div>{{ fmtLatency(p.latency) }}</div>
