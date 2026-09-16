@@ -187,10 +187,15 @@ def _status_snapshot(ctx: PanelContext) -> dict:
 def _status_history(ctx: PanelContext, since: float | None) -> dict:
     """队列指标/流量历史（按需拉取，避免全量下发撑大 /api/status）
 
-    since 指定时只返回 ts > since 的采样点（前端增量追加）；缺省返回窗口内全量。
-    流量历史体量大（METRICS_WINDOW=1800s / 2s 采样 ≈ 900 点）；队列指标窗口独立
-    （standby_metrics_window=60s ≈ 30 点）。两者 2 秒轮询 /api/status 均不携带，
-    改由前端低频增量拉取。
+    since 指定时只返回 ts > since 的采样点（前端增量追加）；缺省返回留存窗口内全量
+    （仪表盘按拿到的真实数据点绘制，不做窗口裁剪）。两份历史同按 METRICS_WINDOW 留存：
+    流量体量大（1800s / 2s 采样 ≈ 900 点），队列指标同量级；2 秒轮询 /api/status 均不
+    携带，改由前端低频增量拉取。
+
+    retention_window 为服务端**实际生效**的留存时长（秒，取本用例注入的窗口，而非另读
+    配置——注入值才是真正约束采样点保留时长的那个，两者一旦不一致，前端按错的值裁剪就
+    会丢掉后端仍持有的点）。前端本地缓冲按它裁剪：不硬编码点数上限，因为采样节奏可变
+    （心跳 2s，锁定单一上游时 30s），点数上限与留存时长不等价。
     """
     standby_history = [s._asdict() for s in ctx.standby.history() if since is None or s.ts > since]
     traffic_history = [s._asdict() for s in ctx.server.traffic_history() if since is None or s.ts > since]
@@ -198,21 +203,23 @@ def _status_history(ctx: PanelContext, since: float | None) -> dict:
     return {
         "standby_history": standby_history,
         "traffic_history": traffic_history,
+        "retention_window": ctx.standby.metrics_window,
         "traffic_total": {"upload": traffic_upload, "download": traffic_download},
     }
 
 
 def _standby_series(ctx: PanelContext, since: float | None) -> dict:
-    """队列逐代理序列（延时 + 累计流量），供面板每行内联绘制趋势
+    """队列逐代理序列（延时 + 累计流量），供队列页每行内联绘制趋势
 
-    since 指定时只返回 ts > since 的点（前端增量追加），缺省返回窗口内全量；
-    cursor 为本次下发点的最大时间戳，前端下轮以此为 since；window 为服务端采样窗口
-    （= metrics_window），前端本地缓冲据此裁剪，不再自己硬编码一份。
+    since 指定时只返回 ts > since 的点（前端增量追加），缺省返回留存窗口内全量；
+    cursor 为本次下发点的最大时间戳，前端下轮以此为 since；window 为队列页图表的
+    显示窗口（= chart_window），前端本地缓冲据此裁剪，不再自己硬编码一份。
+    注意：window 只服务队列页行内图；仪表盘走 /api/status/history，按真实数据点绘制。
 
     - 延时序列的 latency 为 None 表示该轮探测失败，前端据此断开曲线；
     - 流量为累计字节，前端差分算速率；
-    - 逐代理全量体量大（队列 30 × 2 序列 × 窗口内采样点数），故与 /api/status/history 同机制
-      走游标增量；代理离队后其序列自然不再出现，前端按现存行裁剪本地缓冲。
+    - 逐代理全量体量大（队列 30 × 2 序列 × 留存窗口内采样点数），故与 /api/status/history
+      同机制走游标增量；代理离队后其序列自然不再出现，前端按现存行裁剪本地缓冲。
     """
     series: dict[str, dict[str, list]] = {}
     cursor = since or 0.0
@@ -234,7 +241,7 @@ def _standby_series(ctx: PanelContext, since: float | None) -> dict:
             entry["down"] = [[s.ts, s.total_download] for s in traffic]
             cursor = max(cursor, traffic[-1].ts)
         series[bind] = entry
-    return {"cursor": cursor, "window": ctx.standby.metrics_window, "series": series}
+    return {"cursor": cursor, "window": ctx.standby.chart_window, "series": series}
 
 
 async def _group_detail(ctx: PanelContext, name: str) -> dict | None:

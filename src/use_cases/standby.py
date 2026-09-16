@@ -85,6 +85,7 @@ class StandbyQueueUseCase:
         fill_probe_multiplier: int,
         fill_probe_min_extra: int,
         metrics_window: float,
+        chart_window: float,
     ) -> None:
         """
         Args:
@@ -96,8 +97,11 @@ class StandbyQueueUseCase:
             fill_groups:            填充候选组（按优先级顺序，靠前优先）
             fill_probe_multiplier:  候选数 = 缺口 × 倍率
             fill_probe_min_extra:   候选数至少 缺口 + 增量
-            metrics_window:         指标采样存储时长秒（窗口）。每轮心跳采一次，
-                                    超出窗口的自动清理；心跳动态调整时窗口始终不变
+            metrics_window:         采样数据留存时长秒（全局，流量与队列指标共用）。
+                                    超出窗口的采样点自动清理；本用例的队列指标/延时
+                                    历史按此保留，仪表盘据此画满可用的全部数据点
+            chart_window:           代理服务队列页图表的显示窗口秒数（只影响队列页
+                                    行内趋势图的裁剪/画图范围，不参与数据留存）
         """
         self._pool = pool
         self._record = record
@@ -110,6 +114,7 @@ class StandbyQueueUseCase:
         self._retrying: set[str] = set()  # 退避补测中的代理（heartbeat 轮跳过）
         self._capacity: int | None = None  # 队列容量（serve 启动时 set，standby_proxies 截断超出容量的固定代理）
         self._metrics_window = metrics_window
+        self._chart_window = chart_window
         self._history: deque[StandbySample] = deque()  # 采样历史，按时间窗口清理过期点
         # 按代理地址（bind）的延时采样历史，供 /api/proxy/history 按需查询
         self._per_proxy_latency_history: dict[str, deque[ProxyLatencySample]] = {}
@@ -120,12 +125,23 @@ class StandbyQueueUseCase:
 
     @property
     def metrics_window(self) -> float:
-        """指标采样窗口（秒）
+        """采样数据留存时长（秒，全局）
 
-        随 /api/standby/series 下发给前端：本地缓冲按同一窗口裁剪，不在前端再硬编码
-        一份（否则改配置后两边窗口各自漂移，面板显示的时间跨度对不上）。
+        本用例按它清理过期的队列指标/延时采样点（与流量共用同一留存窗口）。仪表盘
+        据此画满留存期内的全部数据点，不做窗口裁剪。与 chart_window 无关——那个只
+        影响队列页行内图显示多长，不参与留存。
         """
         return self._metrics_window
+
+    @property
+    def chart_window(self) -> float:
+        """代理服务队列页图表的显示窗口（秒）
+
+        仅用于队列页行内趋势图：随 /api/standby/series 下发给前端，前端本地缓冲按
+        同一窗口裁剪，不在前端再硬编码一份（否则改配置后两边窗口各自漂移，显示的时间
+        跨度对不上）。不参与数据留存——留存统一由 metrics_window 决定。
+        """
+        return self._chart_window
 
     @property
     def standby_group(self) -> str:
@@ -167,7 +183,7 @@ class StandbyQueueUseCase:
 
         每轮 heartbeat 结束调一次，传入本轮探测的代理集合（锁定时为锁定代理，
         否则为代理服务队列成员）。按 metrics_window 时间窗口清理过期点：
-        心跳动态调整时采样频率跟着变，窗口始终 = metrics_window。
+        心跳动态调整时采样频率跟着变，留存窗口始终 = metrics_window。
         """
         latencies = [l for l in (self._pool.get_latency(p) for p in proxies) if l is not None]
         avg = sum(latencies) / len(latencies) if latencies else None
@@ -179,7 +195,7 @@ class StandbyQueueUseCase:
         self._append_sample(StandbySample(time.time(), avg, mn, mx, rate, total, self.is_locked()))
 
     def _append_sample(self, sample: StandbySample) -> None:
-        """追加一个采样点并按时间窗口清理过期点（_sample 与锁定断点共用）"""
+        """追加一个采样点并按留存窗口清理过期点（_sample 与锁定断点共用）"""
         self._history.append(sample)
         cutoff = sample.ts - self._metrics_window
         while self._history and self._history[0].ts < cutoff:

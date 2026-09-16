@@ -36,6 +36,7 @@ from src.framework.config import (
     STANDBY_FILL_PROBE_MULTIPLIER,
     STANDBY_FILL_PROBE_MIN_EXTRA,
     METRICS_WINDOW,
+    STANDBY_CHART_WINDOW,
 )
 from src.use_cases.standby import StandbyQueueUseCase
 
@@ -89,6 +90,7 @@ def make_standby(pool, record, check):
         fill_probe_multiplier=STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=STANDBY_FILL_PROBE_MIN_EXTRA,
         metrics_window=METRICS_WINDOW,
+        chart_window=STANDBY_CHART_WINDOW,
     )
 
 

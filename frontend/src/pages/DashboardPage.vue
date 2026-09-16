@@ -92,8 +92,9 @@ function trafficRates(th: TrafficHistoryPoint[]) {
 
 const trafficOption = computed(() => {
   const { ts, labels, up, down } = trafficRates(store.trafficHistory);
-  // 平均延迟按 ts 匹配最近的前一个队列采样点（standby 窗口 60s 短于流量窗口 1800s，
-  // 窗口外的流量区间无延迟参考 → null 不绘制；不能按索引对齐，见 utils/series.matchPrevAvg）
+  // 平均延迟按 ts 匹配最近的前一个队列采样点：两序列采样节奏不同（流量固定 2s 独立采样，
+  // 队列指标挂在 heartbeat 轮次上、锁定单一上游时放宽到 30s），不能按索引对齐，
+  // 见 utils/series.matchPrevAvg。两份历史同按 METRICS_WINDOW 留存，故 X 轴跨度一致。
   const avg = matchPrevAvg(store.standbyHistory, ts);
   return lineChartOption(
     {

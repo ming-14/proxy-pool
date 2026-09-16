@@ -54,7 +54,7 @@ export interface StandbySeriesEntry {
 
 export interface StandbySeries {
   cursor: number;                     // 本次下发点的最大时间戳（下轮 since）
-  window: number;                     // 服务端采样窗口（秒，= standby_metrics_window）：前端据此裁剪本地缓冲
+  window: number;                     // 队列页图表的显示窗口（秒，= chart_window）：前端据此裁剪本地缓冲（仅队列页）
   series: Record<string, StandbySeriesEntry>;  // key 为 bind（地址，不含 scheme）
 }
 
@@ -131,6 +131,7 @@ export interface TrafficHistoryPoint {
 export interface StatusHistory {
   standby_history: StandbyHistoryPoint[];
   traffic_history: TrafficHistoryPoint[];
+  retention_window: number;           // 服务端留存时长（秒，= METRICS_WINDOW）：前端本地缓冲据此按时间裁剪
   traffic_total: TrafficTotal;
 }
 

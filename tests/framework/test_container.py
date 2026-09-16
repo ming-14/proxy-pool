@@ -82,6 +82,23 @@ def test_web_disabled_skips_purity_and_geo(cache_db, monkeypatch) -> None:
     assert container.geo is None
 
 
+def test_standby_windows_injected_from_config(cache_db, monkeypatch) -> None:
+    """两个窗口各取各的配置项，不得互串
+
+    留存窗口（`METRICS_WINDOW`）决定采样点保留多久，队列页显示窗口
+    （`STANDBY_CHART_WINDOW`）只决定队列页行内图显示多长。二者一旦互串——例如把
+    显示窗口当留存注入——延迟/队列采样点会被提前清掉，仪表盘曲线只剩最右一小段。
+    两个值故意取成不同数量级，串参即可被断言捕获。
+    """
+    monkeypatch.setattr(config, "METRICS_WINDOW", 1800)
+    monkeypatch.setattr(config, "STANDBY_CHART_WINDOW", 60)
+
+    container = build_container(cache_db=cache_db)
+
+    assert container.standby.metrics_window == 1800
+    assert container.standby.chart_window == 60
+
+
 def test_container_import_is_lazy() -> None:
     """惰性导入守卫（子进程干净解释器）：import container 不拉起三方重依赖链
 

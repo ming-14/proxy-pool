@@ -69,7 +69,7 @@ python view.py
 ```bash
 cd frontend
 npm install
-npm run build     # 类型检查 + 构建，产物输出到 src/framework/web/static/（提交入库）
+npm run build     # 类型检查 + 构建，产物输出到 src/framework/web/static/（构建产物不入库，见 .gitignore）
 npm run test      # Vitest 单测（纯逻辑）
 npm run dev       # 开发模式（HMR，/api 代理到 127.0.0.1:8083，需先 serve）
 ```

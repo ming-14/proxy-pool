@@ -3,8 +3,8 @@
  *
  * 与旧前端行为对齐：
  * - 历史仅仪表盘/队列页需要（historyEnabled 由路由守卫切换），游标=已合并点最大 ts；
- * - 历史前端保留上限 MAX_HISTORY=1000 点（后端流量窗口 1800s / 2s ≈ 900 点，留余量；
- *   队列指标窗口独立且更短（60s ≈ 30 点），不构成上限压力）；
+ * - 历史前端按服务端留存时长裁剪（`retention_window` = 后端 METRICS_WINDOW，随响应下发），
+ *   不在前端写死点数上限：采样节奏可变（心跳 2s），点数上限与留存时长不等价；
  * - paused 只停轮询（保留最后数据）；首次加载失败弹一次 error toast；
  * - 历史拉取失败不阻断状态刷新（图表滞后一拍，下轮重试）；
  * - 写动作（固定/锁定等）后由页面调用 refreshNow 立即取数：paused 是"停止自动轮询"，
@@ -16,21 +16,28 @@ import { api, ApiError } from '@/api/client';
 import type { StandbyHistoryPoint, StatusHistory, StatusSnapshot, TrafficHistoryPoint } from '@/types/api';
 import { useToastStore } from '@/stores/toast';
 
-/** mergePoints 默认裁剪上限（仅本模块使用，外部调用可显式传 max） */
-const MAX_HISTORY = 1000;
-
 /** /api/status 轮询间隔（固定值，面板无运行时调节项） */
 const POLL_INTERVAL_MS = 2000;
 
-/** 纯函数：按 ts 顺序追加并裁剪（服务端保证时间序，直接 concat 后截尾）。可单测。 */
+/**
+ * 纯函数：按 ts 顺序追加，并按留存时长裁掉过期点（服务端保证时间序，直接 concat 后裁头）。
+ *
+ * 裁剪基准取合并后序列**自身的末点 ts**（服务端时间戳，避免与浏览器时钟偏差叠加）；
+ * 按时间而非点数裁剪：点数上限与留存时长不等价——采样节奏一变（心跳 2s，锁定单一
+ * 上游时放宽到 30s），同一上限对应的时长就跟着变，快节奏下会裁掉仍在留存期内的点、
+ * 让曲线左段凭空消失。可单测。
+ */
 export function mergePoints<T extends { ts: number }>(
   existing: T[],
   incoming: T[],
-  max: number = MAX_HISTORY,
+  windowS: number,
 ): T[] {
   if (!incoming.length) return existing;
   const merged = existing.concat(incoming);
-  return merged.length > max ? merged.slice(-max) : merged;
+  const cutoff = merged[merged.length - 1].ts - windowS;
+  let i = 0;
+  while (i < merged.length && merged[i].ts < cutoff) i++;
+  return i === 0 ? merged : merged.slice(i);
 }
 
 /** 纯函数：增量游标 = 两序列最后点的最大 ts。可单测。 */
@@ -54,8 +61,9 @@ export const useStatusStore = defineStore('status', () => {
   const lockedProxy = computed(() => status.value?.locked_proxy ?? null);
 
   function mergeHistory(data: StatusHistory) {
-    standbyHistory.value = mergePoints(standbyHistory.value, data.standby_history ?? []);
-    trafficHistory.value = mergePoints(trafficHistory.value, data.traffic_history ?? []);
+    const windowS = data.retention_window;
+    standbyHistory.value = mergePoints(standbyHistory.value, data.standby_history ?? [], windowS);
+    trafficHistory.value = mergePoints(trafficHistory.value, data.traffic_history ?? [], windowS);
   }
 
   async function refreshHistory() {

@@ -26,11 +26,13 @@ heartbeat_probe_url = "https://cp.cloudflare.com/generate_204"  # 心跳探测�
 heartbeat_concurrency = 16        # 心跳探测并发数
 heartbeat_timeout = 3             # 心跳探测单个代理超时秒数
 
-metrics_window = 1800 # 流量采样存储时长秒（与代理服务队列窗口独立）
+# 采样数据留存时长秒（全局）：流量与队列指标的采样点都按此清理，超出即丢弃。
+# 仪表盘按这份留存内的真实数据点绘制（不做窗口裁剪），改小会让趋势图变短。
+metrics_window = 1800
 
-# 代理服务队列（standby）指标采样存储时长秒：与流量 metrics_window 相互独立，
-# 队列页行内趋势图 / 仪表盘队列趋势图的展示窗口即此值。
-standby_metrics_window = 60
+# 代理服务队列页图表的显示窗口秒数：只影响队列页行内趋势图的裁剪/画图范围，
+# 不参与数据留存（留存统一由 metrics_window 决定，也不影响仪表盘）。
+standby_chart_window = 60
 
 # serve 默认代理协议（CLI 未指定 --type 时的初始值；运行时面板可增删，不写回本配置）。
 # 不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），

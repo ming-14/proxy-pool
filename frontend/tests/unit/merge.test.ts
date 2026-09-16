@@ -6,15 +6,34 @@ import { mergeKeepOrder } from '@/utils/merge';
 describe('mergePoints', () => {
   it('空增量原样返回', () => {
     const a = [{ ts: 1 }];
-    expect(mergePoints(a, [])).toBe(a);
+    expect(mergePoints(a, [], 100)).toBe(a);
   });
   it('按时间序追加', () => {
-    expect(mergePoints([{ ts: 1 }, { ts: 2 }], [{ ts: 3 }])).toEqual([{ ts: 1 }, { ts: 2 }, { ts: 3 }]);
+    expect(mergePoints([{ ts: 1 }, { ts: 2 }], [{ ts: 3 }], 100)).toEqual([
+      { ts: 1 },
+      { ts: 2 },
+      { ts: 3 },
+    ]);
   });
-  it('超限裁剪保留最新（保留尾部 max 个）', () => {
-    const existing = Array.from({ length: 5 }, (_, i) => ({ ts: i }));
-    const merged = mergePoints(existing, [{ ts: 100 }, { ts: 101 }], 5);
-    expect(merged.map((p) => p.ts)).toEqual([2, 3, 4, 100, 101]);
+  it('按留存时长裁剪：早于「末点 ts - 窗口」的点丢弃', () => {
+    const existing = [{ ts: 0 }, { ts: 50 }, { ts: 80 }];
+    const merged = mergePoints(existing, [{ ts: 100 }], 60);
+    expect(merged.map((p) => p.ts)).toEqual([50, 80, 100]);
+  });
+  it('裁剪基准是序列自身末点（不掺浏览器时钟）', () => {
+    // 合并后末点 ts=1001、窗口 60 → cutoff=941，保留 ts >= 941
+    const merged = mergePoints([{ ts: 940 }, { ts: 941 }, { ts: 1000 }], [{ ts: 1001 }], 60);
+    expect(merged.map((p) => p.ts)).toEqual([941, 1000, 1001]);
+  });
+  it('窗口内的点一个不裁（同一点数上限在不同采样节奏下时长不同，故不按点数裁）', () => {
+    // 1s 采样：窗口 1800s 内 1800 个点，全部保留（点数额度不设限）
+    const existing = Array.from({ length: 1800 }, (_, i) => ({ ts: i }));
+    const merged = mergePoints(existing, [{ ts: 1800 }], 1800);
+    expect(merged).toHaveLength(1801);
+  });
+  it('留存时长为 undefined 时不裁剪（不清空已有数据）', () => {
+    const merged = mergePoints([{ ts: 1 }, { ts: 2 }], [{ ts: 3 }], undefined as unknown as number);
+    expect(merged.map((p) => p.ts)).toEqual([1, 2, 3]);
   });
 });
 

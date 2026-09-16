@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { geoText } from '@/composables/useStandbyGeo';
 
-/** 服务端下发的采样窗口（秒）：与后端 metrics_window 同源，前端不硬编码 */
+/** 服务端下发的队列图表显示窗口（秒）：与后端 chart_window 同源，前端不硬编码 */
 const WINDOW_S = 1800;
 
 /** 每个用例取全新模块实例（模块级缓冲/游标不跨用例串味） */

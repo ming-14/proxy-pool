@@ -28,6 +28,7 @@ from src.framework.config import (
     STANDBY_GROUP,
     STANDBY_FILL_PROBE_MULTIPLIER,
     STANDBY_FILL_PROBE_MIN_EXTRA,
+    METRICS_WINDOW,
 )
 from src.framework.web.control import ServeControl
 from src.framework.web.api import build_app, PanelContext
@@ -53,8 +54,10 @@ def make_pool():
 class FakeStandby:
     """代理服务队列壳：站内读取走真实 pool"""
 
-    # 采样窗口（/api/standby/series 下发给前端裁剪本地缓冲）
-    metrics_window = 1800
+    # 采样数据留存时长（全局，流量与队列指标共用）：/api/status/history 下发给前端裁剪缓冲
+    metrics_window = METRICS_WINDOW
+    # 队列页图表的显示窗口（/api/standby/series 下发给前端裁剪本地缓冲），取配置默认值
+    chart_window = 60
 
     def __init__(self, pool):
         self.pool = pool
@@ -238,6 +241,8 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["standby_history"] == []
         assert data["traffic_history"] == []
         assert data["traffic_total"] == {"upload": 0, "download": 0}
+        # 留存时长随响应下发（前端据此按时间裁剪本地缓冲，不写死点数上限）
+        assert data["retention_window"] == METRICS_WINDOW
         # since 过滤：无晚于游标的数据返回空
         resp2 = await self.client.get("/api/status/history?since=9999999999")
         assert resp2.status == 200
@@ -261,8 +266,8 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert resp.status == 200
         data = await resp.json()
         assert data["cursor"] == 1002.0
-        # 窗口随响应下发（前端据此裁剪本地缓冲，不再硬编码 1800）
-        assert data["window"] == 1800
+        # 窗口随响应下发（前端据此裁剪队列页本地缓冲，不硬编码）
+        assert data["window"] == 60
         s = data["series"]["1.2.3.4:8080"]
         assert s["lat"] == [[1000.0, 0.2], [1002.0, None]]
         assert s["up"] == [[1000.0, 10], [1002.0, 30]]

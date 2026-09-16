@@ -188,21 +188,41 @@ export function dedupeByTs(points: SeriesPoint[]): SeriesPoint[] {
 }
 
 /**
+ * 参考序列的采样周期（秒）= 相邻采样点间隔的最大值。
+ *
+ * 作匹配容差的依据：一个延迟读数在下一次采样到来前都是"最新值"，故容差取该序列
+ * 自身的一个采样周期。不能写死常数——采样节奏随运行状态变（心跳 2s；锁定单一
+ * 上游时放宽到 30s），写死小常数会在锁定态漏配（30s 间隔只覆盖前一半流量点，
+ * 延迟线画成断续虚线），写死大常数又会在空闲时把陈旧值当最新值画出去。
+ * 少于 2 个参考点时无法推断周期，返回 0（不匹配，不硬凑趋势）。
+ */
+function refPeriod(refs: { ts: number }[]): number {
+  let period = 0;
+  for (let i = 1; i < refs.length; i++) {
+    const gap = refs[i].ts - refs[i - 1].ts;
+    if (gap > period) period = gap;
+  }
+  return period;
+}
+
+/**
  * 为每个时间点匹配"最近的前一个"参考点（两序列均需时间升序，游标单次扫描）。
- * 用于流量差分点（长窗口 1800s）对齐队列采样点（短窗口 60s）：窗口外的时间点
- * 匹配不到参考 → null（不绘制）。不能按索引对齐——两序列窗口不同后下标错位，
- * 且同轮采集的 ts 也不精确相等（standby 在 heartbeat 内采样、traffic 在其后）。
+ * 用于把流量差分点对齐到队列采样点：两序列采样节奏不同（流量固定 2s 独立采样，
+ * 队列指标挂在 heartbeat 轮次上、锁定单一上游时放宽到 30s），不能按索引对齐
+ * ——下标会错位，且同轮采集的 ts 也不精确相等（standby 在 heartbeat 内采样、
+ * traffic 在其后）。参考点早于该点超过一个采样周期（`refPeriod`）、或参考值
+ * 本身为 null，都返回 null（不绘制）。
  */
 export function matchPrevAvg(
   refs: { ts: number; avg: number | null }[],
   ts: number[],
-  maxGap = 15,
 ): (number | null)[] {
+  const period = refPeriod(refs);
   let i = 0;
   return ts.map((t) => {
     while (i < refs.length && refs[i].ts <= t) i++;
     const p = i > 0 ? refs[i - 1] : null;
-    return p && t - p.ts <= maxGap ? p.avg : null;
+    return p && t - p.ts <= period ? p.avg : null;
   });
 }
 

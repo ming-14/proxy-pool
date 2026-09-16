@@ -69,7 +69,9 @@ frontend/src/
 ### 2.3 数据流
 
 - **status 轮询**：`useStatusStore.tick()` 每 2s `GET /api/status`；仅 dashboard/standby
-  页激活时增量 `GET /api/status/history?since=cursor`，store 内合并裁剪（MAX 1000 点）。
+  页激活时增量 `GET /api/status/history?since=cursor`，store 内按响应下发的
+  `retention_window`（= 后端 `METRICS_WINDOW`）裁剪本地缓冲——不写死点数上限，
+  采样节奏可变时点数与留存时长不等价。
   暂停按钮只停轮询（保留最后数据），连接失败置 offline 态。
 - **图表响应式**：`TrendChart.vue` 接收数据数组 prop，`watch` → `setOption`（趋势图
   `animation:false`，避免每 2s 动画重放；ECharts 全量 setOption 900 点/2s 无压力，

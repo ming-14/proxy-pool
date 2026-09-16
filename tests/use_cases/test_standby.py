@@ -95,7 +95,7 @@ def make_gate(ok: bool = True):
 
 
 def make_standby(pool, check, fill_groups=("default-http",), multiplier=2, min_extra=1,
-                 metrics_window=1800, gate=None):
+                 metrics_window=1800, chart_window=60, gate=None):
     return StandbyQueueUseCase(
         pool=pool,
         record=RecordProxyUseCase(pool=pool, standby_group=STANDBY_GROUP),
@@ -106,6 +106,7 @@ def make_standby(pool, check, fill_groups=("default-http",), multiplier=2, min_e
         fill_probe_multiplier=multiplier,
         fill_probe_min_extra=min_extra,
         metrics_window=metrics_window,
+        chart_window=chart_window,
     )
 
 
@@ -395,6 +396,26 @@ class TestStandbyMetrics(unittest.TestCase):
         asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
         hist = c.history()
         self.assertEqual(len(hist), 1)  # 第一次的已过期，只留第二次
+
+    def test_retention_follows_metrics_window_not_chart_window(self):
+        """留存只看 metrics_window：chart_window（队列页显示窗口）不得影响数据保留
+
+        历史 bug：清理 cutoff 误用 chart_window，使延迟数据被提前丢弃，
+        仪表盘平均延迟曲线只画得出最右端一小段。此用例锁定该回归。
+
+        关键点：两点间隔必须 > chart_window，否则即使误用 chart_window 做 cutoff，
+        旧点也仍在窗口内而存活，用例会漏掉回归（假通过）。故 chart_window 取 0.05、
+        两点间隔取 0.2，误用时第一点必被清掉。
+        """
+        c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}),
+                         metrics_window=1800, chart_window=0.05)
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        time.sleep(0.2)  # > chart_window：误用 chart_window 时首点会被清掉
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(len(c.history()), 2)  # 两点都在，未被 chart_window 清掉
+        # 逐代理延时历史同样按 metrics_window 留存
+        dq = c.per_proxy_latency_history("1.2.3.4:8080")
+        self.assertEqual(len(dq), 2)
 
     def test_metrics_multiple_proxies(self):
         """多代理采样：avg/min/max/health_rate 聚合正确"""

@@ -217,11 +217,50 @@ describe('matchPrevAvg', () => {
     expect(matchPrevAvg(refs, [102.5, 103.9])).toEqual([0.3, 0.3]);
   });
 
-  it('参考点之前无点或间距超过 maxGap → null（短窗口外的流量区间无延迟参考）', () => {
+  it('参考点之前无点、或早于一个采样周期以上 → null（不绘制）', () => {
     expect(matchPrevAvg(refs, [99, 100, 104 + 16])).toEqual([null, 0.2, null]);
   });
 
   it('参考序列为空时全 null', () => {
     expect(matchPrevAvg([], [1, 2])).toEqual([null, null]);
+  });
+
+  it('容差随参考序列采样周期自适应：锁定态 30s 间隔不漏配', () => {
+    // 锁定单一上游时心跳放宽到 30s，参考点间隔 30s；流量仍每 2s 采一个点。
+    // 容差若写死小常数（曾为 15），每个 30s 区间只有前一半能匹配上，延迟线断成虚线。
+    const locked = [
+      { ts: 0, avg: 0.3 },
+      { ts: 30, avg: 0.4 },
+      { ts: 60, avg: 0.5 },
+    ];
+    const trafficTs: number[] = [];
+    for (let t = 2; t <= 60; t += 2) trafficTs.push(t);
+    const out = matchPrevAvg(locked, trafficTs);
+    expect(out.filter((v) => v !== null)).toHaveLength(trafficTs.length);
+    expect(out[out.length - 1]).toBe(0.5);
+  });
+
+  it('容差只覆盖一个采样周期：参考序列停更后不把陈旧值当最新值（尾部为 null）', () => {
+    const locked = [
+      { ts: 0, avg: 0.3 },
+      { ts: 30, avg: 0.4 },
+    ];
+    // 参考点间隔 30s（周期=30）：31s 距末点 1s 仍算最新值；
+    // 61s 距末点已 31s > 一个周期 → 不再匹配
+    expect(matchPrevAvg(locked, [20, 29, 31, 61])).toEqual([0.3, 0.3, 0.4, null]);
+  });
+
+  it('参考点少于 2 个时推断不出周期 → 只认时间戳完全重合的点（不硬凑趋势）', () => {
+    // 周期为 0：非重合点一律不匹配。实际 ts 为浮点秒，几乎不可能重合，
+    // 故只有一个采样点时图上不会画出延迟线，等第二个点到达才开始成线。
+    expect(matchPrevAvg([{ ts: 100, avg: 0.2 }], [99, 100, 102])).toEqual([null, 0.2, null]);
+  });
+
+  it('参考值本身为 null 时该点不绘制', () => {
+    const withNull = [
+      { ts: 100, avg: null },
+      { ts: 102, avg: 0.3 },
+    ];
+    expect(matchPrevAvg(withNull, [100, 101, 102])).toEqual([null, null, 0.3]);
   });
 });

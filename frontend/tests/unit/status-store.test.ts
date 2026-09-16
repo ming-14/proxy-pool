@@ -17,7 +17,7 @@ beforeEach(() => {
 
 describe('useStatusStore.tick', () => {
   it('成功时写入快照并置在线，历史按开关拉取', async () => {
-    mockResponses({ groups: {}, standby: [] }, { standby_history: [{ ts: 1 }], traffic_history: [] });
+    mockResponses({ groups: {}, standby: [] }, { standby_history: [{ ts: 1 }], traffic_history: [], retention_window: 1800 });
     const store = useStatusStore();
     store.historyEnabled = true;
     await store.tick();
@@ -52,7 +52,7 @@ describe('useStatusStore.tick', () => {
   });
 
   it('增量游标：第二轮历史请求带 since=最后 ts', async () => {
-    mockResponses({}, { standby_history: [{ ts: 5 }], traffic_history: [] });
+    mockResponses({}, { standby_history: [{ ts: 5 }], traffic_history: [], retention_window: 1800 });
     const store = useStatusStore();
     store.historyEnabled = true;
     await store.tick(); // calls: status, history(无 since)

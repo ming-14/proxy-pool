@@ -77,6 +77,7 @@ def make_standby(pool, record, check):
         fill_probe_multiplier=config.STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
         metrics_window=config.METRICS_WINDOW,
+        chart_window=config.STANDBY_CHART_WINDOW,
     )
 
 
