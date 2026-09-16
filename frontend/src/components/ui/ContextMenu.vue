@@ -4,6 +4,7 @@
  * 点击外部/滚动/缩放自动关闭（关闭逻辑收敛于此，替代旧版两页面重复实现）。
  */
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import Icon from './Icon.vue';
 import type { MenuItem } from '@/types/ui';
 
 const props = defineProps<{ items: MenuItem[]; x: number; y: number }>();
@@ -74,7 +75,7 @@ onBeforeUnmount(() => {
           @click.stop="onItem(item)"
         >
           <span>{{ item.label }}</span>
-          <svg v-if="item.children" class="context-menu-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6" /></svg>
+          <Icon v-if="item.children" name="chevron-right" class="context-menu-arrow" />
           <span v-else-if="item.meta" class="text-[var(--color-t-muted)] text-xs">{{ item.meta }}</span>
           <div v-if="item.children" class="context-submenu">
             <div

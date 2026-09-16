@@ -13,6 +13,8 @@ import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
 import ContextMenu from '@/components/ui/ContextMenu.vue';
+import Icon from '@/components/ui/Icon.vue';
+import type { IconName } from '@/components/ui/icons';
 import AddProxyModal from '@/components/AddProxyModal.vue';
 import { displayCountryName, fmtDuration, fmtLatency, fmtDateTime } from '@/utils/format';
 import { buildCsv, downloadFile } from '@/utils/csv';
@@ -342,9 +344,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', updateScrollMargin);
 });
 
-function sortIcon(key: SortKey): string {
-  if (sortKey.value !== key) return '↕';
-  return sortDesc.value ? '↓' : '↑';
+/** 表头排序指示图标（未排序列显示双向箭头；原为 ↕↑↓ 字形，收编为同族 SVG） */
+function sortIcon(key: SortKey): IconName {
+  if (sortKey.value !== key) return 'sort';
+  return sortDesc.value ? 'sort-desc' : 'sort-asc';
 }
 
 function sortBy(key: SortKey) {
@@ -425,7 +428,10 @@ const infoText = computed(() => {
                   :class="{ 'sort-active': sortKey === c.key }"
                   @click="sortBy(c.key)"
                 >
-                  {{ c.label }} <span class="sort-icon">{{ sortIcon(c.key) }}</span>
+                  {{ c.label }}
+                  <span class="sort-icon inline-flex align-middle">
+                    <Icon :name="sortIcon(c.key)" class="w-3 h-3" />
+                  </span>
                 </th>
               </tr>
             </thead>
@@ -470,7 +476,7 @@ const infoText = computed(() => {
     </div>
 
     <button v-show="showBackTop" class="back-to-top-btn" title="回到顶部" @click="scrollEl()?.scrollTo({ top: 0, behavior: 'smooth' })">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6" /></svg>
+      <Icon name="chevron-up" />
     </button>
 
     <ContextMenu

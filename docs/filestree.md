@@ -61,7 +61,7 @@ proxy-pool/
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── panel_state.py     # PanelTasks（面板任务状态：测速/纯洁度检查的进行中与终态，/api/status 下发供前端刷新后恢复）
 │           ├── server.py          # aiohttp 服务器启动
-│           └── static/            # 前端构建产物（frontend/ npm run build 输出，提交入库，勿手改）
+│           └── static/            # 前端构建产物（frontend/ npm run build 输出，不入库，见 .gitignore，勿手改）
 │               ├── index.html     # Vite 入口（hash 路由单页）
 │               ├── world.json     # 世界地图 GeoJSON（ECharts registerMap，懒加载）
 │               └── assets/        # 带内容 hash 的 JS/CSS（immutable 缓存）
@@ -81,7 +81,7 @@ proxy-pool/
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）/ series（降采样·速率差分·共享时间窗口·sparkline 坐标）
 │       ├── composables/           # useRowSelection（框选）/ usePurity（纯洁度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+可见性节流+主题联动）
 │       ├── vendor/logpanel/       # 日志视窗组件（vendored 零依赖，Shadow DOM + TS 声明 + --lp-* 主题变量化）
-│       ├── components/            # ui（ToastHost/ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
+│       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
 ├── tests/                         # 测试目录（复刻 src 结构；tests/e2e/web/ 为面板 Playwright e2e）

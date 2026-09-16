@@ -36,6 +36,7 @@ import { runSpeedTest, speedTestEntryOf } from '@/composables/useSpeedTest';
 import { GEO_REFRESH_MS, geoText, refreshStandbyGeo, standbyGeo } from '@/composables/useStandbyGeo';
 import { refreshStandbySeries, seriesBuffers } from '@/composables/useStandbySeries';
 import ContextMenu from '@/components/ui/ContextMenu.vue';
+import Icon from '@/components/ui/Icon.vue';
 import PurityTags from '@/components/PurityTags.vue';
 import Sparkline from '@/components/Sparkline.vue';
 import { bindOf, fmtAge, fmtBytes, fmtLatency } from '@/utils/format';
@@ -365,7 +366,7 @@ onBeforeUnmount(() => {
         @contextmenu="onContextmenu"
       >
         <div v-if="!displayStandby.length" class="empty-state">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>
+          <Icon name="activity" />
           <div>代理服务队列为空</div>
           <div class="text-xs mt-1">等待 serve 主循环自动补入</div>
         </div>

@@ -5,7 +5,9 @@
  */
 import { computed, ref } from 'vue';
 import { RouterView, useRoute } from 'vue-router';
+import Icon from '@/components/ui/Icon.vue';
 import ToastHost from '@/components/ui/ToastHost.vue';
+import type { IconName } from '@/components/ui/icons';
 import { useLogPanel } from '@/composables/useLogPanel';
 import { useStatusStore } from '@/stores/status';
 import { useThemeStore } from '@/stores/theme';
@@ -19,34 +21,13 @@ const { visible: logPanelVisible, toggle: toggleLogPanel } = useLogPanel();
 const pageTitle = computed(() => String(route.meta.title ?? '仪表盘'));
 const sidebarOpen = ref(false);
 
-// 导航项（图标路径与旧版 SVG 一致）
-const NAV = [
-  {
-    name: 'dashboard', label: '仪表盘',
-    paths: ['<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'],
-  },
-  {
-    name: 'groups', label: '代理组',
-    paths: [
-      '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
-    ],
-  },
-  {
-    name: 'standby', label: '代理服务队列',
-    paths: ['<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'],
-  },
-  {
-    name: 'sources', label: '代理源',
-    paths: [
-      '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
-    ],
-  },
-  {
-    name: 'settings', label: '设置',
-    paths: [
-      '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-    ],
-  },
+/** 导航项（图标见 components/ui/icons.ts；name 是路由名，icon 是图标名） */
+const NAV: { name: string; label: string; icon: IconName }[] = [
+  { name: 'dashboard', label: '仪表盘', icon: 'dashboard' },
+  { name: 'groups', label: '代理组', icon: 'groups' },
+  { name: 'standby', label: '代理服务队列', icon: 'activity' },
+  { name: 'sources', label: '代理源', icon: 'sources' },
+  { name: 'settings', label: '设置', icon: 'settings' },
 ];
 </script>
 
@@ -54,11 +35,7 @@ const NAV = [
   <!-- 侧边栏 -->
   <aside class="sidebar flex flex-col" :class="{ open: sidebarOpen }">
     <div class="h-16 flex items-center px-5 border-b border-[var(--color-line-light)]">
-      <svg class="w-7 h-7 text-[var(--color-primary-600)] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <path d="M2 12h20" />
-        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-      </svg>
+      <Icon name="globe" class="w-7 h-7 text-[var(--color-primary-600)] flex-shrink-0" />
       <span class="ml-3 font-bold text-lg tracking-tight sidebar-text">Proxy Pool</span>
     </div>
     <nav class="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
@@ -71,7 +48,7 @@ const NAV = [
         :data-testid="`nav-${item.name}`"
         @click="sidebarOpen = false"
       >
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="item.paths.join('')" />
+        <Icon :name="item.icon" class="w-5 h-5" />
         <span class="sidebar-text">{{ item.label }}</span>
       </RouterLink>
     </nav>
@@ -83,9 +60,7 @@ const NAV = [
         title="控制台日志"
         @click="toggleLogPanel"
       >
-        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
-        </svg>
+        <Icon name="terminal" class="w-4 h-4 flex-shrink-0" />
         <span class="sidebar-text">控制台日志</span>
       </button>
     </div>
@@ -96,20 +71,13 @@ const NAV = [
     <header class="h-16 border-b border-[var(--color-line)] flex items-center justify-between px-5 flex-shrink-0 bg-[var(--color-card)]">
       <div class="flex items-center gap-3">
         <button class="lg:hidden p-2 rounded-lg hover:bg-[var(--color-hover)] text-[var(--color-t-secondary)]" @click="sidebarOpen = !sidebarOpen">
-          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" />
-          </svg>
+          <Icon name="menu" class="w-5 h-5" />
         </button>
         <h1 data-testid="page-title" class="text-lg font-semibold text-[var(--color-t-primary)]">{{ pageTitle }}</h1>
       </div>
       <div class="flex items-center gap-3">
         <button data-testid="btn-pause" class="btn btn-sm gap-1.5" :class="statusStore.paused ? 'btn-primary' : 'btn-ghost'" title="暂停/恢复轮询" @click="statusStore.togglePause()">
-          <svg v-if="!statusStore.paused" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" />
-          </svg>
-          <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="5 3 19 12 5 21 5 3" />
-          </svg>
+          <Icon :name="statusStore.paused ? 'play' : 'pause'" class="w-4 h-4" />
           <span>{{ statusStore.paused ? '继续' : '暂停' }}</span>
         </button>
         <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-hover)] text-xs font-medium">
@@ -119,12 +87,7 @@ const NAV = [
           </span>
         </div>
         <button data-testid="btn-theme" class="btn btn-ghost btn-sm" title="切换主题" @click="themeStore.toggle()">
-          <svg v-if="themeStore.theme !== 'dark'" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-          </svg>
-          <svg v-else class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-          </svg>
+          <Icon :name="themeStore.theme !== 'dark' ? 'sun' : 'moon'" class="w-5 h-5" />
         </button>
       </div>
     </header>
