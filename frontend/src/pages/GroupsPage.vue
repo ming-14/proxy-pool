@@ -149,12 +149,21 @@ const padBottom = computed(() => {
   return virtualizer.value.getTotalSize() - scrollMargin.value - items[items.length - 1].end;
 });
 
-/** 行0在滚动内容空间的偏移 = tbody 顶 - spacer 高（列表起点，非当前渲染起点） */
+/**
+ * 行0在滚动内容空间的偏移 = tbody 在滚动内容里的位置（列表起点，非当前渲染起点）。
+ *
+ * **不能减去顶部 spacer 高**：spacer 是 tbody 的首个子元素、只把渲染行往下推，tbody 顶本身就在
+ * 行0的位置；而 vue-virtual 的 item.start 已含 scrollMargin、区间判定直接拿 scrollTop 与之比较，
+ * 故 scrollMargin 必须严格等于列表起点（padTop 也由 items[0].start - scrollMargin 反推，减了会
+ * 自我抵消）。多减会让每次调用都往下漂移一个 spacer：滚动状态下改窗口尺寸后渲染行被推到视口下方
+ * （整屏空白 + 总高膨胀，回归用例 TestGroups::test_scroll_margin_survives_resize），而顶部调用时
+ * padTop = 0、减与不减等价，所以此前没暴露。
+ */
 function updateScrollMargin() {
   const s = scrollEl();
   const tb = tbodyRef.value;
   if (!s || !tb) return;
-  scrollMargin.value = tb.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop - padTop.value;
+  scrollMargin.value = tb.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop;
 }
 
 /** 框选坐标 → 数据索引（内容空间二分，可跨未渲染区域） */

@@ -47,6 +47,31 @@ def main_scroll(page: Page) -> dict:
     )
 
 
+def group_table_geometry(page: Page) -> dict:
+    """代理组表几何：滚动量 + 首行 idx/top（top 相对滚动容器顶）+ 行高 + 列表起点的滚动坐标
+
+    tbody_offset = tbody 顶在滚动内容空间的偏移 = vue-virtual 需要的 scrollMargin
+    （见 GroupsPage.updateScrollMargin；行0即 tbody 首个子元素的位置）。
+    """
+    return page.evaluate(
+        """() => {
+            const s = document.getElementById('main-content');
+            const tb = document.querySelector('[data-testid=grp-table] tbody');
+            const first = tb.querySelector('tr[data-proxy]');
+            const sr = s.getBoundingClientRect();
+            const fb = first.getBoundingClientRect();
+            return {
+                scroll_top: s.scrollTop, scroll_height: s.scrollHeight, client_height: s.clientHeight,
+                tbody_offset: +(tb.getBoundingClientRect().top - sr.top + s.scrollTop).toFixed(1),
+                first_idx: Number(first.dataset.idx),
+                first_top: +(fb.top - sr.top).toFixed(1),
+                row_h: +fb.height.toFixed(1),
+                rows: tb.querySelectorAll('tr[data-proxy]').length,
+            };
+        }"""
+    )
+
+
 def wait_layout_stable(page: Page, selector: str) -> None:
     """等元素盒子在两帧之间不再变化：视口缩放会触发重排，未稳定时的坐标/右键都不可靠
     （右键菜单还会被 resize 事件关闭）"""
@@ -265,6 +290,50 @@ class TestGroups:
         page.keyboard.press("Control+a")
         page.wait_for_timeout(200)
         assert page.locator('[data-testid="grp-table"] tbody tr.selected').count() >= 3
+
+    def test_scroll_margin_survives_resize(self, page):
+        """滚动状态下改窗口尺寸后列表仍对齐（曾因 scrollMargin 多减一个 spacer 高而整屏空白）
+
+        两个必要条件，缺一个用例就是假通过：① 列表真的能滚（staging 灌到 120+ 行，原数据 3 行滚不动）；
+        ② 必须处于滚动状态（首行被渲染在视口上方）再 resize —— 顶部时 padTop=0，多减少减等价。
+        改尺寸前的缺陷表现：渲染行被推到视口下方 2111px（整屏空白），总高 10265→15484。
+        """
+        extra = [f"http://10.99.{i // 250}.{i % 250 + 1}:8080" for i in range(120)]
+        assert requests.post(f"{BASE_URL}/api/group/staging/add", json={"proxies": extra}, timeout=10).ok
+        total = len(group_proxies("staging"))
+        try:
+            # 组明细只在切组时重取：reload 让页面重新拉一次 staging（默认组为 default-http）
+            page.reload()
+            page.wait_for_selector('[data-testid="grp-select"]')
+            page.select_option('[data-testid="grp-select"]', "staging")
+            # 等明细就位：虚拟列表 DOM 里只有可视行，只能按「共 N 条」判，不能数 DOM 行
+            page.wait_for_function(
+                "n => (document.querySelector('[data-testid=grp-info]')?.textContent || '').includes(`共 ${n} 条`)",
+                arg=total, timeout=10000,
+            )
+            page.evaluate("document.getElementById('main-content').scrollTop = 0")
+            page.wait_for_timeout(300)
+            at_top = group_table_geometry(page)
+            assert at_top["scroll_height"] > at_top["client_height"] + 2000, f"列表不足以滚动，用例无效：{at_top}"
+
+            page.evaluate("document.getElementById('main-content').scrollTop = 3000")
+            page.wait_for_timeout(300)
+            before = group_table_geometry(page)
+            assert before["first_top"] < -before["row_h"], f"未进入滚动状态，测不到该缺陷：{before}"
+
+            page.set_viewport_size({"width": 1200, "height": 700})
+            page.wait_for_timeout(600)
+            after = group_table_geometry(page)
+
+            # ① 症状：视口顶必须仍被某行盖住，不允许整屏空白
+            assert after["first_top"] <= after["row_h"], f"改尺寸后列表漂移出视口：{before} → {after}"
+            # ② 总高不得膨胀：漂移会把顶部 spacer 拉长，实测一次 resize +5217px
+            assert after["scroll_height"] < before["scroll_height"] + 1500, f"总高异常膨胀：{before} → {after}"
+            # ③ 渲染起点仍对应同一滚动位置（overscan=8，容差 2 行）
+            expect = int((after["scroll_top"] - after["tbody_offset"]) / after["row_h"]) - 8
+            assert abs(after["first_idx"] - expect) <= 2, f"渲染起点错位：{after}，期望约 {expect}"
+        finally:
+            requests.post(f"{BASE_URL}/api/proxy/remove", json={"proxies": extra, "group": "staging"}, timeout=10)
 
     def test_export_csv_download(self, page):
         with page.expect_download(timeout=10000) as dl:
