@@ -26,7 +26,7 @@
 |---|---|
 | `sslcontexts` 弱引用 | 原全局 `list` 只 append 不清理 → SSLContext 泄漏/堆损坏；`_WeakSSLContexts` 弱引用容器，Connection 移除后可 GC |
 | `modstat` 钩子传 `roption` | 4 参签名（原 3 参），按代理统计流量（项目 per-proxy 流量功能依赖） |
-| 目标连接失败回错误应答（#169） | `stream_handler` 在 `open_connection`/`prepare_connection` 失败时调协议 `error_reply` |
+| 目标连接失败回错误应答（#169） | `stream_handler` 在 `open_connection`/`prepare_connection` 失败时调协议 `error_reply`——**含连接超时**（超时曾单独一个分支只 `raise`，绕过 `error_reply`，客户端的超时场景仍收到空响应）；须传**原始异常**，包装成 `Exception` 后 Socks5 映射不出 `0x06` |
 | BLOCK 规则应答 | 命中规则回 RFC 1928 REP `0x02` 再关闭 |
 | 规则文件缺失友好报错 | `compile_rule` 文件不存在抛 `ArgumentTypeError`，不再裸回溯 |
 | 跳转链双下划线（#203） | 只把含 `://` 的段视为独立跳转，fragment auth 用户名里的合法 `__` 不被误切 |

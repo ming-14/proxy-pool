@@ -86,13 +86,17 @@ async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, s
             verbose(f'{lproto.name} {remote_text}{roption.logtext(host_name, port)}')
             try:
                 reader_remote, writer_remote = await roption.open_connection(host_name, port, local_addr, lbind)
-            except asyncio.TimeoutError:
-                raise Exception(f'Connection timeout {roption.bind}')
             except Exception as ex:
-                # #169：目标连接失败（如 ConnectionRefusedError）时按协议回错误应答
-                # （Socks5 回 RFC1928 REP 码），否则客户端收到空响应而非明确错误。
+                # #169：目标连接失败一律按协议回错误应答——拒绝/DNS 解析失败/连接超时都算，
+                # Socks5 回 RFC1928 REP 码（0x05 拒绝 / 0x04 解析失败 / 0x06 超时）、HTTP 回
+                # 502；不回则客户端只拿到空响应（curl 报 Empty reply）而不是明确错误。
+                # 必须传原始异常：error_reply 按异常类型映射 REP 码，先包装成 Exception 再传
+                # 会丢掉类型、退化成 0x01 general failure（超时此前就是这样被漏掉的）。
                 if hasattr(lproto, 'error_reply'):
                     await lproto.error_reply(writer, ex)
+                if isinstance(ex, asyncio.TimeoutError):
+                    # 超时另行包装：外层只对 asyncio.TimeoutError 静默，超时需留日志线索
+                    raise Exception(f'Connection timeout {roption.bind}') from ex
                 raise
             try:
                 reader_remote, writer_remote = await roption.prepare_connection(reader_remote, writer_remote, host_name, port)

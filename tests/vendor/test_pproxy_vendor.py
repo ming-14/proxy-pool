@@ -13,6 +13,9 @@
 - 流式长连接误杀：转发通道单向读空闲超时（SOCKET_TIMEOUT）即结束会话，
   流式响应期间 client→upstream 天然静默 → 超过窗口的连接必被掐。
   修复后会话回收以「双向共同静默满窗口」（proto.SessionActivity）为准（本测试防回归）
+- #169 补漏：目标连接**超时**曾单独一个 `except asyncio.TimeoutError` 分支只 `raise`，
+  绕过 `error_reply` → 超时场景客户端仍收空响应。修复后超时与其它连接失败统一回错误应答
+  （HTTP 502 / Socks5 REP 0x06），见 `TestConnectTimeoutErrorReply`（本测试防回归）
 """
 
 import asyncio
@@ -584,6 +587,78 @@ class TestSocks5ErrorReply(unittest.TestCase):
         resp = asyncio.run(run())
         self.assertEqual(resp[0], 0x05)
         self.assertEqual(resp[1], 0x05, f"应为 Connection refused: {resp!r}")
+
+
+class TestConnectTimeoutErrorReply(unittest.TestCase):
+    """#169 补漏：目标连接**超时**同样要回明确错误，不能只回空响应
+
+    旧实现把超时单独放一个 `except asyncio.TimeoutError` 分支且只 `raise`，绕过了
+    `error_reply`——于是 proto 里 `Socks5.error_reply` 的 TimeoutError→0x06（TTL
+    expired）与 `HTTP.error_reply` 的 502 全成死代码，客户端在超时场景仍拿到空响应
+    （curl 报 Empty reply），与 #169「不再回空响应」的意图相悖。修复：超时与其它连接
+    失败合并为一条分支统一回 `error_reply`，并把**原始异常**传下去——先包装成
+    Exception 会丢类型，Socks5 的 REP 会退化成 0x01 general failure。
+
+    `open_connection` 的超时默认值在 def 时求值（SOCKET_TIMEOUT=60s），patch 模块常量
+    改不动它，故这里包一层把窗口压到 `TIMEOUT`，配合必然慢于窗口的 connect 复现超时。
+    """
+
+    TIMEOUT = 0.3
+
+    async def _drive(self, listen_uri: str, drive):
+        server = PproxyServer(f"{listen_uri}://127.0.0.1:0")
+        await server.start([])          # 无上游 → roption = DIRECT，走直连
+        port = server._handler.sockets[0].getsockname()[1]
+        try:
+            return await drive(port)
+        finally:
+            await server.close()
+
+    def _run(self, listen_uri: str, drive):
+        timeout = self.TIMEOUT
+        orig_open = pproxy.server.ProxyDirect.open_connection
+
+        async def slow_connect(self, host, port, local_addr, family):
+            await asyncio.sleep(5)      # 模拟 connect 卡住（SYN 无应答）
+            raise OSError("unreachable")
+
+        async def short_timeout_open(self, host, port, local_addr, lbind,
+                                     _default=pproxy.server.SOCKET_TIMEOUT):
+            return await orig_open(self, host, port, local_addr, lbind, timeout=timeout)
+
+        with mock.patch.object(pproxy.server.ProxyDirect, "wait_open_connection", slow_connect), \
+             mock.patch.object(pproxy.server.ProxyDirect, "open_connection", short_timeout_open):
+            return asyncio.run(self._drive(listen_uri, drive))
+
+    def test_http_connect_timeout_returns_502(self):
+        """HTTP 代理：超时应回 502 Bad Gateway（旧行为：空响应）"""
+        async def drive(port):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET http://203.0.113.9/ HTTP/1.1\r\nHost: 203.0.113.9\r\n\r\n")
+            await writer.drain()
+            buf = await asyncio.wait_for(reader.read(4096), timeout=10)
+            writer.close()
+            return buf
+
+        buf = self._run("http", drive)
+        self.assertTrue(buf.startswith(b"HTTP/1.1 502"), f"超时应回完整 502: {buf!r}")
+
+    def test_socks5_connect_timeout_returns_ttl_expired(self):
+        """SOCKS5：超时应回 REP 0x06 TTL expired（旧行为：空响应）"""
+        async def drive(port):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"\x05\x01\x00")
+            await writer.drain()
+            await reader.readexactly(2)                     # 05 00 no-auth
+            writer.write(b"\x05\x01\x00\x03\x09" + b"127.0.0.1" + (80).to_bytes(2, "big"))
+            await writer.drain()
+            resp = await asyncio.wait_for(reader.readexactly(10), timeout=10)
+            writer.close()
+            return resp
+
+        resp = self._run("socks5", drive)
+        self.assertEqual(resp[0], 0x05)
+        self.assertEqual(resp[1], 0x06, f"超时应回 TTL expired: {resp!r}")
 
 
 class TestSocks5AuthReply(unittest.TestCase):
