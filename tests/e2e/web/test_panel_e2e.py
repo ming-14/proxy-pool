@@ -485,6 +485,38 @@ class TestStandby:
         page.wait_for_selector('[data-testid="sb-table"] tbody tr[data-locked]', state="detached", timeout=8000)
         assert page.locator('[data-testid="sb-table"] tbody tr.row-dimmed').count() == 0
 
+    def test_ctrl_a_blocked_while_locked(self, page):
+        """锁定态下 Ctrl+A 不得选中：灰显行不可交互，不该叠选中高亮、也不该一直冻结列表顺序
+
+        Ctrl+A 走 document keydown，若只挡鼠标（isExcludedTarget），它就会绕过锁定守卫
+        把 row-dimmed 行一起选中。
+        """
+        page.keyboard.press("Control+a")
+        page.wait_for_timeout(200)
+        assert page.locator('[data-testid="sb-table"] tbody tr.selected').count() >= 1, "未锁定时 Ctrl+A 应能全选"
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+
+        standby_rows(page).last.locator('button[data-action="lock"]').click()
+        page.wait_for_selector('[data-testid="sb-table"] tbody tr[data-locked]', timeout=8000)
+        page.wait_for_timeout(500)
+        assert page.locator('[data-testid="sb-table"] tbody tr.row-dimmed').count() >= 1
+
+        page.keyboard.press("Control+a")
+        page.wait_for_timeout(200)
+        assert page.locator('[data-testid="sb-table"] tbody tr.selected').count() == 0, "锁定期间 Ctrl+A 仍产生了选中"
+        assert page.locator('[data-testid="sb-table"] tbody tr.row-dimmed.selected').count() == 0
+
+        # 解锁后恢复可选中（确认挡的是锁定态，不是把选择功能整体关掉）
+        page.click('[data-testid="unlock-btn"]')
+        page.wait_for_selector('[data-testid="sb-table"] tbody tr[data-locked]', state="detached", timeout=8000)
+        page.wait_for_timeout(300)
+        page.keyboard.press("Control+a")
+        page.wait_for_timeout(200)
+        assert page.locator('[data-testid="sb-table"] tbody tr.selected').count() >= 1, "解锁后 Ctrl+A 应恢复"
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+
     def test_context_menu_reposition_clamped(self, page):
         """菜单已打开时再次右键：夹取必须仍然生效（曾因重渲染把夹取结果覆盖回原始点击点）
 

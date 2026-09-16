@@ -42,7 +42,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
 │       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆（默认空闲端口，PP_E2E_* 可固定）
-│       └── test_panel_e2e.py          # 四页导航/主题/框选（含边缘自动滚动）/右键（含二次定位夹取与移出）/行下质量带常显与低质量标记/固定置顶/锁定/调度参数/源控制/日志面板/代理组虚拟滚动改尺寸后仍对齐 32 项
+│       └── test_panel_e2e.py          # 四页导航/主题/框选（含边缘自动滚动）/右键（含二次定位夹取与移出）/行下质量带常显与低质量标记/固定置顶/锁定（含锁定态 Ctrl+A 不得选中）/调度参数/源控制/日志面板/代理组虚拟滚动改尺寸后仍对齐 33 项
 └── vendor/                            # vendor 库回归测试
     └── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用等）
 ```

@@ -92,8 +92,11 @@ const selection = useRowSelection<StandbyEntry>({
   getRows: () => displayStandby.value,
   proxyOf: (r) => r.proxy,
   indexAtY,
-  // 锁定期间队列行不参与框选/多选（等价旧版"整卡禁用"；锁定行的按钮仍可用）
-  isExcludedTarget: (e) => hasLock.value || !!(e.target as HTMLElement).closest('code, button'),
+  // 锁定期间队列行不参与框选/多选（等价旧版"整卡禁用"；锁定行的按钮仍可用）。
+  // 必须整体禁用：只挡鼠标会被键盘 Ctrl+A 绕过（它走 document keydown，不经过
+  // isExcludedTarget），于是灰显行被全选、叠上选中高亮并一直冻结列表顺序
+  isSelectionDisabled: () => hasLock.value,
+  isExcludedTarget: (e) => !!(e.target as HTMLElement).closest('code, button'),
 });
 
 // ---------------- 顺序冻结（选中/拖拽/悬浮期间行不跑位） ----------------
@@ -108,7 +111,8 @@ watch(
 );
 
 // 锁定后队列行不可交互：清空残留选中——否则选中态会继续冻结列表顺序，
-// 并在灰显行上叠一层选中高亮（既不可操作又看着像被选中）
+// 并在灰显行上叠一层选中高亮（既不可操作又看着像被选中）。
+// 此后新产生的选中由 useRowSelection 的 isSelectionDisabled 挡住（鼠标与键盘一致）
 watch(hasLock, (locked) => {
   if (locked) selection.clear();
 });

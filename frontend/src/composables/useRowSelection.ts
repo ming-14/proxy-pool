@@ -22,6 +22,12 @@ export interface RowSelectionOptions<T> {
   indexAtY: (clientY: number) => number;
   /** 是否禁止从该目标开始交互（按钮/输入框等） */
   isExcludedTarget?: (e: MouseEvent) => boolean;
+  /**
+   * 整体禁用选择（队列页锁定单一上游时）：鼠标与键盘（Ctrl+A）路径一并挡住。
+   * 只挡鼠标不够——键盘走 document keydown，会绕过 isExcludedTarget。
+   * 置为 true 时不会自动清空已有选中，调用方负责（见 StandbyPage 的 hasLock 监听）。
+   */
+  isSelectionDisabled?: () => boolean;
   /** 首次进入拖拽回调（页面用于关闭 hover 浮层） */
   onDragStart?: () => void;
 }
@@ -84,6 +90,11 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
   }
 
   // ---------------- 选中计算 ----------------
+  /** 整体禁用时任何入口都不产生选中（鼠标/键盘/程序调用三条路径统一在此判定） */
+  function isDisabled(): boolean {
+    return opts.isSelectionDisabled?.() === true;
+  }
+
   /** 将 [lo,hi] 索引区间应用到选中集；ctrl 时切换框内（保留框外 baseSet） */
   function applyRange(lo: number, hi: number, ctrl: boolean, baseSet: Set<string> | null) {
     const rows = opts.getRows();
@@ -116,7 +127,7 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
   // ---------------- 事件 ----------------
   function onMouseDown(e: MouseEvent) {
     if (e.button !== 0) return;
-    if (opts.isExcludedTarget?.(e)) return;
+    if (isDisabled() || opts.isExcludedTarget?.(e)) return;
     const scrollEl = opts.scrollEl();
     if (!scrollEl) return;
     const tr = (e.target as HTMLElement).closest('tbody tr');
@@ -236,6 +247,7 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
 
   // ---------------- 全选 / 清空 / 键盘 / 外部点击 ----------------
   function selectAll() {
+    if (isDisabled()) return;
     selected.value = new Set(opts.getRows().map((r) => opts.proxyOf(r)).filter(Boolean));
     anchorIndex = -1;
   }
@@ -246,6 +258,7 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
   }
 
   function selectOne(proxy: string | null) {
+    if (isDisabled()) return;
     selected.value = new Set(proxy ? [proxy] : []);
     anchorIndex = -1;
   }
@@ -261,19 +274,19 @@ export function useRowSelection<T>(opts: RowSelectionOptions<T>): RowSelectionAp
     }
   }
 
-/** 点击容器外空白 → 清空选中；排除交互控件与浮动层（菜单/模态/框选矩形） */
-function onDocMouseDown(e: MouseEvent) {
-  if (e.button !== 0) return;
-  const container = opts.container.value;
-  if (!container || container.contains(e.target as Node)) return;
-  if (
-    (e.target as HTMLElement).closest(
-      'button, input, select, textarea, .context-menu, .modal-overlay, .marquee-select',
+  /** 点击容器外空白 → 清空选中；排除交互控件与浮动层（菜单/模态/框选矩形） */
+  function onDocMouseDown(e: MouseEvent) {
+    if (e.button !== 0) return;
+    const container = opts.container.value;
+    if (!container || container.contains(e.target as Node)) return;
+    if (
+      (e.target as HTMLElement).closest(
+        'button, input, select, textarea, .context-menu, .modal-overlay, .marquee-select',
+      )
     )
-  )
-    return;
-  clear();
-}
+      return;
+    clear();
+  }
 
   onMounted(() => {
     opts.container.value?.addEventListener('mousedown', onMouseDown);
