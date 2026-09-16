@@ -21,6 +21,10 @@ describe('fmtBytes', () => {
     expect(fmtBytes(1073741824)).toBe('1.00GB');
     expect(fmtBytes(3145728)).toBe('3.0MB');
   });
+  it('B 档浮点输入取整，不显示长串小数', () => {
+    expect(fmtBytes(64.43327449829533)).toBe('64B');
+    expect(fmtBytes(64.5)).toBe('65B');
+  });
 });
 
 describe('fmtBytesSpaced', () => {

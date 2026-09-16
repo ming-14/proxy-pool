@@ -6,7 +6,9 @@
 /** 字节自适应：B / KB / MB / GB（保留旧两处实现的各自格式） */
 export function fmtBytes(n: number | null | undefined): string {
   if (n == null) return '-';
-  if (n < 1024) return `${n}B`;
+  // B 是字节最小单位：浮点速率/累计（差分与 modstat 计数都可产生小数）取整显示，
+  // 否则会输出 64.43327449829533B 这类长串小数
+  if (n < 1024) return `${Math.round(n)}B`;
   if (n < 1048576) return `${(n / 1024).toFixed(1)}KB`;
   if (n < 1073741824) return `${(n / 1048576).toFixed(1)}MB`;
   return `${(n / 1073741824).toFixed(2)}GB`;
