@@ -167,7 +167,10 @@ export class LogPanel {
     this._heights = new WeakMap(); // entry → 折叠态实测行高（布局像素）
     this._detailH = new WeakMap(); // entry → 展开详情实测高度
     this._expanded = new Set();    // 展开态存在这里而非 DOM：行会被回收
+    // 估算行高取已实测行的累计均值：按最后一批取会让尾部几行主导估算值，实测偏差达 20%
     this._estHeight = 0;
+    this._estSum = 0;
+    this._estCount = 0;
     this._offsets = [0];         // _offsets[i] = 第 i 行的顶边偏移，长度 n+1
     this._offsetsDirty = true;
     this._range = { start: 0, end: 0 };
@@ -722,7 +725,14 @@ export class LogPanel {
         this._paused = !this._paused;
         this._syncPauseIcon();
         pauseBtn.title = this._paused ? this._t('logpanel.resumeReceiving') : this._t('logpanel.pauseReceiving');
-        this._updateStatus();
+        // 暂停期间的日志被 _onNewEntry 丢掉、不进 _pending；恢复必须补建，
+        // 否则视图停在暂停那一刻，要等下一条新日志才动
+        if (this._paused) {
+          this._updateStatus();
+        } else {
+          this._flushPendingTags();
+          this._rerenderAll();
+        }
       };
     }
 
@@ -885,13 +895,17 @@ export class LogPanel {
       this._flushScheduled = false;
       if (!this._pending.length) return;
       this._pending.length = 0;
-      if (this._tagsDirty) {
-        this._tagsDirty = false;
-        this._rebuildTagChips();
-      }
+      this._flushPendingTags();
       this._rerenderAll(true);
     };
     this._nextFrame(flush);
+  }
+
+  /** 补建 tag 筛选条：攒批/暂停期间只打脏标记，真正重建推迟到这里 */
+  _flushPendingTags() {
+    if (!this._tagsDirty) return;
+    this._tagsDirty = false;
+    this._rebuildTagChips();
   }
 
   /**
@@ -952,7 +966,9 @@ export class LogPanel {
       }
     }
     this._msr.replaceChildren();
-    this._estHeight = Math.max(1, Math.round(sum / els.length));
+    this._estCount += els.length;
+    this._estSum += sum;
+    this._estHeight = Math.max(1, Math.round(this._estSum / this._estCount));
     if (changed) this._offsetsDirty = true;
     return true;
   }
@@ -1025,6 +1041,8 @@ export class LogPanel {
     // 进入时是否贴底：测高会改变内容总高，贴底状态要维持住
     const wasAtBottom = body.scrollHeight - body.scrollTop - clientH < 5;
     let corrected = false;
+    // 补窗基准：本次渲染真正使用的视口顶边（跟随时按总高算，body.scrollTop 还是上一帧的值）
+    let renderTop = body.scrollTop;
 
     for (let pass = 0; pass < MAX_LAYOUT_PASSES; pass++) {
       this._buildOffsets();
@@ -1036,6 +1054,7 @@ export class LogPanel {
 
       const beforeStart = this._offsets[range.start];
       this._paint(range, total);
+      renderTop = top;   // 只认真正画出去的那一轮，补窗基准才与 DOM 一致
 
       if (!this._measureRows(this._painted)) break;
       corrected = true;
@@ -1048,11 +1067,12 @@ export class LogPanel {
 
     // 补偿发生在渲染之后，最后一轮仍可能错位：按最终滚动位置补一次纯渲染
     if (corrected && !this._autoScroll) {
+      renderTop = body.scrollTop;
       this._buildOffsets();
-      this._paint(this._rangeFor(body.scrollTop, clientH), this._offsets[n]);
+      this._paint(this._rangeFor(renderTop, clientH), this._offsets[n]);
     }
 
-    this._ensureCoverage(clientH);
+    this._ensureCoverage(renderTop, clientH);
 
     // 补窗与测高都会改变内容总高：跟随时、或进入时本就贴着底的，渲染完都要重新贴底
     if (this._autoScroll || wasAtBottom) body.scrollTop = body.scrollHeight;
@@ -1148,6 +1168,8 @@ export class LogPanel {
     this._heights = new WeakMap();
     this._detailH = new WeakMap();
     this._estHeight = 0;
+    this._estSum = 0;
+    this._estCount = 0;
     this._offsetsDirty = true;
     this._measureCursor = 0;
     this._scheduleMeasure();
@@ -1156,8 +1178,9 @@ export class LogPanel {
   /**
    * 窗口行数是在偏移空间里算的，依赖估算行高；估算偏大时实际渲染出的行
    * 高度可能不足一屏，底部就会露出撑高块的空白。这里按实测高度补齐窗口。
+   * @param {number} top 本次渲染使用的视口顶边（跟随模式下不等于 body.scrollTop）
    */
-  _ensureCoverage(clientH) {
+  _ensureCoverage(top, clientH) {
     const body = this._el.body;
     if (!body) return;
     for (let guard = 0; guard < COVERAGE_MAX_PASSES; guard++) {
@@ -1165,7 +1188,6 @@ export class LogPanel {
       if (!rows.length) return;
       const firstTop = this._padTop.offsetHeight;
       const lastBottom = firstTop + rows.reduce((a, r) => a + r.el.offsetHeight, 0);
-      const top = body.scrollTop;
       const n = this._view.length;
       let start = this._range.start;
       let end = this._range.end;
