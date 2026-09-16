@@ -13,6 +13,7 @@
 import asyncio
 import logging
 import os
+import socket
 import sys
 import tempfile
 import unittest
@@ -47,6 +48,21 @@ async def close_server(srv):
     """关闭 asyncio.Server（close 返回 None，非 awaitable）"""
     srv.close()
     await srv.wait_closed()
+
+
+def free_local_port() -> int:
+    """取一个刚释放的本地端口，作为"必然连不上"的目标
+
+    不能用 192.0.2.1:1 这类不可路由地址当"不可达目标"：部分网络（本机即如此）有透明
+    代理接管所有 TCP 连接，connect 会立即"成功"，响应内容随环境漂移——曾观测到回 502
+    导致用例失败。已释放的本地端口连接必被拒（ConnectionRefusedError），不依赖外网与
+    路由，跨环境结果一致。
+    """
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 def make_pool():
@@ -97,7 +113,8 @@ def make_standby(pool, record, check):
 async def http_request_via_proxy(proxy_port: int, host: str = "example.com") -> bytes:
     """以 HTTP 代理模式经本地 pproxy 发起请求，返回响应体
 
-    host 可为 "example.com" 或 "192.0.2.1:1"（带端口）。
+    host 可为 "example.com"（默认，走 mock 上游）或带端口的 "127.0.0.1:<port>"
+    （端口由 free_local_port() 取，用于模拟必然连接被拒的目标）。
     """
     if ":" in host and not host.endswith(":443"):
         h, port = host.rsplit(":", 1)
@@ -291,10 +308,14 @@ class TestServeE2E(ServeE2EBase):
             resp = await http_request_via_proxy(listen_port)
             self.assertIn(MOCK_BODY, resp)
 
-            # 动态移除上游 -> 请求目标改为无效地址（rserver 空时 pproxy 直连，目标不可达返回空）
+            # 动态移除上游 -> 请求目标改为必然被拒的地址（rserver 空时 pproxy 直连）。
+            # 断言"不再由 mock 应答"（mock 对任何目标都回 MOCK_BODY）+ "直连失败回明确
+            # 错误"（pproxy 连接失败走 error_reply 回 502，而非空响应）。
+            dead_port = free_local_port()
             server.sync([])
-            resp = await http_request_via_proxy(listen_port, host="192.0.2.1:1")
-            self.assertEqual(resp, b"")
+            resp = await http_request_via_proxy(listen_port, host=f"127.0.0.1:{dead_port}")
+            self.assertNotIn(MOCK_BODY, resp)
+            self.assertIn(b"502", resp)
 
             # 动态加回 -> 恢复经 mock 上游转发
             server.sync([proxy_uri])
