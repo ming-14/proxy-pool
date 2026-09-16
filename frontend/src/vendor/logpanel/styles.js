@@ -412,6 +412,12 @@ export const STYLES = `
   line-height: 1.5;
 }
 
+/* 虚拟滚动撑高块：占据未渲染区域的滚动空间（上下各一块） */
+.lp-vpad {
+  width: 100%;
+  flex-shrink: 0;
+}
+
 .lp-empty {
   padding: 24px;
   text-align: center;
@@ -451,6 +457,15 @@ export const STYLES = `
   border-left: 3px solid transparent;
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+/* 批量测高池：正常流内 0 高 + overflow 裁剪，既不撑开滚动区也不产生可滚动溢出，
+   同时继承 .lp-right 的字体，实测行高与真实渲染一致 */
+.lp-msr {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .lp-log-line[data-level="0"] { border-left-color: var(--lp-level-debug); }

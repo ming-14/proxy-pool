@@ -7,6 +7,8 @@
  *   - 全部 UI 封装在 Shadow DOM 内，不污染宿主 DOM/CSS。
  *   - 持久化自带 localStorage，key 前缀可配。
  *   - 不依赖任何外部模块，零依赖。
+ *   - 列表虚拟滚动：DOM 只是渲染源的一个窗口；行高可变，故批量预实测全部行高，
+ *     未渲染区域才不需要靠估算撑高度（否则总高会随滚动漂移、滚动条不跟手）。
  *
  * API：
  *   const panel = new LogPanel(opts);
@@ -34,6 +36,28 @@ const WINDOW_SIZES = {
   large:  { w: 720, h: 480, zoom: 1.15 },
   xlarge: { w: 960, h: 600, zoom: 1.3 },
 };
+
+/** 视口外额外渲染的行数（上下各一份），吸收快速滚动时的空白 */
+const OVERSCAN = 4;
+
+/** 行高未实测前的估算值；批量测高跑起来后即被实测均值取代 */
+const DEFAULT_ROW_HEIGHT = 22;
+
+/** 测高修正的最大重排轮数：估算值偏差大时靠它收敛 */
+const MAX_LAYOUT_PASSES = 3;
+
+/** 单批测高的上限行数。瓶颈是批量布局（非构建），批太大就会掉帧 */
+const MEASURE_BATCH = 64;
+
+/** 单批测高的构建时间预算（ms）：长行构建更贵，按时间切批作为第二道闸 */
+const MEASURE_BUDGET_MS = 4;
+
+/** 每帧用于测高的总预算（ms）：留足给渲染与交互 */
+const MEASURE_FRAME_BUDGET_MS = 10;
+
+/** 覆盖不足时每次扩充的行数与最大轮数 */
+const COVERAGE_STEP = 10;
+const COVERAGE_MAX_PASSES = 8;
 
 /**
  * @param {object} opts
@@ -135,6 +159,22 @@ export class LogPanel {
     this._visible = false;
     this._mounted = false;
 
+    // 渲染状态
+    // _view 是唯一渲染源（过滤后的 entry 序列），DOM 只是它的一个窗口
+    this._view = [];
+    this._pending = [];          // 一帧内到达的新日志，攒批后统一渲染
+    this._flushScheduled = false;
+    this._heights = new WeakMap(); // entry → 折叠态实测行高（布局像素）
+    this._detailH = new WeakMap(); // entry → 展开详情实测高度
+    this._expanded = new Set();    // 展开态存在这里而非 DOM：行会被回收
+    this._estHeight = 0;
+    this._offsets = [0];         // _offsets[i] = 第 i 行的顶边偏移，长度 n+1
+    this._offsetsDirty = true;
+    this._range = { start: 0, end: 0 };
+    this._painted = [];          // 最近一次渲染出的行（供测高用）
+    this._measureCursor = 0;     // 批量测高的扫描游标
+    this._measureScheduled = false;
+
     // 主题
     this._theme = this._opts.theme || 'auto';
 
@@ -167,6 +207,7 @@ export class LogPanel {
     this._visible = true;
     this._host.removeAttribute('data-hidden');
     if (!this._mounted) this._mount();
+    this._scheduleMeasure();
     this._emit('visibleChange', true);
   }
 
@@ -196,6 +237,8 @@ export class LogPanel {
         if (value && value.tagColor) {
           this._rules.tagColor = Object.assign({}, DEFAULT_RULES.tagColor, value.tagColor);
         }
+        // rules 可能改变展示文本 → 实测行高作废
+        this._invalidateHeights();
         this._rerenderAll();
         break;
       case 'hooks': this._hooks = value || {}; break;
@@ -271,6 +314,18 @@ export class LogPanel {
       titleText:    shadow.querySelector('.lp-title span'),
     };
 
+    // 虚拟滚动撑高元素：上下各一块，高度 = 未渲染区域的总高
+    this._padTop = document.createElement('div');
+    this._padTop.className = 'lp-vpad';
+    this._padBottom = document.createElement('div');
+    this._padBottom.className = 'lp-vpad';
+
+    // 批量测高池：放在滚动容器内以继承其字体，自身 0 高被裁剪，不产生滚动空间
+    // 构造时就挂进去，保证任何一次测高都在文档内（脱离文档的 offsetHeight 恒为 0）
+    this._msr = document.createElement('div');
+    this._msr.className = 'lp-msr';
+    this._el.body.appendChild(this._msr);
+
     // 标题文字
     if (this._opts.title) this._el.titleText.textContent = this._opts.title;
 
@@ -341,12 +396,14 @@ export class LogPanel {
     this._bindResize();
     this._bindToolbar();
     this._bindViewportClamp();
-    this._bindAutoScrollSmart();
+    this._bindScroll();
 
     // 订阅 source
     this._sourceCb = (entry) => {
       if (entry && entry.type === 'clear') {
         this._seenTags.clear();
+        this._expanded.clear();
+        this._pending.length = 0;
         this._rebuildTagChips();
         this._rerenderAll();
         return;
@@ -536,6 +593,9 @@ export class LogPanel {
       document.removeEventListener('touchmove', tm);
       document.removeEventListener('touchend', te);
       this._saveGeometry();
+      // 宽度变了 → 换行行数变 → 实测行高全部作废
+      this._invalidateHeights();
+      this._renderWindow();
       if (this._autoScroll) this._scrollToBottom();
     };
     const mm = (e) => onMove(e.clientX, e.clientY);
@@ -568,16 +628,22 @@ export class LogPanel {
   }
 
   // ──────────────────────────────────────────────
-  // 智能自动滚动
+  // 滚动：重排窗口 + 智能跟随
   // ──────────────────────────────────────────────
 
-  _bindAutoScrollSmart() {
-    if (!this._features.autoScroll) return;
+  _bindScroll() {
     const body = this._el.body;
     if (!body) return;
     let isUserScroll = false;
+    let renderScheduled = false;
+
     body.addEventListener('scroll', () => {
-      if (!this._autoScroll || this._autoScrollUserEnabled) return;
+      // 滚动只重排窗口，同一帧内的多次事件合并成一次
+      if (!renderScheduled) {
+        renderScheduled = true;
+        this._nextFrame(() => { renderScheduled = false; this._renderWindow(); });
+      }
+      if (!this._features.autoScroll || !this._autoScroll || this._autoScrollUserEnabled) return;
       const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 5;
       if (!atBottom && !isUserScroll) {
         isUserScroll = true;
@@ -587,6 +653,12 @@ export class LogPanel {
       }
       if (atBottom) isUserScroll = false;
     });
+  }
+
+  /** 统一在下一帧执行：没有 rAF 的环境（老浏览器/非浏览器宿主）退回定时器 */
+  _nextFrame(fn) {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fn);
+    else setTimeout(fn, 16);
   }
 
   // ──────────────────────────────────────────────
@@ -792,39 +864,341 @@ export class LogPanel {
     }
 
     const tag = this._rules.tag(entry);
-    const tagChanged = !this._seenTags.has(tag);
-    this._seenTags.add(tag);
-    if (tagChanged) this._rebuildTagChips();
+    if (!this._seenTags.has(tag)) {
+      this._seenTags.add(tag);
+      this._tagsDirty = true;
+    }
 
     if (this._paused) return;
-    this._appendEntry(entry);
-    this._updateStatus();
-    if (this._autoScroll) this._scrollToBottom();
+    this._pending.push(entry);
+    this._scheduleFlush();
   }
 
-  _appendEntry(entry) {
-    const body = this._el.body;
-    if (!body) return;
-    if (!this._passesFilter(entry)) return;
-    body.appendChild(this._buildLineEl(entry));
-    const cap = this._safeGetCapacity();
-    while (body.childElementCount > cap) body.removeChild(body.firstChild);
+  /**
+   * 把一帧内到达的新日志合并成一次「过滤 + 渲染 + 滚动」。
+   * 逐条处理时每条都会读一次 scrollHeight 而强制整表重排，突发日志下这是主要开销。
+   */
+  _scheduleFlush() {
+    if (this._flushScheduled) return;
+    this._flushScheduled = true;
+    const flush = () => {
+      this._flushScheduled = false;
+      if (!this._pending.length) return;
+      this._pending.length = 0;
+      if (this._tagsDirty) {
+        this._tagsDirty = false;
+        this._rebuildTagChips();
+      }
+      this._rerenderAll(true);
+    };
+    this._nextFrame(flush);
   }
 
-  _rerenderAll() {
-    const body = this._el.body;
-    if (!body) return;
-    const frag = document.createDocumentFragment();
-    const entries = this._filteredEntries();
-    for (const e of entries) frag.appendChild(this._buildLineEl(e));
-    body.innerHTML = '';
-    body.appendChild(frag);
+  /**
+   * @param {boolean} [compensateTrim] 新日志到达引发的重建：源是环形缓冲，
+   *   淘汰头部会把视口内容整体上顶，需要把被淘汰行的高度从 scrollTop 里减掉。
+   *   过滤条件变化引发的重建不能补偿（那本来就该改变视图）。
+   */
+  _rerenderAll(compensateTrim) {
+    this._rebuildView(compensateTrim);
+    this._renderWindow();
     this._updateStatus();
     if (this._autoScroll) this._scrollToBottom();
   }
 
   _filteredEntries() {
     return this._safeGetEntries().filter((e) => this._passesFilter(e));
+  }
+
+  /**
+   * 批量实测未量过的行高。
+   *
+   * 行高可变（正文换行）时，只测可视几行意味着未渲染区域永远靠估算撑高度，
+   * 总高会随滚动不断修正 —— 滚动条必然漂移。这里把所有行提前量一遍：
+   * 一批塞进测高池后只触发一次布局，逐行读 offsetHeight，代价与行数无关。
+   * @returns {boolean} 本批是否量到了行（用于判断是否继续排下一批）
+   */
+  _measureBatch() {
+    const body = this._el.body;
+    if (!body || !this._visible || !body.clientWidth) return false;
+    const n = this._view.length;
+    if (!n) return false;
+
+    const els = [];
+    const frag = document.createDocumentFragment();
+    const deadline = performance.now() + MEASURE_BUDGET_MS;
+    let i = this._measureCursor;
+    for (let scanned = 0; scanned < n && els.length < MEASURE_BATCH; scanned++) {
+      if (els.length >= MEASURE_BATCH / 2 && performance.now() > deadline) break;
+      const entry = this._view[i];
+      i = (i + 1) % n;
+      if (this._heights.has(entry) || this._expanded.has(entry)) continue;
+      const el = this._buildLineEl(entry);
+      frag.appendChild(el);
+      els.push({ entry, el });
+    }
+    this._measureCursor = i;
+    if (!els.length) return false;
+
+    this._msr.appendChild(frag);
+    let changed = false;
+    let sum = 0;
+    for (const { entry, el } of els) {
+      const h = el.offsetHeight;
+      sum += h;
+      if (this._heights.get(entry) !== h) {
+        this._heights.set(entry, h);
+        changed = true;
+      }
+    }
+    this._msr.replaceChildren();
+    this._estHeight = Math.max(1, Math.round(sum / els.length));
+    if (changed) this._offsetsDirty = true;
+    return true;
+  }
+
+  /** 逐帧推进批量测高，量完为止（新日志与尺寸变化都会重新触发） */
+  _scheduleMeasure() {
+    if (this._measureScheduled) return;
+    this._measureScheduled = true;
+    const run = () => {
+      this._measureScheduled = false;
+      if (!this._mounted) return;
+      // 每帧在时间预算内跑多批：单批很小（不掉帧），但收敛不至于拖太久
+      const deadline = performance.now() + MEASURE_FRAME_BUDGET_MS;
+      let did = false;
+      do {
+        if (!this._measureBatch()) break;
+        did = true;
+      } while (performance.now() < deadline);
+      if (did) {
+        this._renderWindow();
+        this._scheduleMeasure();
+      }
+    };
+    this._nextFrame(run);
+  }
+
+  /** 重建渲染源。O(n) 过滤在攒批后每帧最多跑一次，成本可忽略。 */
+  _rebuildView(compensateTrim) {
+    const body = this._el.body;
+    const prev = this._view;
+    let trimmedH = 0;
+    if (compensateTrim && prev.length && body && !this._autoScroll) {
+      // 新视图首行在旧视图中的下标 = 本轮被淘汰掉的行数，其偏移即被顶走的高度
+      this._buildOffsets();
+      const next = this._filteredEntries();
+      const j = next.length ? prev.indexOf(next[0]) : -1;
+      if (j > 0) trimmedH = this._offsets[j];
+      this._view = next;
+    } else {
+      this._view = this._filteredEntries();
+    }
+    this._offsetsDirty = true;
+    // 视图内容整体换掉了，测高游标必须归零，否则会越界读到 undefined
+    this._measureCursor = 0;
+    if (trimmedH > 0) body.scrollTop = Math.max(0, body.scrollTop - trimmedH);
+    this._scheduleMeasure();
+  }
+
+  /**
+   * 渲染可视窗口。
+   *
+   * 行高可变（换行行数取决于 tag 长度挤压出的正文列宽），所以走
+   * 「估算 → 渲染 → 实测 → 修正偏移 → 必要时重排」的循环：
+   * 实测发生在渲染之后，且只测窗口内那几行，代价与总条数无关。
+   */
+  _renderWindow() {
+    const body = this._el.body;
+    if (!body) return;
+    const n = this._view.length;
+    if (!n) {
+      if (this._painted.length) {
+        body.replaceChildren(this._msr);
+        this._range = { start: 0, end: 0 };
+        this._painted = [];
+      }
+      return;
+    }
+
+    const clientH = body.clientHeight;
+    // 进入时是否贴底：测高会改变内容总高，贴底状态要维持住
+    const wasAtBottom = body.scrollHeight - body.scrollTop - clientH < 5;
+    let corrected = false;
+
+    for (let pass = 0; pass < MAX_LAYOUT_PASSES; pass++) {
+      this._buildOffsets();
+      const total = this._offsets[n];
+      // 每轮都读真实 scrollTop：浏览器会把它夹到合法范围，读回来才不会与渲染脱节
+      const top = this._autoScroll ? Math.max(0, total - clientH) : body.scrollTop;
+      const range = this._rangeFor(top, clientH);
+      if (pass > 0 && range.start === this._range.start && range.end === this._range.end) break;
+
+      const beforeStart = this._offsets[range.start];
+      this._paint(range, total);
+
+      if (!this._measureRows(this._painted)) break;
+      corrected = true;
+      // 上方行高被修正后，同一 scrollTop 对应的内容变了：把差值补进 scrollTop，
+      // 下一轮按新位置渲染，视口里看到的行才不会被顶走
+      this._buildOffsets();
+      const delta = this._offsets[range.start] - beforeStart;
+      if (delta !== 0 && !this._autoScroll) body.scrollTop += delta;
+    }
+
+    // 补偿发生在渲染之后，最后一轮仍可能错位：按最终滚动位置补一次纯渲染
+    if (corrected && !this._autoScroll) {
+      this._buildOffsets();
+      this._paint(this._rangeFor(body.scrollTop, clientH), this._offsets[n]);
+    }
+
+    this._ensureCoverage(clientH);
+
+    // 补窗与测高都会改变内容总高：跟随时、或进入时本就贴着底的，渲染完都要重新贴底
+    if (this._autoScroll || wasAtBottom) body.scrollTop = body.scrollHeight;
+  }
+
+  /** 把 [start, end) 区间画进滚动容器，上下用撑高块补出未渲染区域 */
+  _paint(range, total) {
+    const body = this._el.body;
+    const rows = [];
+    const frag = document.createDocumentFragment();
+    frag.appendChild(this._msr);
+    this._padTop.style.height = this._offsets[range.start] + 'px';
+    this._padBottom.style.height = Math.max(0, total - this._offsets[range.end]) + 'px';
+    frag.appendChild(this._padTop);
+    for (let i = range.start; i < range.end; i++) {
+      const el = this._buildLineEl(this._view[i]);
+      rows.push({ entry: this._view[i], el });
+      frag.appendChild(el);
+    }
+    frag.appendChild(this._padBottom);
+    body.replaceChildren(frag);
+    this._range = range;
+    this._painted = rows;
+  }
+
+  /** 视口顶边落在 [top, top+clientH) 的行区间，上下各留 OVERSCAN 行 */
+  _rangeFor(top, clientH) {
+    const n = this._view.length;
+    return {
+      start: Math.max(0, this._indexAtOffset(top) - OVERSCAN),
+      end: Math.min(n, this._indexAtOffset(top + clientH) + OVERSCAN + 1),
+    };
+  }
+
+  /** 前缀和：offsets[i] = 前 i 行的高度累计。行数千级时重建成本可忽略。 */
+  _buildOffsets() {
+    if (!this._offsetsDirty) return;
+    const n = this._view.length;
+    const off = this._offsets;
+    off.length = n + 1;
+    off[0] = 0;
+    for (let i = 0; i < n; i++) off[i + 1] = off[i] + this._rowHeight(this._view[i]);
+    this._offsetsDirty = false;
+  }
+
+  _rowHeight(entry) {
+    const h = this._heights.get(entry);
+    if (h === undefined) return this._estHeight || DEFAULT_ROW_HEIGHT;
+    return h + (this._expanded.has(entry) ? (this._detailH.get(entry) || 0) : 0);
+  }
+
+  /** 偏移数组中最后一个 <= y 的下标（行索引） */
+  _indexAtOffset(y) {
+    const off = this._offsets;
+    let lo = 0;
+    let hi = this._view.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (off[mid] <= y) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /** 实测窗口内各行高度并回写缓存；返回是否有高度发生变化 */
+  _measureRows(rows) {
+    let changed = false;
+    for (const { entry, el } of rows) {
+      const total = el.offsetHeight;
+      const expanded = this._expanded.has(entry);
+      let detailH = 0;
+      let collapsed = total;
+      if (expanded) {
+        const detail = el.querySelector('.lp-line-detail');
+        detailH = detail ? detail.offsetHeight : 0;
+        collapsed = Math.max(0, total - detailH);
+        if (this._detailH.get(entry) !== detailH) {
+          this._detailH.set(entry, detailH);
+          changed = true;
+        }
+      }
+      if (this._heights.get(entry) !== collapsed) {
+        this._heights.set(entry, collapsed);
+        changed = true;
+      }
+    }
+    if (changed) this._offsetsDirty = true;
+    return changed;
+  }
+
+  /** 行高全部失效：列宽或字号变化后必须重测（换行行数会变），估算值一并作废 */
+  _invalidateHeights() {
+    this._heights = new WeakMap();
+    this._detailH = new WeakMap();
+    this._estHeight = 0;
+    this._offsetsDirty = true;
+    this._measureCursor = 0;
+    this._scheduleMeasure();
+  }
+
+  /**
+   * 窗口行数是在偏移空间里算的，依赖估算行高；估算偏大时实际渲染出的行
+   * 高度可能不足一屏，底部就会露出撑高块的空白。这里按实测高度补齐窗口。
+   */
+  _ensureCoverage(clientH) {
+    const body = this._el.body;
+    if (!body) return;
+    for (let guard = 0; guard < COVERAGE_MAX_PASSES; guard++) {
+      const rows = this._painted;
+      if (!rows.length) return;
+      const firstTop = this._padTop.offsetHeight;
+      const lastBottom = firstTop + rows.reduce((a, r) => a + r.el.offsetHeight, 0);
+      const top = body.scrollTop;
+      const n = this._view.length;
+      let start = this._range.start;
+      let end = this._range.end;
+      if (firstTop > top && start > 0) start = Math.max(0, start - COVERAGE_STEP);
+      else if (lastBottom < top + clientH && end < n) end = Math.min(n, end + COVERAGE_STEP);
+      else break;
+      this._buildOffsets();
+      this._paint({ start, end }, this._offsets[n]);
+      this._measureRows(this._painted);
+    }
+  }
+
+  /** 展开/收起：状态存在 Set 里（行会被回收），并把该行钉在原来的视口位置 */
+  _toggleExpand(entry) {
+    const body = this._el.body;
+    const idx = this._view.indexOf(entry);
+    // 未跟随且行在当前视图里时，先记下它相对视口顶的偏移
+    let delta = null;
+    if (idx >= 0 && !this._autoScroll) {
+      this._buildOffsets();
+      delta = body.scrollTop - this._offsets[idx];
+    }
+
+    if (this._expanded.has(entry)) this._expanded.delete(entry);
+    else this._expanded.add(entry);
+    this._offsetsDirty = true;
+
+    // 先按新高度对齐滚动位置，再渲染：顺序反了窗口就会和位置脱节
+    if (delta !== null) {
+      this._buildOffsets();
+      body.scrollTop = this._offsets[idx] + delta;
+    }
+    this._renderWindow();
   }
 
   _passesFilter(entry) {
@@ -871,7 +1245,6 @@ export class LogPanel {
 
     const expandIcon = document.createElement('span');
     expandIcon.className = 'lp-expand-icon';
-    expandIcon.textContent = isExpandable ? '▶' : '';
     line.appendChild(expandIcon);
 
     const ts = document.createElement('span');
@@ -896,14 +1269,21 @@ export class LogPanel {
     line.appendChild(textEl);
 
     if (isExpandable) {
+      // 展开态来自 _expanded（按 entry 记），行被回收重建后仍可恢复
+      const expanded = this._expanded.has(entry);
+      if (expanded) {
+        line.classList.add('expanded');
+        expandIcon.textContent = '▼';
+      } else {
+        expandIcon.textContent = '▶';
+      }
       const detail = document.createElement('div');
       detail.className = 'lp-line-detail';
       detail.textContent = stack || text;
       line.appendChild(detail);
       line.onclick = (e) => {
         if (e.target.closest('.lp-line-detail')) return;
-        const expanded = line.classList.toggle('expanded');
-        expandIcon.textContent = expanded ? '▼' : '▶';
+        this._toggleExpand(entry);
       };
     }
 
@@ -969,7 +1349,8 @@ export class LogPanel {
   _updateStatus() {
     const el = this._el.status;
     if (!el) return;
-    const shown = this._el.body ? this._el.body.childElementCount : 0;
+    // 显示条数取渲染源长度：虚拟滚动下 DOM 里只有窗口内那几行
+    const shown = this._view.length;
     const total = this._safeGetSize();
     el.textContent = shown + ' / ' + total + (this._paused ? this._t('logpanel.pausedSuffix') : '');
     this._updateLeftPanel();
@@ -1067,6 +1448,9 @@ export class LogPanel {
     this._host.style.height = dim.h + 'px';
     this._host.style.zoom = dim.zoom;
     this._saveGeometry();
+    // 宽度与 zoom 都改变行的实际布局尺寸
+    this._invalidateHeights();
+    this._renderWindow();
   }
 
   _applyOpacity(opacity) {
