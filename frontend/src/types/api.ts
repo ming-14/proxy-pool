@@ -36,7 +36,6 @@ export interface StandbyEntry {
   pinned: boolean;
   locked: boolean;             // 锁定为 pproxy 唯一上游（列表置顶显示，其余行灰显）
   purity: PurityInfo | null;   // 缓存的纯洁度（无缓存为 null）
-  protocol: string;            // 协议类型（scheme，如 http / socks5 / https）
   joined_at: number | null;    // 进入队列组的时间（秒）；锁定行的值即锁定时刻
   speedtest?: SpeedTestStatus | null;  // 后端测速任务状态（刷新后恢复；无记录为 undefined/null）
   purity_state?: PurityState | null;   // 后端纯洁度检查中间态（checking/error；无记录为 undefined/null）

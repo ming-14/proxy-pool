@@ -20,7 +20,7 @@ from typing import Callable
 
 from aiohttp import web
 
-from src.domain.models import bind_of, normalize_proxy, proxy_to_ip, proxy_type
+from src.domain.models import bind_of, normalize_proxy, proxy_to_ip
 from src.domain.proxy_pool import LOCKED_GROUP
 from src.framework import config, logbuffer
 from src.interfaces.proxy_server import PproxyServer
@@ -139,8 +139,8 @@ def _status_snapshot(ctx: PanelContext) -> dict:
     def _standby_entry(p: str, *, locked: bool) -> dict:
         """队列行：单次 find_proxy 取全部条目字段（joined_at 供前端算入队时长）
 
-        不下发 source_group：move_proxy 不保留该字段（仅黑名单条目记录来源组），
-        队列行的值恒为 None，发死字段不如不发。
+        不下发 source_group（move_proxy 不保留该字段，仅黑名单条目记录来源组，队列行的值恒为
+        None）与 protocol（前端不展示，scheme 已在 proxy 文本里），发死字段不如不发。
         """
         _, info = pool.find_proxy(p)
         info = info or {}
@@ -154,7 +154,6 @@ def _status_snapshot(ctx: PanelContext) -> dict:
             "speedtest": ctx.tasks.speedtest_of(bind_of(p)),
             "purity_state": ctx.tasks.purity_of(proxy_to_ip(p)),
             "locked": locked,
-            "protocol": proxy_type(p),
             "joined_at": info.get("joined_at"),
         }
 

@@ -353,15 +353,16 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["standby"][0]["purity"] is None
 
     async def test_status_standby_entry_fields(self):
-        """队列行带协议/入队时间（面板展示代理信息，不再只有地址与延迟）"""
+        """队列行带面板展示字段（入队时间/固定态），死字段不下发"""
         self.pool.add_to_group(STANDBY_GROUP, "socks5://1.2.3.4:1080",
                                consecutive_fails=0, latency=0.5)
         row = (await (await self.client.get("/api/status")).json())["standby"][0]
-        assert row["protocol"] == "socks5"
         assert row["pinned"] is False
         assert row["joined_at"] is not None
         # source_group 不下发：move_proxy 不保留它，队列行取值恒为空（发死字段无意义）
         assert "source_group" not in row
+        # protocol 同理：前端不展示，scheme 已在 proxy 文本里
+        assert "protocol" not in row
 
     async def test_status_locked_row_first_and_deduped(self):
         """锁定代理置首；队列组留有历史副本时不重复出行（前端以 proxy 为 :key）"""
