@@ -154,7 +154,6 @@ export class LogPanel {
     // 运行状态
     this._paused = false;
     this._autoScroll = this._loadBool('autoscroll', true);
-    this._autoScrollUserEnabled = false;
     this._seenTags = new Set();
     this._visible = false;
     this._mounted = false;
@@ -637,7 +636,6 @@ export class LogPanel {
   _bindScroll() {
     const body = this._el.body;
     if (!body) return;
-    let isUserScroll = false;
     let renderScheduled = false;
 
     body.addEventListener('scroll', () => {
@@ -646,15 +644,23 @@ export class LogPanel {
         renderScheduled = true;
         this._nextFrame(() => { renderScheduled = false; this._renderWindow(); });
       }
-      if (!this._features.autoScroll || !this._autoScroll || this._autoScrollUserEnabled) return;
+      if (!this._features.autoScroll) return;
+
+      // 跟随用户滚动手势：上滚即关、滚到最底即开。
+      // 无需引入"程序/用户滚动"标志——程序贴底时位置必在底部，永远不会被误判成"上滚"；
+      // autoScroll 开启时程序也不会把内容移离底部，所以"不在底部"必是用户上滚造成。
       const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 5;
-      if (!atBottom && !isUserScroll) {
-        isUserScroll = true;
+      if (this._autoScroll && !atBottom) {
+        // 自动滚动开启中，用户往上滚 → 自动关闭
         this._autoScroll = false;
         this._syncAutoScrollIcon();
         this._saveBool('autoscroll', false);
+      } else if (!this._autoScroll && atBottom) {
+        // 自动滚动关闭中，用户滚到最底 → 自动开启
+        this._autoScroll = true;
+        this._syncAutoScrollIcon();
+        this._saveBool('autoscroll', true);
       }
-      if (atBottom) isUserScroll = false;
     });
   }
 
@@ -740,7 +746,6 @@ export class LogPanel {
     if (autoBtn) {
       autoBtn.onclick = () => {
         this._autoScroll = !this._autoScroll;
-        this._autoScrollUserEnabled = this._autoScroll;
         this._syncAutoScrollIcon();
         autoBtn.title = this._autoScroll ? this._t('logpanel.disableAutoScroll') : this._t('logpanel.enableAutoScroll');
         this._saveBool('autoscroll', this._autoScroll);
@@ -834,8 +839,26 @@ export class LogPanel {
     menu.className = 'lp-context-menu';
     menu.innerHTML = '<div class="lp-context-menu-item danger" data-action="close">' + this._t('logpanel.closePanel') + '</div>';
     this._shadow.appendChild(menu);
-    menu.style.left = Math.min(x, window.innerWidth - menu.offsetWidth - 4) + 'px';
-    menu.style.top = Math.min(y, window.innerHeight - menu.offsetHeight - 4) + 'px';
+
+    // host 带 contain: layout 且可能带 zoom：shadow 内 fixed 子元素的包含块从视口变成 host，
+    // 直接按视口坐标 (clientX/Y) 定位置会整体偏移。先换算成 host 内坐标（扣 host 偏移、
+    // 除以 zoom），再实测一次把缩放偏差校准掉，最后把菜单位置夹回视口内。
+    const z = parseFloat(this._host.style.zoom) || 1;
+    const hostRect = this._host.getBoundingClientRect();
+    let left = (x - hostRect.left) / z;
+    let top = (y - hostRect.top) / z;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+
+    const mr = menu.getBoundingClientRect();
+    const maxX = window.innerWidth - mr.width - 4;
+    const maxY = window.innerHeight - mr.height - 4;
+    const tx = Math.min(x, Math.max(4, maxX));
+    const ty = Math.min(y, Math.max(4, maxY));
+    left -= (mr.left - tx) / z;
+    top -= (mr.top - ty) / z;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
 
     const closeHandler = (ev) => {
       const target = ev.composedPath && ev.composedPath()[0];
