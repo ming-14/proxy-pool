@@ -10,6 +10,9 @@
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -97,6 +100,28 @@ def test_standby_windows_injected_from_config(cache_db, monkeypatch) -> None:
 
     assert container.standby.metrics_window == 1800
     assert container.standby.chart_window == 60
+
+
+def test_link_gate_config_invalid_fails_fast(tmp_path) -> None:
+    """链路门控配置非法时加载即报错（子进程干净解释器）
+
+    无探测目标会让门控恒判"链路不可用"，serve 的心跳/补测/填充全部静默停摆，
+    所以必须在配置加载阶段暴露，不做运行期兜底。
+    """
+    cfg_dir = tmp_path / "config"
+    shutil.copytree(PROJECT_ROOT / "config", cfg_dir)
+    serve_toml = cfg_dir / "serve.toml"
+    serve_toml.write_text(
+        re.sub(r"network_probe_urls = \[[^\]]*\]", "network_probe_urls = []",
+               serve_toml.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+    code = "import sys; sys.path.insert(0, sys.argv[1]); import src.framework.config"
+    r = subprocess.run([sys.executable, "-c", code, str(PROJECT_ROOT)],
+                       capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, PROXY_POOL_CONFIG=str(cfg_dir)))
+    assert r.returncode != 0
+    assert "network_probe_urls" in r.stderr
 
 
 def test_container_import_is_lazy() -> None:

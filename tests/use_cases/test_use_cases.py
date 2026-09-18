@@ -416,7 +416,6 @@ class TestCheckProxiesConcurrent(unittest.TestCase):
     def make_uc(self, async_getter):
         return CheckProxiesUseCase(
             scheduler_factory=lambda proxies, **kw: ProxyScheduler(proxies, **kw),
-            http_getter=MagicMock(),
             async_getter=async_getter,
         )
 

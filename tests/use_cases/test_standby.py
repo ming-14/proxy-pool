@@ -82,15 +82,15 @@ def _async_result(success_map):
     }
 
 
-def make_gate(ok: bool = True):
-    """LocalNetworkGate mock：check 总是返回 ok（不依赖网络）"""
+def make_gate(ok: bool = True, trustworthy: bool = True):
+    """LocalNetworkGate mock：check 返回 ok、assess_batch 返回 trustworthy（不依赖网络）"""
     gate = MagicMock()
-    gate.is_ok = ok
 
-    async def check(timeout):
+    async def check():
         return ok
 
     gate.check.side_effect = check
+    gate.assess_batch.return_value = trustworthy
     return gate
 
 
@@ -581,7 +581,7 @@ class TestStandbyPinned(unittest.TestCase):
 
 
 class TestStandbyNetworkGate(unittest.TestCase):
-    """本地网络门控：异常时跳过 heartbeat/fill/retry_probe，不计数/不拉黑/不补测"""
+    """链路门控：链路不可用时跳过 heartbeat/fill/retry_probe，不计数/不拉黑/不补测"""
 
     def setUp(self):
         self.pool = make_pool()
@@ -640,6 +640,71 @@ class TestStandbyNetworkGate(unittest.TestCase):
         self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
         self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
         self.assertIn("http://1.2.3.4:8080", self.pool.get_group_proxies(STANDBY_GROUP))
+
+
+class TestStandbyLinkEvent(unittest.TestCase):
+    """链路事件熔断：门控判本轮结果不可信时，该轮失败不归因到代理（本地链路问题不该删代理）"""
+
+    def setUp(self):
+        self.pool = make_pool()
+
+    def _add_standby(self, n: int) -> list[str]:
+        """建 n 个代理并移入代理服务队列"""
+        proxies = [f"http://10.0.0.{i}:8080" for i in range(n)]
+        for p in proxies:
+            self.pool.add_to_group("default-http", p)
+            self.pool.move_proxy(p, STANDBY_GROUP, consecutive_fails=0)
+        return proxies
+
+    def test_heartbeat_whole_queue_failure_not_counted(self):
+        """整队列失败且门控判为链路事件：不计数/不拉黑/不移出/不进补测"""
+        proxies = self._add_standby(5)
+        gate = make_gate(True, trustworthy=False)
+        c = make_standby(self.pool, make_check(set()), gate=gate)
+        alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=5))
+        self.assertEqual(alive, [])
+        gate.assess_batch.assert_called_once_with(5, 5)
+        for p in proxies:
+            self.assertEqual(self.pool.get_consecutive_fail_count(p), 0)
+            self.assertIn(p, c.standby_proxies())
+            self.assertFalse(self.pool.is_blacklisted(p))
+        self.assertEqual(c.pending_retries(), [])
+
+    def test_heartbeat_scoring_applied_when_gate_trusts_result(self):
+        """门控认为结果可信时照常计分：失败代理进入退避补测"""
+        failed, ok = "http://10.0.0.0:8080", "http://10.0.0.1:8080"
+        self._add_standby(2)
+        c = make_standby(self.pool, make_check({ok}), gate=make_gate(True, trustworthy=True))
+        self.assertEqual(asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2)), [ok])
+        self.assertEqual(self.pool.get_consecutive_fail_count(failed), 1)
+        self.assertIn(failed, c.pending_retries())
+
+    def test_fill_whole_batch_failure_not_counted(self):
+        """整批候选失败且门控判为链路事件：候选失败计数不变、不被拉黑"""
+        candidates = [f"http://10.0.0.{i}:8080" for i in range(5)]
+        for p in candidates:
+            self.pool.add_to_group("default-http", p)
+        gate = make_gate(True, trustworthy=False)
+        c = make_standby(self.pool, make_check(set()), gate=gate)
+        added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3,
+                                   concurrency=5, capacity=5))
+        self.assertEqual(added, 0)
+        gate.assess_batch.assert_called_once_with(5, 5)
+        for p in candidates:
+            self.assertEqual(self.pool.get_consecutive_fail_count(p), 0)
+            self.assertFalse(self.pool.is_blacklisted(p))
+
+    def test_fill_scoring_applied_when_gate_trusts_result(self):
+        """门控认为结果可信时照常计分：候选失败累计到阈值即拉黑"""
+        candidates = [f"http://10.0.0.{i}:8080" for i in range(5)]
+        for p in candidates:
+            self.pool.add_to_group("default-http", p)
+        bad = candidates[0]
+        self.pool.proxy_groups["default-http"]["proxies"][bad]["consecutive_fails"] = \
+            MAX_CONSECUTIVE_FAILS - 1
+        c = make_standby(self.pool, make_check(set()), gate=make_gate(True, trustworthy=True))
+        asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=5, capacity=5))
+        self.assertTrue(self.pool.is_blacklisted(bad))
 
 
 class TestStandbyLock(unittest.TestCase):

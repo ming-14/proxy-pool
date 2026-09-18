@@ -13,7 +13,7 @@ import time
 from typing import Callable
 
 from src.domain.models import to_proxy_dict
-from src.domain.ports import HttpGetter, TaskScheduler
+from src.domain.ports import TaskScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +28,15 @@ class CheckProxiesUseCase:
         self,
         *,
         scheduler_factory: Callable[..., TaskScheduler],
-        http_getter: HttpGetter,
-        async_getter=None,
+        async_getter,
     ) -> None:
         """
         Args:
             scheduler_factory: 并发调度器工厂（组合根注入 ProxyScheduler）
-            http_getter:       HTTP 请求端口实现（同步，供 fetch 等非 async 场景）
-            async_getter:      async HTTP 请求器（aiohttp，避免线程池 C 层泄漏）
+            async_getter:      async HTTP 请求器（aiohttp）。探测全程走它——经
+                               asyncio.to_thread 的同步 requests 会触发 ssl C 层内存泄漏
         """
         self._scheduler_factory = scheduler_factory
-        self._http_getter = http_getter
         self._async_getter = async_getter
 
     async def execute(

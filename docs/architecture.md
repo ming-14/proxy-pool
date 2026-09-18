@@ -172,7 +172,7 @@ for attempt in range(max_retries):
 - **右键上下文菜单 + 代理移组/删除/添加**：代理服务队列页面右键代理行弹出菜单（`StandbyPage.vue` + `ContextMenu.vue`）——「移出」hover 展开子菜单列出所有组（排除 standby 自身和 blacklist），点击调 `POST /api/proxy/move`（批量 `proxies` 数组，`pool.move_proxy` + sync pproxy 上游）；「拉黑」调 `POST /api/blacklist`（`record.remove` 从所有组移除并加入黑名单 + sync pproxy）；「测速」立即触发该代理测速（结果落在行下质量带里，**多选时菜单不展示测速项**）。代理组页面（`GroupsPage.vue`）右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」（`POST /api/proxy/remove`，批量 `proxies` 数组，`pool.remove_from_group`，standby 组删除后 sync pproxy）；黑名单组：「还原」（按 source_group 各自回来源组）+「删除」。菜单点击外部/滚动/缩放自动关闭；坐标由组件内的**受控 `pos` 状态**夹取到视口内（不可直接绑 props：菜单已打开时再次右键只走重渲染，会把夹取结果覆盖回原始点击点而溢出视口）。代理组页面「添加」按钮弹出模态框，`POST /api/group/{name}/add` 批量添加代理（裸地址自动补 http://，standby 组添加后 sync pproxy）。
 - **列表框选/多选（useRowSelection.ts）**：两组列表行选中复用 `useRowSelection` composable（Windows 资源管理器式）——空白处/表头/行上按住拖拽出蓝色矩形框选（`marquee-select` 半透明蓝，`pointer-events:none`），覆盖行按数据索引选中（虚拟滚动跨未渲染区域用 vue-virtual `getVirtualItemForOffset` 换算索引）；单击行单选、Ctrl+单击切换、Shift+单击锚点范围、Ctrl+拖拽切换框内、Ctrl+A 全选（`isSelectionDisabled` 为整体禁用开关：队列页锁定单一上游时鼠标**与键盘**都不产生选中——只挡鼠标会被 Ctrl+A 绕过，灰显行会叠上选中高亮并一直冻结列表顺序）、Esc 清空、点击列表外部空白清空选中（document mousedown 排除按钮/输入/下拉/浮动层）；拖到视口边缘自动滚动。选中集 `Set<proxy>` 为响应式状态，行高亮由模板 class 绑定驱动（`tr.selected` 蓝底 + 左缘指示条），列表重渲染天然保持。
 - **队列页无浮动层**：代理统计不再用 hover 浮窗——延时/流量趋势与质量指标全部内联在行下质量带（见上），悬浮只用于冻结行顺序（鼠标停在表内时行不跑位）。2s 轮询重渲染不会打断文本选区（Vue 仅 patch 变化节点），旧版"选区冻结"补丁与 `useProxyTooltip` 链路已整体删除。
-- **本地网络门控（network gate）**：fill/heartbeat/retry_probe 开头调 `LocalNetworkGate.check()`，本地网络异常时跳过本轮操作（不计数/不拉黑/不补测），队列保持现状，网络恢复后自动恢复调度——避免好代理被误拉黑。判定方式：并发直连多个探测目标（`network_probe_urls`，任一通即认为网络正常，容错单目标抽风/被墙）；正常时缓存复用结果（`network_check_cache_ok` 秒内不重复直连，开销几乎为零），异常时退避重检（`network_check_backoff_initial` → ×2 → `network_check_backoff_max`，异常越久探测越稀疏）；retry_probe 在门控异常时重置自身退避到初始值快速轮询 gate 缓存，网络恢复后立即恢复补测。
+- **本地链路门控（network gate）**：fill/heartbeat/retry_probe 开头调 `LocalNetworkGate.check()`，链路不可用时跳过本轮（不计数/不拉黑/不补测），队列保持现状、恢复后自动续跑——避免好代理被误拉黑。判定：并发直连多个探测目标（`network_probe_urls`，任一返回状态码 <400 即正常——既容错单目标抽风/被墙，也不会被中间设备/门户的错误页骗过），正常时结论缓存 `network_check_cache_ok` 秒，异常时退避复检（`network_check_backoff_initial` → ×2 → `network_check_backoff_max`）；并发调用共享同一次在途探测（不重复直连，也不会返回探测前的陈旧结论）。**链路事件熔断**：一轮探测结束后用 `assess_batch(失败数, 总数)` 判定本轮结果可信度——失败数 ≥ `network_link_event_min_sample` 且失败率 ≥ `network_link_event_fail_ratio` 时判为链路事件（链路劣化/带宽被挤占/延迟逼近超时），该轮失败不计入 per-proxy 连续失败，同时作废链路结论让下次 check 立即复检。必要性：心跳 2s 一轮且失败候选每轮重复探测，5 次连续失败只需 10~20 秒（生产日志实测中位 13.7~17.2s）即触发 `remove_all_copies` 真删，链路抖动必须拦在这一层。retry_probe 在链路不可用时暂停补测（暂停/恢复各只记一次日志）并重置自身退避快速轮询门控结论。
 - **Web 面板代理组虚拟滚动**：代理组页面（`GroupsPage.vue`）对大量代理（数千条）用 `@tanstack/vue-virtual` 虚拟滚动——`scrollMargin` 对齐列表在滚动内容中的起点，上下 spacer 行保持滚动条总高，行高动态测量（`measureElement`），overscan 缓冲；`#main-content` 设 `overflow-anchor:none` 禁用浏览器 scroll anchoring 避免干扰；右下角悬浮回到顶部按钮。**关键不变式**：`scrollMargin` 必须严格等于「列表起点在滚动内容空间的偏移」= 直接量 `tbody` 顶（`updateScrollMargin`），**不能减去顶部 spacer 高**——spacer 是 `tbody` 的首个子元素、只把渲染行往下推，且 vue-virtual 的 `item.start` 已含 `scrollMargin`、区间判定直接拿 `scrollTop` 与之比较；多减会让滚动状态下的每次改窗口尺寸都往下漂移一个 spacer（切组那次因加载骨架把 `scrollTop` 夹回 0 而未显形），导致列表整屏空白 + 总高膨胀（回归用例 `TestGroups::test_scroll_margin_survives_resize`）。
 - **组名标签映射**：`_status_snapshot` 为每个组下发 `label`（中文显示名）+ `kind`（语义类型 `trusted`/`blacklist`/`standby`/`normal`），从 config 的 `TRUSTED_GROUP`/`BLACKLIST_GROUP`/`STANDBY_GROUP` 派生——前端不硬编码组名，改配置即生效。`GroupsPage.vue` 用 `label` 显示下拉框 + 来源列，`DashboardPage.vue` 用 `kind` 查找 KPI 卡片对应的组。
 - **控制台日志面板（LogPanel）**：侧边栏底部按钮启停的悬浮日志视窗（vendored 零依赖组件，位于 `frontend/src/vendor/logpanel/`，Shadow DOM）。后端 `src/framework/logbuffer.py` 的 `PanelLogHandler` 在 `setup_logging()` 挂到 root logger（级别 DEBUG，与 stderr「控制台」通道一致，逐 logger 覆盖天然同步），镜像进 2000 条有界环形缓冲，entry 带单调 `seq` 游标与异常 `stack` 字段。API：`GET /api/logs?since=<seq>` 增量拉取（返回 `entries` + `cursor` + `buffer_start`），`POST /api/logs/clear` 清空缓冲（不影响 stderr/文件）。前端 `useLogPanel.ts` 以 1s 轮询增量合并本地缓冲（`appendEntries` 有界裁剪）；**面板隐藏（visibleChange=false）立即停轮询，零 /api/logs 请求**；`needsFullReload` 检测增量失效（serve 重启 seq 回绕 / 缓冲淘汰越过游标）时全量重拉并清空重绘；主题经 `#logpanel-host` 把 `--lp-*` 全量映射到 `--color-*` 令牌自动跟随亮暗。模块标签前端剥 `src.` 前缀，时间显示 `HH:MM:SS.mmm`。
@@ -266,7 +266,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 - `config.toml`：`[paths]` 路径 + `[web]` 面板开关/端口
 - `pool.toml`：`[pool]` 阈值/语义组/可请求组 + `[groups]` 分组定义
 - `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]`
-- `serve.toml`：`[server]` 端口/队列/心跳/网络门控/metrics/代理类型
+- `serve.toml`：`[server]` 端口/队列/心跳/链路门控/metrics/代理类型
 - `panel.toml`：`[purity]` 纯洁度 + `[geoip]` 归属地图
 - `logging.toml`：`[logging]` 控制台/文件级别分档 + `[logging.loggers]` 逐 logger 覆盖
 - `apikey.env`：密钥（git 忽略）
@@ -302,12 +302,14 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 | `HEARTBEAT_LOCK_INTERVAL` | 30 | 锁定单一上游时的心跳间隔秒（锁定代理不淘汰不拉黑，仅测速展示，降低探测频率与外网请求） |
 | `HEARTBEAT_PROBE_URL` | `https://cp.cloudflare.com/generate_204` | 心跳探测目标 |
 | `HEARTBEAT_CONCURRENCY` | 16 | 心跳探测并发数 |
-| `HEARTBEAT_TIMEOUT` | 3 | 心跳单代理超时秒 |
+| `HEARTBEAT_TIMEOUT` | 5 | 心跳单代理超时秒（免费代理成功延迟实测中位 2.13s/p90 2.84s，3s 余量不足易误判失败） |
 | `METRICS_WINDOW` | 1800 | 采样数据留存时长秒（全局）：流量与队列指标的采样点都按此清理，仪表盘据此画满可用数据点；心跳动态调整时窗口始终不变 |
 | `STANDBY_CHART_WINDOW` | 60 | 代理服务队列页图表的显示窗口秒数：只影响队列页行内趋势图的裁剪/画图范围，不参与数据留存（留存见 `METRICS_WINDOW`） |
-| `NETWORK_PROBE_URLS` | Cloudflare 204 + httpbin + gstatic 204 | 本地网络门控直连探测目标（任一通即认为网络正常） |
-| `NETWORK_CHECK_CACHE_OK` | 5 | 网络正常时门控缓存秒数（期内复用结果，不重复直连） |
-| `NETWORK_CHECK_BACKOFF_INITIAL` / `_MAX` | 2 / 30 | 网络异常时门控退避重检起始间隔与上限（异常越久探测越稀疏） |
+| `NETWORK_PROBE_URLS` | Cloudflare 204 + gstatic 204 + example.com | 链路门控探测目标（任一返回状态码 <400 即认为链路可用） |
+| `NETWORK_PROBE_TIMEOUT` | 3 | 单个探测目标超时秒 |
+| `NETWORK_CHECK_CACHE_OK` | 5 | 链路正常时的结论缓存秒数（期内复用结论，不重复直连） |
+| `NETWORK_CHECK_BACKOFF_INITIAL` / `_MAX` | 2 / 30 | 链路异常时的复检起始间隔与上限（异常越久探测越稀疏） |
+| `NETWORK_LINK_EVENT_FAIL_RATIO` / `_MIN_SAMPLE` | 0.8 / 4 | 链路事件判定阈值：一轮失败数 ≥ 样本且失败率 ≥ 比例时，该轮失败不计入代理连续失败 |
 | `SERVER_PROXY_TYPES` | `("http", "socks5")` | serve 默认代理协议（`[server].proxy_types`，CLI 未指定 `--type` 时的初始值，面板可运行时增删；不含 https，原因见 serve 机制） |
 | `WEB_ENABLED` | `true` | 面板总开关（`[web].enabled`；false 时不构造 aiohttp 面板，且 purity/geo 用例与其 requests/geoip2 依赖链整体不构造/import——仅面板消费） |
 | `CACHE_DB` / `LOG_DIR` | 项目根 `.cache.db` / `logs/` | 框架层路径（`[paths]` 下相对项目根解析） |

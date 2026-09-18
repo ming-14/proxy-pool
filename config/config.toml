@@ -3,7 +3,7 @@
 #   config.toml   本节：[paths] 路径 + [web] 面板开关/端口
 #   pool.toml     池策略：[pool] 晋级/淘汰阈值 + [groups] 分组定义
 #   sources.toml  代理源：[fetch] 拉取调度 + [[sources]] 源列表
-#   serve.toml    serve 调度：[server] 端口/队列/心跳/网络门控/metrics
+#   serve.toml    serve 调度：[server] 端口/队列/心跳/链路门控/metrics
 #   panel.toml    面板功能：[purity] 纯洁度 + [geoip] IP 归属地图
 # 说明：
 # - [paths] 下路径相对项目根（config/ 所在目录的上一级）解析

@@ -11,7 +11,7 @@ SSLContext 避免反复加载证书库，又避免并发竞争。
 
 AsyncHttpGetter：原生 aiohttp async 客户端，SSL 在事件循环管理（不经线程池），
 避免 ssl 模块在 asyncio.to_thread 中的 C 层内存泄漏。供 check_proxies（心跳探测）
-和 network_gate（网络门控）使用——这两个是高频并发调用场景。
+和 network_gate（链路门控）使用——这两个是高频并发调用场景。
 
 返回 duck-typed 响应（status_code/text/headers/encoding/json/raise_for_status），
 用例层只读这些属性，不 import 本模块实现。
@@ -143,7 +143,7 @@ class _AsyncResponse:
 class AsyncHttpGetter:
     """原生 async HTTP 请求（aiohttp），SSL 在事件循环管理，不经线程池
 
-    供 check_proxies（心跳探测）和 network_gate（网络门控）使用——
+    供 check_proxies（心跳探测）和 network_gate（链路门控）使用——
     高频并发场景下避免 requests + asyncio.to_thread 的 ssl C 层内存泄漏。
 
     http/https 代理：复用模块级 ClientSession（aiohttp async 安全，可跨协程共享），

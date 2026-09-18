@@ -11,7 +11,7 @@ proxy-pool/
 │   ├── config.toml                # [paths] 路径 + [web] 面板开关/端口
 │   ├── pool.toml                  # [pool] 阈值/语义组/可请求组 + [groups] 分组定义
 │   ├── sources.toml               # [fetch] 拉取调度（含 freeproxy_world）+ [[sources]] 源列表
-│   ├── serve.toml                 # [server] serve 端口/队列/心跳/网络门控/metrics
+│   ├── serve.toml                 # [server] serve 端口/队列/心跳/链路门控/metrics
 │   ├── panel.toml                 # [purity] 纯洁度 + [geoip] IP 归属地图
 │   ├── logging.toml               # [logging] 控制台/文件级别分档 + 逐 logger 覆盖
 │   └── apikey.env                 # 密钥（ABUSEIPDB_API_KEY 等，git 忽略）
@@ -30,8 +30,8 @@ proxy-pool/
 │   │   ├── record_proxy.py        # 成功/失败记录、拉黑、信任
 │   │   ├── request_with_retry.py  # 带重试换代理的请求
 │   │   ├── check_proxies.py       # 并发测试代理
-│   │   ├── network_gate.py        # 本地网络门控（直连多目标+缓存+退避，异常时跳过心跳/补测/fill 避免误拉黑）
-│   │   └── standby.py             # 代理服务队列维护（fill 补入/心跳/退避补测，含本地网络门控 + per-proxy 延时历史）
+│   │   ├── network_gate.py        # 本地链路门控（链路可用性判定 + 探测结果可信度/链路事件熔断）
+│   │   └── standby.py             # 代理服务队列维护（fill 补入/心跳/退避补测，含链路门控与熔断 + per-proxy 延时历史）
 │   ├── interfaces/                # 接口适配器层：实现 domain 端口
 │   │   ├── __init__.py
 │   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert）

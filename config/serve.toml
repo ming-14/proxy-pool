@@ -24,7 +24,7 @@ heartbeat_interval = 2            # 心跳间隔秒：定时探测代理服务�
 heartbeat_lock_interval = 30      # 锁定单一上游时的心跳间隔秒（锁定时代理不淘汰不拉黑，仅测速展示，降低探测频率）
 heartbeat_probe_url = "https://cp.cloudflare.com/generate_204"  # 心跳探测目标 URL
 heartbeat_concurrency = 16        # 心跳探测并发数
-heartbeat_timeout = 3             # 心跳探测单个代理超时秒数
+heartbeat_timeout = 5             # 心跳探测单个代理超时秒数（免费代理成功延迟实测中位 2.13s/p90 2.84s，3s 余量不足，轻微抖动即大批误判失败）
 
 # 采样数据留存时长秒（全局）：流量与队列指标的采样点都按此清理，超出即丢弃。
 # 仪表盘按这份留存内的真实数据点绘制（不做窗口裁剪），改小会让趋势图变短。
@@ -40,11 +40,17 @@ standby_chart_window = 60
 # http/socks5 均为透传，无此问题。
 proxy_types = ["http", "socks5"]
 
-network_probe_urls = [ # 本地网络门控，直连探测目标判定本地网络是否可用
+network_probe_urls = [ # 本地链路门控探测目标（任一返回状态码 <400 即认为链路可用，容错单目标被墙/抽风）
     "https://cp.cloudflare.com/generate_204",
-    "https://httpbin.org/ip",
     "https://www.gstatic.com/generate_204",
+    "http://example.com",
 ]
-network_check_cache_ok = 5          # 网络正常时缓存秒数（期内复用结果，不重复直连）
-network_check_backoff_initial = 2   # 网络异常时退避重检起始间隔秒
-network_check_backoff_max = 30      # 退避间隔上限秒（异常越久探测越稀疏）
+network_probe_timeout = 3           # 单个探测目标超时秒数（直连探测，链路正常时毫秒级返回）
+network_check_cache_ok = 5          # 链路正常时的结论缓存秒数（期内复用结论，不重复直连）
+network_check_backoff_initial = 2   # 链路异常时的复检起始间隔秒
+network_check_backoff_max = 30      # 复检间隔上限秒（异常越久探测越稀疏）
+
+# 链路事件判定：一轮探测的失败数 >= 最小样本且失败率 >= 阈值时，判定问题在链路而非代理，
+# 该轮失败不计入代理连续失败，并立即复检链路（链路抖动 10~20 秒即可让失败代理攒满拉黑阈值）。
+network_link_event_fail_ratio = 0.8
+network_link_event_min_sample = 4

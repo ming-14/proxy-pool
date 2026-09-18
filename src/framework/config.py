@@ -3,7 +3,7 @@
     config.toml   [paths] [web]        路径与面板开关
     pool.toml     [pool] [groups]      池策略与分组定义
     sources.toml  [fetch] [[sources]]  代理源与拉取调度
-    serve.toml    [server]             serve 端口/队列/心跳/网络门控/metrics
+    serve.toml    [server]             serve 端口/队列/心跳/链路门控/metrics
     panel.toml    [purity] [geoip]     面板功能（纯洁度/归属地图）
     logging.toml  [logging]            日志双通道级别分档 + 逐 logger 覆盖
     apikey.env    密钥（KEY=VALUE，git 忽略）
@@ -170,11 +170,24 @@ STANDBY_CHART_WINDOW = int(_toml["server"]["standby_chart_window"])
 # 不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），浏览器访问 https
 # 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；http/socks5 均为透传，无此问题。
 SERVER_PROXY_TYPES: tuple[str, ...] = tuple(_toml["server"]["proxy_types"])
-# 本地网络门控（serve 心跳/补测/fill 前直连探测判定本地网络是否可用，异常时跳过避免误拉黑）
-NETWORK_PROBE_URLS: tuple[str, ...] = tuple(_toml["server"]["network_probe_urls"])  # 探测目标（任一通即正常）
-NETWORK_CHECK_CACHE_OK = float(_toml["server"]["network_check_cache_ok"])           # 正常时缓存秒数
-NETWORK_CHECK_BACKOFF_INITIAL = float(_toml["server"]["network_check_backoff_initial"])  # 异常时退避起始间隔
-NETWORK_CHECK_BACKOFF_MAX = float(_toml["server"]["network_check_backoff_max"])    # 退避间隔上限
+# 本地链路门控（serve 心跳/补测/fill 前探测本地链路是否可用，不可用时跳过本轮避免误拉黑）
+NETWORK_PROBE_URLS: tuple[str, ...] = tuple(_toml["server"]["network_probe_urls"])  # 探测目标（任一返回 <400 即正常）
+NETWORK_PROBE_TIMEOUT = float(_toml["server"]["network_probe_timeout"])             # 单个目标超时秒数
+NETWORK_CHECK_CACHE_OK = float(_toml["server"]["network_check_cache_ok"])           # 链路正常时的结论缓存秒数
+NETWORK_CHECK_BACKOFF_INITIAL = float(_toml["server"]["network_check_backoff_initial"])  # 链路异常时复检起始间隔
+NETWORK_CHECK_BACKOFF_MAX = float(_toml["server"]["network_check_backoff_max"])    # 复检间隔上限
+# 链路事件判定：失败数 >= 最小样本且失败率 >= 阈值时，本轮探测结果不可信（不计代理失败）
+NETWORK_LINK_EVENT_FAIL_RATIO = float(_toml["server"]["network_link_event_fail_ratio"])
+NETWORK_LINK_EVENT_MIN_SAMPLE = int(_toml["server"]["network_link_event_min_sample"])
+# 无探测目标则链路永远判为不可用（serve 静默停摆），配置错误直接在启动时暴露
+if not NETWORK_PROBE_URLS:
+    raise ValueError("serve.toml [server].network_probe_urls 不可为空（链路门控无探测目标）")
+if not 0.0 < NETWORK_LINK_EVENT_FAIL_RATIO <= 1.0:
+    raise ValueError(f"serve.toml [server].network_link_event_fail_ratio 须在 (0, 1]: "
+                     f"{NETWORK_LINK_EVENT_FAIL_RATIO}")
+if NETWORK_LINK_EVENT_MIN_SAMPLE < 2:
+    raise ValueError(f"serve.toml [server].network_link_event_min_sample 须 >= 2: "
+                     f"{NETWORK_LINK_EVENT_MIN_SAMPLE}")
 
 # ---------------------------------------------------------------- Web 控制面板（serve 模式）
 WEB_ENABLED = bool(_toml["web"].get("enabled", True))  # 面板总开关；false 时 serve 不构造/启动面板
