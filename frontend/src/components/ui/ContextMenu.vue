@@ -14,6 +14,8 @@ const emit = defineEmits<{
 }>();
 
 const el = ref<HTMLElement | null>(null);
+/** 触屏无 hover：子菜单改为点击开合（桌面 hover 路径保留，两者互不干扰） */
+const openSubmenu = ref<string | null>(null);
 /** 实际渲染坐标（夹取后）。不能直接绑 props.x/y：菜单已打开时再次右键只走重渲染，
  *  重渲染会把手工写入的夹取结果覆盖回原始点击点，菜单就溢出视口了。 */
 const pos = ref({ x: props.x, y: props.y });
@@ -39,6 +41,10 @@ function onDocClick(e: MouseEvent) {
 }
 
 function onItem(item: MenuItem) {
+  if (item.children) {
+    openSubmenu.value = openSubmenu.value === item.label ? null : item.label;
+    return;
+  }
   if (item.action) emit('select', item);
 }
 
@@ -77,7 +83,7 @@ onBeforeUnmount(() => {
           <span>{{ item.label }}</span>
           <Icon v-if="item.children" name="chevron-right" class="context-menu-arrow" />
           <span v-else-if="item.meta" class="text-[var(--color-t-muted)] text-xs">{{ item.meta }}</span>
-          <div v-if="item.children" class="context-submenu">
+          <div v-if="item.children" class="context-submenu" :class="{ open: openSubmenu === item.label }">
             <div
               v-for="sub in item.children"
               :key="sub.group"

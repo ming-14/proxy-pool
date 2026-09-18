@@ -261,16 +261,92 @@ function rowSpeedTest(row: StandbyEntry): ReturnType<typeof speedTestEntryOf> {
 }
 
 // ---------------- 右键菜单 ----------------
-function onContextmenu(e: MouseEvent) {
-  if (window.getSelection()?.toString()) return; // 有文本选区：让出原生右键菜单（复制）
-  const tr = (e.target as HTMLElement).closest('tbody tr');
-  if (!tr) return;
-  const proxy = (tr as HTMLElement).dataset.proxy;
+/** 打开菜单的公共入口（桌面右键 / 触屏长按共用） */
+function openMenuAt(tr: HTMLElement, x: number, y: number) {
+  const proxy = tr.dataset.proxy;
   if (!proxy) return;
-  e.preventDefault();
   if (!selection.has(proxy)) selection.selectOne(proxy);
   contextProxy.value = proxy;
-  menu.value = { items: buildMenuItems(), x: e.clientX, y: e.clientY };
+  menu.value = { items: buildMenuItems(), x, y };
+}
+
+function onContextmenu(e: MouseEvent) {
+  // 触屏长按：菜单由下方 touch 计时器弹出（iOS 长按不派发 contextmenu），这里只抑制
+  // 系统原生菜单，并兜底直接弹（与计时器幂等：同一份 items/x/y 覆盖，不会重复渲染）。
+  // Chrome 触屏长按派发的 contextmenu 实为 PointerEvent（pointerType='touch'）；
+  // 桌面鼠标派发普通 MouseEvent，断言后 pointerType 为 undefined → 走下方桌面分支
+  const pointerType = (e as PointerEvent).pointerType;
+  if (pointerType === 'touch' || pointerType === 'pen') {
+    e.preventDefault();
+    longPressFired = true; // 与计时器路径一致：抬手抑制合成 click，否则菜单刚开就被关掉
+    const tr = (e.target as HTMLElement).closest('tbody tr');
+    if (tr) openMenuAt(tr as HTMLElement, e.clientX, e.clientY);
+    return;
+  }
+  // 桌面右键：有文本选区时让出原生菜单（复制）。触屏不适用——长按本身就是选区手势，
+  // 若也走这个让路，菜单永远弹不出来（且触屏已用 CSS 禁选区，见 components.css）
+  if (window.getSelection()?.toString()) return;
+  const tr = (e.target as HTMLElement).closest('tbody tr');
+  if (!tr) return;
+  e.preventDefault();
+  openMenuAt(tr as HTMLElement, e.clientX, e.clientY);
+}
+
+// ---------------- 触屏长按（弹右键菜单） ----------------
+// iOS Safari 长按不派发 contextmenu 事件，必须 touch 计时自检；Android 的 contextmenu
+// 交给 onContextmenu 的 touch 分支抑制原生菜单，菜单本体统一由这里弹出
+const LONG_PRESS_MS = 500;
+const TOUCH_SLOP = 10; // 长按判定允许的手指位移，超过视为滚动/滑动（取消计时）
+let touchTimer: ReturnType<typeof setTimeout> | null = null;
+let touchStart: { x: number; y: number } | null = null;
+let longPressFired = false;
+
+function clearTouchTimer() {
+  if (touchTimer !== null) {
+    clearTimeout(touchTimer);
+    touchTimer = null;
+  }
+}
+
+function onTableTouchStart(e: TouchEvent) {
+  const t = e.touches[0];
+  if (!t) return;
+  clearTouchTimer();
+  touchStart = { x: t.clientX, y: t.clientY };
+  longPressFired = false;
+  touchTimer = setTimeout(() => {
+    touchTimer = null;
+    if (!touchStart) return;
+    // 按住期间手指可能轻微漂移，用按下点定位行（elementFromPoint 要求目标可见，
+    // 按下点此刻仍在原行上，取的是按住那一刻的元素）
+    const el = document.elementFromPoint(touchStart.x, touchStart.y);
+    const tr = el ? ((el as HTMLElement).closest('tbody tr') as HTMLElement | null) : null;
+    if (!tr) return;
+    longPressFired = true;
+    openMenuAt(tr, touchStart.x, touchStart.y);
+  }, LONG_PRESS_MS);
+}
+
+function onTableTouchMove(e: TouchEvent) {
+  const t = e.touches[0];
+  if (!touchStart || !t) return;
+  if (Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y) > TOUCH_SLOP) clearTouchTimer();
+}
+
+function onTableTouchEnd(e: TouchEvent) {
+  clearTouchTimer();
+  touchStart = null;
+  if (longPressFired) {
+    longPressFired = false;
+    // 抑制长按抬手后的合成 click：否则 ContextMenu 的文档 click 监听会把刚开的菜单立刻关掉
+    e.preventDefault();
+  }
+}
+
+function onTableTouchCancel() {
+  clearTouchTimer();
+  touchStart = null;
+  longPressFired = false;
 }
 
 function buildMenuItems(): MenuItem[] {
@@ -281,14 +357,39 @@ function buildMenuItems(): MenuItem[] {
     { label: '移出', children },
     { label: '拉黑', action: 'blacklist' },
   ];
-  if (selection.count() <= 1) items.push({ label: '测速', action: 'speedtest' });
+  // 复制/测速只对单行有意义（复制的是菜单所在行），多选时隐藏
+  if (selection.count() <= 1) {
+    items.unshift({ label: '复制', action: 'copy' });
+    items.push({ label: '测速', action: 'speedtest' });
+  }
   return items;
+}
+
+/** 复制代理地址：clipboard API 需要安全上下文（https/localhost），局域网 http 访问回退 execCommand */
+async function copyProxy(proxy: string) {
+  try {
+    await navigator.clipboard.writeText(proxy);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = proxy;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  toast.success('已复制', proxy);
 }
 
 async function onMenuAction(item: MenuItem) {
   menu.value = null;
   const proxies = selection.getSelectedArray();
   const list = proxies.length ? proxies : [contextProxy.value];
+  if (item.action === 'copy') {
+    void copyProxy(contextProxy.value);
+    return;
+  }
   if (item.action === 'speedtest') {
     void runSpeedTest(bindOf(contextProxy.value)); // 测速不改队列，无需回正顺序
     return;
@@ -318,13 +419,20 @@ async function onMenuAction(item: MenuItem) {
 }
 
 // ---------------- 悬浮判定（冻结顺序用） ----------------
-function onTableMouseover(e: MouseEvent) {
+// 用 pointer 事件替代 mouseover/mouseleave：触屏每次 tap 只合成一次 mouseover、抬手
+// 不派发 mouseleave → hoveredProxy 永远不归 null → 顺序永久冻结。pointer 事件在抬手
+// 时派发 pointerleave（隐式捕获释放），pointerup 对触屏再兜底清一次（跨浏览器保险）
+function onTablePointerover(e: PointerEvent) {
   const tr = (e.target as HTMLElement).closest('tbody tr');
   hoveredProxy.value = tr ? ((tr as HTMLElement).dataset.proxy || null) : null;
 }
 
-function onTableMouseleave() {
+function onTablePointerleave() {
   hoveredProxy.value = null;
+}
+
+function onTablePointerup(e: PointerEvent) {
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') hoveredProxy.value = null;
 }
 
 /** 主区域滚动：收回右键菜单（菜单按视口固定定位，不跟随滚动） */
@@ -338,6 +446,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.getElementById('main-content')?.removeEventListener('scroll', onMainScroll);
+  clearTouchTimer();
   hoveredProxy.value = null; // 离开页面解除冻结，避免串页后仍冻住顺序
 });
 </script>
@@ -365,8 +474,14 @@ onBeforeUnmount(() => {
         ref="tableWrapRef"
         data-testid="sb-table"
         class="table-wrap sb-table border-0 rounded-t-none"
-        @mouseover="onTableMouseover"
-        @mouseleave="onTableMouseleave"
+        @pointerover="onTablePointerover"
+        @pointerleave="onTablePointerleave"
+        @pointerup="onTablePointerup"
+        @pointercancel="onTablePointerup"
+        @touchstart="onTableTouchStart"
+        @touchmove="onTableTouchMove"
+        @touchend="onTableTouchEnd"
+        @touchcancel="onTableTouchCancel"
         @contextmenu="onContextmenu"
       >
         <div v-if="!displayStandby.length" class="empty-state">

@@ -628,6 +628,24 @@ tbody tr.row-dimmed {
   background-color: transparent;
 }
 
+/* 触屏（主指针无 hover）：禁文本选区与长按 callout——长按是弹自定义菜单的手势，
+   若允许选区，Android 长按必先选中文本、iOS 先出系统选择手柄/呼叫条，自定义菜单
+   永远弹不出来（桌面选区/复制行为不受影响） */
+@media (hover: none), (pointer: coarse) {
+  .sb-table td,
+  .sb-table td code {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  /* Chrome Android tap 后 :hover 粘滞：行一直挂着 hover 高亮像"卡死"，触屏不需要
+     （选中/锁定行有自己的底色，不归这条管） */
+  .sb-table tbody tr:hover:not(.selected):not(.row-locked),
+  .sb-table tbody tr:hover:not(.selected):not(.row-locked) .pstrip {
+    background-color: transparent;
+  }
+}
+
 /* ---------------- 回到顶部 ---------------- */
 .back-to-top-btn {
   position: fixed;
@@ -707,6 +725,10 @@ tbody tr.row-dimmed {
   margin-left: 2px;
 }
 .context-menu-has-submenu:hover .context-submenu {
+  display: block;
+}
+/* 触屏点击开合子菜单（无 hover） */
+.context-submenu.open {
   display: block;
 }
 
