@@ -1,8 +1,8 @@
 """Web 控制面板 HTTP 服务：aiohttp 挂载到 serve 现有事件循环（零额外线程）
 
 serve 主循环内调用 WebPanel.start() 把 AppRunner + TCPSite 启动在同一个
-asyncio loop 上；serve 退出时 close() 清理。WebPanel 持有共享的
-PanelContext（与 serve 同源），保证监控读数与控制动作操作同一份状态。
+asyncio loop 上；serve 退出时 close() 清理。构造时把共享的 PanelContext（与
+serve 同源）交给 build_app，路由闭包持有它，保证监控读数与控制动作操作同一份状态。
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ class WebPanel:
     """aiohttp 控制面板服务器封装"""
 
     def __init__(self, ctx: PanelContext) -> None:
-        self._ctx = ctx
         self._app = build_app(ctx)
         self._runner: web.AppRunner | None = None
 

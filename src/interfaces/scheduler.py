@@ -17,11 +17,10 @@ logger = logging.getLogger(__name__)
 class ProxyScheduler:
     """通用代理调度器：asyncio 并发执行任务，自动重试失败代理，超限则丢弃"""
 
-    def __init__(self, proxies, max_concurrent=8, max_consecutive_fails=2, task_interval=1.0, request_timeout=10):
+    def __init__(self, proxies, max_concurrent=8, max_consecutive_fails=2, task_interval=1.0):
         self._max_concurrent = max_concurrent
         self._max_consecutive_fails = max_consecutive_fails
         self._task_interval = task_interval
-        self._request_timeout = request_timeout
         self._alive = set(proxies)
         self._failed = set()
         self._unused = list(proxies)

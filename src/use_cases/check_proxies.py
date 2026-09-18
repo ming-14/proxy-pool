@@ -88,7 +88,7 @@ class CheckProxiesUseCase:
         tasks = [(p, url) for p in proxies]
 
         scheduler = self._scheduler_factory(
-            proxies, max_concurrent=max_concurrent, max_consecutive_fails=0, task_interval=0.1, request_timeout=timeout
+            proxies, max_concurrent=max_concurrent, max_consecutive_fails=0, task_interval=0.1
         )
 
         def _on_success(p, t, r):
