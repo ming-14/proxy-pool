@@ -82,15 +82,24 @@ def _async_result(success_map):
     }
 
 
-def make_gate(ok: bool = True, trustworthy: bool = True):
-    """LocalNetworkGate mock：check 返回 ok、assess_batch 返回 trustworthy（不依赖网络）"""
-    gate = MagicMock()
+def make_gate(ok: bool = True, check_results=None):
+    """LocalNetworkGate mock（不依赖网络）
 
-    async def check():
-        return ok
+    check 默认恒返回 ok；check_results 非空时按序列依次返回（探测前/探测后各消费
+    一个，模拟"探测期间链路劣化"），序列耗尽后保持末值。
+    """
+    gate = MagicMock()
+    if check_results is None:
+        async def check():
+            return ok
+    else:
+        last = check_results[-1]
+        it = iter(check_results)
+
+        async def check():
+            return next(it, last)
 
     gate.check.side_effect = check
-    gate.assess_batch.return_value = trustworthy
     return gate
 
 
@@ -642,8 +651,8 @@ class TestStandbyNetworkGate(unittest.TestCase):
         self.assertIn("http://1.2.3.4:8080", self.pool.get_group_proxies(STANDBY_GROUP))
 
 
-class TestStandbyLinkEvent(unittest.TestCase):
-    """链路事件熔断：门控判本轮结果不可信时，该轮失败不归因到代理（本地链路问题不该删代理）"""
+class TestStandbyLinkDeterioration(unittest.TestCase):
+    """链路劣化熔断：探测后复检判链路不可用时，该轮失败不归因到代理（本地链路问题不该删代理）"""
 
     def setUp(self):
         self.pool = make_pool()
@@ -657,54 +666,72 @@ class TestStandbyLinkEvent(unittest.TestCase):
         return proxies
 
     def test_heartbeat_whole_queue_failure_not_counted(self):
-        """整队列失败且门控判为链路事件：不计数/不拉黑/不移出/不进补测"""
+        """探测后复检链路劣化：失败不计数/不拉黑/不移出/不进补测，且本轮复检确实发生"""
         proxies = self._add_standby(5)
-        gate = make_gate(True, trustworthy=False)
+        gate = make_gate(check_results=[True, False])  # 探测前正常，探测后劣化
         c = make_standby(self.pool, make_check(set()), gate=gate)
         alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=5))
         self.assertEqual(alive, [])
-        gate.assess_batch.assert_called_once_with(5, 5)
+        self.assertEqual(gate.check.call_count, 2)  # 探测前 + 探测后各一次
         for p in proxies:
             self.assertEqual(self.pool.get_consecutive_fail_count(p), 0)
             self.assertIn(p, c.standby_proxies())
             self.assertFalse(self.pool.is_blacklisted(p))
         self.assertEqual(c.pending_retries(), [])
 
-    def test_heartbeat_scoring_applied_when_gate_trusts_result(self):
-        """门控认为结果可信时照常计分：失败代理进入退避补测"""
+    def test_heartbeat_scoring_applied_when_link_ok(self):
+        """前后复检都正常时照常计分：失败代理进入退避补测"""
         failed, ok = "http://10.0.0.0:8080", "http://10.0.0.1:8080"
         self._add_standby(2)
-        c = make_standby(self.pool, make_check({ok}), gate=make_gate(True, trustworthy=True))
+        c = make_standby(self.pool, make_check({ok}), gate=make_gate(True))
         self.assertEqual(asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2)), [ok])
         self.assertEqual(self.pool.get_consecutive_fail_count(failed), 1)
         self.assertIn(failed, c.pending_retries())
 
     def test_fill_whole_batch_failure_not_counted(self):
-        """整批候选失败且门控判为链路事件：候选失败计数不变、不被拉黑"""
+        """整批候选失败且探测后复检链路劣化：候选失败计数不变、不被拉黑"""
         candidates = [f"http://10.0.0.{i}:8080" for i in range(5)]
         for p in candidates:
             self.pool.add_to_group("default-http", p)
-        gate = make_gate(True, trustworthy=False)
+        gate = make_gate(check_results=[True, False])  # 探测前正常，探测后劣化
         c = make_standby(self.pool, make_check(set()), gate=gate)
         added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3,
                                    concurrency=5, capacity=5))
         self.assertEqual(added, 0)
-        gate.assess_batch.assert_called_once_with(5, 5)
+        self.assertEqual(gate.check.call_count, 2)  # 探测前 + 探测后各一次
         for p in candidates:
             self.assertEqual(self.pool.get_consecutive_fail_count(p), 0)
             self.assertFalse(self.pool.is_blacklisted(p))
 
-    def test_fill_scoring_applied_when_gate_trusts_result(self):
-        """门控认为结果可信时照常计分：候选失败累计到阈值即拉黑"""
+    def test_fill_scoring_applied_when_link_ok(self):
+        """前后复检都正常时照常计分：候选失败累计到阈值即拉黑"""
         candidates = [f"http://10.0.0.{i}:8080" for i in range(5)]
         for p in candidates:
             self.pool.add_to_group("default-http", p)
         bad = candidates[0]
         self.pool.proxy_groups["default-http"]["proxies"][bad]["consecutive_fails"] = \
             MAX_CONSECUTIVE_FAILS - 1
-        c = make_standby(self.pool, make_check(set()), gate=make_gate(True, trustworthy=True))
+        c = make_standby(self.pool, make_check(set()), gate=make_gate(True))
         asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=5, capacity=5))
         self.assertTrue(self.pool.is_blacklisted(bad))
+
+    def test_retry_probe_link_deteriorates_after_probe_no_count(self):
+        """补测探测期间链路劣化：本轮失败不计数、不拉黑、代理保留，退避重置快速复检"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.move_proxy("http://1.2.3.4:8080", STANDBY_GROUP, consecutive_fails=0)
+        check = make_check(set())  # 补测探测必失败
+        # 探测前正常，探测后劣化；耗尽后保持劣化 -> 循环停在门控前，不 record_fail
+        gate = make_gate(check_results=[True, False])
+        c = make_standby(self.pool, check, gate=gate)
+        c._retrying.add("http://1.2.3.4:8080")  # 模拟 heartbeat 已放入补测
+        with self.assertRaises(asyncio.TimeoutError):
+            asyncio.run(asyncio.wait_for(
+                c.retry_probe("http://1.2.3.4:8080", "http://probe.local", timeout=3),
+                timeout=2.5,
+            ))
+        self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
+        self.assertFalse(self.pool.is_blacklisted("http://1.2.3.4:8080"))
+        self.assertIn("http://1.2.3.4:8080", self.pool.get_group_proxies(STANDBY_GROUP))
 
 
 class TestStandbyLock(unittest.TestCase):

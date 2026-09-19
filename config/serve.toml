@@ -46,11 +46,6 @@ network_probe_urls = [ # 本地链路门控探测目标（任一返回状态码 
     "http://example.com",
 ]
 network_probe_timeout = 3           # 单个探测目标超时秒数（直连探测，链路正常时毫秒级返回）
-network_check_cache_ok = 5          # 链路正常时的结论缓存秒数（期内复用结论，不重复直连）
-network_check_backoff_initial = 2   # 链路异常时的复检起始间隔秒
-network_check_backoff_max = 30      # 复检间隔上限秒（异常越久探测越稀疏）
 
-# 链路事件判定：一轮探测的失败数 >= 最小样本且失败率 >= 阈值时，判定问题在链路而非代理，
-# 该轮失败不计入代理连续失败，并立即复检链路（链路抖动 10~20 秒即可让失败代理攒满拉黑阈值）。
-network_link_event_fail_ratio = 0.8
-network_link_event_min_sample = 4
+# 链路门控双检查：一轮探测前与探测后各 check 一次本地链路，两次都正常才允许拉黑代理。
+# 探测后复检拦截"探测期间链路劣化"（链路抖动 10~20 秒即可让失败代理攒满拉黑阈值）。

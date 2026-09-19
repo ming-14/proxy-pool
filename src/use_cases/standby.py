@@ -14,10 +14,11 @@
 - retry_probe: 对单个待补测代理退避复核：间隔 1s/2s/4s...（上限 30s），
               成功更新 latency + 清零恢复；失败累计到阈值拉黑。
 
-**链路门控与熔断**：fill/heartbeat/retry_probe 开头调 network_gate.check()，链路
-不可用时跳过本轮（不计数/不拉黑/不补测），队列保持现状、恢复后自动续跑；一轮探测
-结束后用 network_gate.assess_batch() 判定结果可信度，失败面过大时该轮失败不计入
-连续失败——链路抖动 10~20 秒即可攒满阈值删掉整批代理。
+**链路门控与熔断**：fill/heartbeat/retry_probe 在探测前和探测后各调一次
+network_gate.check()（每次调用都真实探测、无结论缓存），两次都正常才允许执行
+正常拉黑操作——链路不可用或探测期间劣化时跳过本轮（不计数/不拉黑/不补测），
+队列保持现状、恢复后自动续跑；链路抖动 10~20 秒即可攒满阈值删掉整批代理，
+门控把它拦在 per-proxy 失败计数之外。
 
 fill/heartbeat/retry_probe 均为 async（探测走 CheckProxiesUseCase.execute，
 网络请求在 asyncio.to_thread 中执行），serve 事件循环不被同步阻塞。
@@ -349,7 +350,7 @@ class StandbyQueueUseCase:
 
         logger.info("代理服务队列探测 %d 个候选 -> %s", len(candidates), probe_url)
         added = 0
-        failed: list[str] = []  # 失败的候选延后到整轮结束计分（见 assess_batch）
+        failed: list[str] = []  # 失败的候选延后到整轮结束统一计分（探测后复检通过才计）
 
         def on_result(proxy: str, result: dict) -> None:
             """流式入队回调：探测完成即处理，不等全部完成"""
@@ -389,21 +390,26 @@ class StandbyQueueUseCase:
                             logger.info("代理 %s 探测存活但较慢 (%.2fs >= %.2fs), move trusted",
                                         proxy, latency or 0, tail_latency or 0)
             else:
-                # 失败延后到整轮结束计分：整轮失败面过大即为链路事件，本轮不计分
+                # 失败延后到整轮结束统一计分（探测后复检通过才计，见下方 gate 判定）
                 failed.append(proxy)
 
         await self._check_proxies.execute(
             candidates, probe_url, max_concurrent=concurrency, timeout=timeout, on_result=on_result,
         )
-        if failed and self._gate.assess_batch(len(failed), len(candidates)):
-            for proxy in failed:
-                self._record.record_fail(proxy)
-                if self._record.should_blacklist(proxy):
-                    self._record.remove(proxy)
-                    logger.warning("候选 %s 探测失败, 达到阈值已拉黑", proxy)
-                else:
-                    logger.info("候选 %s 探测失败, consecutive_fails=%d",
-                                proxy, self._record.get_consecutive_fail_count(proxy))
+        if failed:
+            # 链路门控（探测后复检）：链路在探测期间劣化，本轮失败不可信，不计分不拉黑
+            if await self._gate.check():
+                for proxy in failed:
+                    self._record.record_fail(proxy)
+                    if self._record.should_blacklist(proxy):
+                        self._record.remove(proxy)
+                        logger.warning("候选 %s 探测失败, 达到阈值已拉黑", proxy)
+                    else:
+                        logger.info("候选 %s 探测失败, consecutive_fails=%d",
+                                    proxy, self._record.get_consecutive_fail_count(proxy))
+            else:
+                logger.warning("本地链路在探测期间劣化，本轮 %d 个候选失败不计分",
+                               len(failed))
         logger.info("代理服务队列补充完成: +%d (队列 %d/%d)", added, len(self.standby_proxies()), capacity)
         return added
 
@@ -413,7 +419,7 @@ class StandbyQueueUseCase:
         成功：更新 latency + 清零连续失败计数，保留在队列（不晋级 trusted）；
         失败：连续失败计数 +1，达到所在组阈值（should_blacklist）即拉黑移出，
               未达阈值进入退避补测（由 retry_probe 复核，heartbeat 轮跳过）；
-              整轮判为链路事件时本轮失败不归因到代理（不计分/不补测/不拉黑）。
+              探测后复检链路劣化时本轮失败不归因到代理（不计分/不补测/不拉黑）。
 
         锁定时：仍探测锁定代理测速（数据加趋势图），但失败只计数不拉黑不移出
         不补测——无论心跳是否成功都只用该代理（锁定语义不变）。
@@ -437,9 +443,12 @@ class StandbyQueueUseCase:
         results = await self._check_proxies.execute(
             proxies, probe_url, max_concurrent=concurrency, timeout=timeout,
         )
-        # 结果可信度：整轮失败面过大即为链路事件，该轮失败不归因到代理
+        # 探测后复检：存在失败时才需要判定（全存活没有拉黑操作）。链路在探测期间
+        # 劣化时该轮失败不归因到代理（不计分/不补测/不拉黑）
         failed = [p for p in proxies if not (results.get(p) or {}).get("success")]
-        trustworthy = self._gate.assess_batch(len(failed), len(proxies)) if failed else True
+        link_ok_after = (not failed) or await self._gate.check()
+        if failed and not link_ok_after:
+            logger.warning("本地链路在心跳探测期间劣化，本轮 %d 个失败不归因到代理", len(failed))
 
         alive: list[str] = []
         for proxy in proxies:
@@ -454,9 +463,9 @@ class StandbyQueueUseCase:
             else:
                 reason = info.get("error") if info else "无探测结果"
                 self._append_per_proxy_latency(proxy, None)  # 失败也记采样点：曲线断开 + 成功率可算
-                if not trustworthy:
-                    # 链路事件：本轮失败不归因到代理，不计数/不补测/不拉黑
-                    logger.debug("代理 %s 心跳失败: %s, 链路事件本轮不计失败", proxy, reason)
+                if not link_ok_after:
+                    # 链路劣化：本轮失败不归因到代理，不计数/不补测/不拉黑
+                    logger.debug("代理 %s 心跳失败: %s, 链路劣化本轮不计失败", proxy, reason)
                     continue
                 self._record.record_fail(proxy)
                 if locked or self._pool.is_pinned(proxy):
@@ -489,8 +498,8 @@ class StandbyQueueUseCase:
                     logger.info("代理 %s 已不在代理服务队列, 停止补测", proxy)
                     return
                 await asyncio.sleep(backoff)
-                # 链路门控：不可用时不计分/不拉黑（非代理问题），退避重置到初始值快速
-                # 轮询门控缓存，链路恢复后立即继续补测
+                # 链路门控（探测前）：不可用时不计分/不拉黑（非代理问题），退避重置到
+                # 初始值快速轮询门控，链路恢复后立即继续补测
                 if not await self._gate.check():
                     backoff = RETRY_BACKOFF_INITIAL
                     if not paused:
@@ -510,6 +519,14 @@ class StandbyQueueUseCase:
                     self._append_per_proxy_latency(proxy, info.get("elapsed", 0))
                     logger.info("代理 %s 补测成功, 恢复使用", proxy)
                     return
+                # 链路门控（探测后复检）：链路在探测期间劣化，本轮失败不归因到代理，
+                # 退避重置快速复检（同探测前门控处理）
+                if not await self._gate.check():
+                    backoff = RETRY_BACKOFF_INITIAL
+                    if not paused:
+                        paused = True
+                        logger.info("代理 %s 补测不计分：本地链路劣化，等待恢复", proxy)
+                    continue
                 self._record.record_fail(proxy)
                 self._append_per_proxy_latency(proxy, None)  # 补测失败同样记采样点
                 if self._pool.is_pinned(proxy):

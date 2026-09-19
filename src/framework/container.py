@@ -150,11 +150,6 @@ def build_container(cache_db: str | None = None) -> Container:
         async_getter=async_getter,
         probe_urls=config.NETWORK_PROBE_URLS,
         probe_timeout=config.NETWORK_PROBE_TIMEOUT,
-        cache_ok=config.NETWORK_CHECK_CACHE_OK,
-        backoff_initial=config.NETWORK_CHECK_BACKOFF_INITIAL,
-        backoff_max=config.NETWORK_CHECK_BACKOFF_MAX,
-        link_event_fail_ratio=config.NETWORK_LINK_EVENT_FAIL_RATIO,
-        link_event_min_sample=config.NETWORK_LINK_EVENT_MIN_SAMPLE,
     )
     standby = StandbyQueueUseCase(
         pool=pool,

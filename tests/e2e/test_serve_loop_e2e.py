@@ -58,7 +58,7 @@ def standby_list(pool):
 def make_standby(pool, record, check):
     """构造代理服务队列用例（容器壳：pool/record/check_proxies/save）
 
-    e2e 用 mock 上游不走真实网络，链路门控注入恒可用、结果恒可信的 mock。
+    e2e 用 mock 上游不走真实网络，链路门控注入恒可用的 mock。
     """
     gate = MagicMock()
 
@@ -66,7 +66,6 @@ def make_standby(pool, record, check):
         return True
 
     gate.check.side_effect = _gate_ok
-    gate.assess_batch.return_value = True
     return StandbyQueueUseCase(
         pool=pool,
         record=record,

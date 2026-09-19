@@ -25,7 +25,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 
 - 心跳成功 → 代理保留在代理服务队列（不晋级 trusted）；失败 → 连续失败计数 +1 进入退避补测（独立复核，成功清零恢复），达到阈值（`MAX_CONSECUTIVE_FAILS`/`TRUSTED_MAX_CONSECUTIVE_FAILS`）拉黑移出；缺口自动探测补入
 - 代理服务队列按响应时间（latency）升序维护，队列满时新代理更快则踢队尾 move trusted、较慢则自身 move trusted（探测成果不浪费）
-- **本地链路门控与熔断**：fill/心跳/补测前直连多个探测目标（`network_probe_urls`，任一返回状态码 <400 即正常）判定链路可用性——不可用时（WiFi 断/ISP 故障）跳过本轮操作（不计数/不拉黑/不补测），队列保持现状、恢复后自动续跑；正常时结论缓存（`network_check_cache_ok` 秒），异常时退避复检（`network_check_backoff_initial` → ×2 → `network_check_backoff_max`）。一轮探测结束后再按失败面判定结果可信度：失败数 ≥ `network_link_event_min_sample` 且失败率 ≥ `network_link_event_fail_ratio` 时判为链路事件，该轮失败不计入代理连续失败（心跳 2s 一轮，链路抖动 10~20 秒即可让失败代理攒满拉黑阈值）
+- **本地链路门控与熔断**：fill/心跳/补测在探测前和探测后各直连多个探测目标（`network_probe_urls`，任一返回状态码 <400 即正常）判定链路可用性——**两次都必须正常才允许执行正常拉黑操作**：探测前不可用（WiFi 断/ISP 故障）跳过本轮操作（不计数/不拉黑/不补测），探测后复检不可用则本轮失败不归因到代理（探测期间链路劣化），队列保持现状、恢复后自动续跑；每次检查都真实探测、无结论缓存（心跳 2s 一轮，链路抖动 10~20 秒即可让失败代理攒满拉黑阈值）
 
 ### Web 控制面板
 
