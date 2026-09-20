@@ -64,15 +64,23 @@ IP_NODES: list[IpNode] = [
 ]
 
 
-def get_download_nodes(names: list[str] | None) -> list[DownloadNode]:
+def _select(nodes: list, names: list[str] | None) -> list:
+    """按名称选节点；未知名称直接报错——静默跳过会让本次探测退化成"通过但没速度"
+
+    唯一例外是 names 为空或显式 "all"：这是"用全部节点"的语义，不是拼写错误。
+    """
     if not names or names == ["all"]:
-        return list(DOWNLOAD_NODES)
-    pool = {n.name: n for n in DOWNLOAD_NODES}
-    return [pool[n] for n in names if n in pool]
+        return list(nodes)
+    pool = {n.name: n for n in nodes}
+    unknown = [n for n in names if n not in pool]
+    if unknown:
+        raise ValueError(f"未知节点: {', '.join(unknown)}（可用: {', '.join(pool)}）")
+    return [pool[n] for n in names]
+
+
+def get_download_nodes(names: list[str] | None) -> list[DownloadNode]:
+    return _select(DOWNLOAD_NODES, names)
 
 
 def get_upload_nodes(names: list[str] | None) -> list[UploadNode]:
-    if not names or names == ["all"]:
-        return list(UPLOAD_NODES)
-    pool = {n.name: n for n in UPLOAD_NODES}
-    return [pool[n] for n in names if n in pool]
+    return _select(UPLOAD_NODES, names)

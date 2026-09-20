@@ -9,7 +9,11 @@ import {
   fmtBytesSpaced,
   fmtDuration,
   fmtLatency,
+  speedAllFailed,
+  speedSummary,
+  speedSummaryTitle,
 } from '@/utils/format';
+import type { SpeedLeg, SpeedTestResult } from '@/types/api';
 
 describe('fmtBytes', () => {
   it('各量级格式与旧 utils 一致', () => {
@@ -79,5 +83,43 @@ describe('displayCountryName', () => {
     expect(displayCountryName('中国')).toBe('中国大陆');
     expect(displayCountryName('China')).toBe("China's Mainland");
     expect(displayCountryName('美国')).toBe('美国');
+  });
+});
+
+function leg(ok: boolean, extra: Partial<SpeedLeg> = {}): SpeedLeg {
+  return { ok, best_mbps: 0, ...extra };
+}
+
+function result(download: SpeedLeg | null, upload: SpeedLeg | null): SpeedTestResult {
+  return { proxy: 'http://1.2.3.4:8080', download, upload };
+}
+
+describe('测速结果展示', () => {
+  it('失败腿显示"失败"而不是 0.0，成功腿显示速率', () => {
+    const r = result(
+      leg(false, { err: 'IncompleteRead: 71610 bytes read' }),
+      leg(true, { best_mbps: 20.44, node: 'cloudflare', ms: 1234.5 }),
+    );
+    expect(speedSummary(r)).toBe('↓失败 ↑20.4 Mbps');
+    expect(speedSummaryTitle(r)).toBe(
+      '下载：失败（IncompleteRead: 71610 bytes read）｜上传：20.44 Mbps（节点 cloudflare，用时 1235ms）',
+    );
+  });
+
+  it('两腿都失败时不显示速率单位，并按失败着色', () => {
+    const r = result(leg(false, { err: 'HTTP 100' }), leg(false, { err: '读取超时' }));
+    expect(speedSummary(r)).toBe('↓失败 ↑失败');
+    expect(speedAllFailed(r)).toBe(true);
+  });
+
+  it('无结果腿显示 -，且不算全失败', () => {
+    const r = result(null, leg(true, { best_mbps: 1.25 }));
+    expect(speedSummary(r)).toBe('↓- ↑1.3 Mbps');
+    expect(speedSummaryTitle(result(null, null))).toBe('下载：无结果｜上传：无结果');
+    expect(speedAllFailed(r)).toBe(false);
+  });
+
+  it('失败腿缺 err 时给出兜底原因', () => {
+    expect(speedSummaryTitle(result(leg(false), null))).toBe('下载：失败（原因未知）｜上传：无结果');
   });
 });

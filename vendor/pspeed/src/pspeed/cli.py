@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pspeed import __version__
 from pspeed.proxy import parse_many, load_file
-from pspeed.nodes import get_download_nodes, get_upload_nodes, DOWNLOAD_NODES, UPLOAD_NODES
+from pspeed.nodes import get_download_nodes, get_upload_nodes
 from pspeed.probe import probe_one
 from pspeed.report import build_report, emit
 
@@ -90,9 +90,17 @@ def main(argv: list[str] | None = None) -> int:
         print("没有可用的代理输入", file=sys.stderr)
         return 2
 
+    if args.timeout <= 0:
+        print("--timeout 必须为正数(秒)", file=sys.stderr)
+        return 2
+
     tests = [t.strip() for t in args.test.split(",") if t.strip()]
-    dl_nodes = get_download_nodes([n.strip() for n in args.nodes.split(",")]) if "download" in tests else None
-    ul_nodes = get_upload_nodes([n.strip() for n in args.upload_nodes.split(",")]) if "upload" in tests else None
+    try:
+        dl_nodes = get_download_nodes([n.strip() for n in args.nodes.split(",")]) if "download" in tests else None
+        ul_nodes = get_upload_nodes([n.strip() for n in args.upload_nodes.split(",")]) if "upload" in tests else None
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     dl_bytes = _parse_bytes(args.download_bytes)
     ul_bytes = _parse_bytes(args.upload_bytes)
 

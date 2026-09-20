@@ -2,6 +2,7 @@
  * 纯展示格式化函数（无 DOM 依赖，Vitest 直测）。
  * 输出格式与旧前端 utils 完全一致，保证视觉不变。
  */
+import type { SpeedLeg, SpeedTestResult } from '@/types/api';
 
 /** 字节自适应：B / KB / MB / GB（保留旧两处实现的各自格式） */
 export function fmtBytes(n: number | null | undefined): string {
@@ -81,4 +82,42 @@ const COUNTRY_DISPLAY_MAP: Record<string, string> = {
 
 export function displayCountryName(name: string): string {
   return COUNTRY_DISPLAY_MAP[name] ?? name;
+}
+
+/**
+ * 测速结果展示：失败腿不能按数字渲染
+ *
+ * 后端 SpeedLeg.ok=false 时 best_mbps 固定为 0（失败样本不带速率），直接渲染数字
+ * 会把"没测出来"显示成"0.0"，与真实的零速率无法区分——失败腿一律显示"失败"，
+ * 具体原因（代理断开/HTTP 100/超时…）挂到 title 上。
+ */
+function fmtSpeedLeg(leg: SpeedLeg | null | undefined): string {
+  if (!leg) return '-';
+  if (!leg.ok) return '失败';
+  return leg.best_mbps == null ? '-' : leg.best_mbps.toFixed(1);
+}
+
+function speedLegTitle(name: string, leg: SpeedLeg | null | undefined): string {
+  if (!leg) return `${name}：无结果`;
+  if (!leg.ok) return `${name}：失败（${leg.err ?? '原因未知'}）`;
+  const node = leg.node ? `节点 ${leg.node}，` : '';
+  const ms = leg.ms == null ? '' : `用时 ${Math.round(leg.ms)}ms`;
+  return `${name}：${leg.best_mbps?.toFixed(2) ?? '-'} Mbps（${node}${ms}）`;
+}
+
+/** 行内测速摘要：↓成功速率/失败 ↑同理；两腿都失败时不带 Mbps 单位 */
+export function speedSummary(result: SpeedTestResult): string {
+  const legs = [`↓${fmtSpeedLeg(result.download)}`, `↑${fmtSpeedLeg(result.upload)}`];
+  if (result.download?.ok || result.upload?.ok) legs.push('Mbps');
+  return legs.join(' ');
+}
+
+/** 摘要 title：逐腿给出速率/节点/失败原因 */
+export function speedSummaryTitle(result: SpeedTestResult): string {
+  return [speedLegTitle('下载', result.download), speedLegTitle('上传', result.upload)].join('｜');
+}
+
+/** 两腿都没成功（含无结果）：行内徽标按失败着色，不再伪装成成功结果 */
+export function speedAllFailed(result: SpeedTestResult): boolean {
+  return !result.download?.ok && !result.upload?.ok;
 }

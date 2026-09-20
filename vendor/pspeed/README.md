@@ -46,11 +46,18 @@ pspeed --proxy-file proxies.txt --quiet
 | `--upload-nodes LIST` | 上传测速节点或 all |
 | `--multi N` | 每节点重复次数，取峰值 |
 | `--concurrency N` | 并发数 |
-| `--timeout SEC` | 单次探测硬性总时限 |
+| `--timeout SEC` | 单次探测硬性总时限（须 > 0） |
 | `--min-speed MBPS` | 筛选最低下载速度 |
 | `--max-latency MS` | 筛选最高 TCP 延迟 |
 | `--pretty` | JSON 美化 |
 | `--quiet` | 静默模式 |
+
+## 测速口径
+
+- 带宽 = 传输阶段字节数 / 传输阶段时长：下载扣掉建连、代理协商与 TTFB（curl `time_starttransfer → time_total`），上传扣掉建连与首字节前的协商（`time_pretransfer → time_starttransfer`）；传输窗口短于 0.3s 时退回含全过程的耗时口径，避免小文件上把速率放大成噪声。
+- 下载与上传优先走 curl（两方向同工具同口径，上传还能避开 requests 写 socket 缓冲区导致的偏高），仅 curl 不可用时回退 requests。
+- `--timeout` 是真实总时限：curl 用 `--max-time` 到点断开，已传部分仍能算出速率。
+- `--nodes` / `--upload-nodes` 传未知节点名会报错退出，不再静默跳过（否则会得到"全通过但没速度"的假结果）。
 
 ## JSON 输出
 

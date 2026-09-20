@@ -39,7 +39,15 @@ import ContextMenu from '@/components/ui/ContextMenu.vue';
 import Icon from '@/components/ui/Icon.vue';
 import PurityTags from '@/components/PurityTags.vue';
 import Sparkline from '@/components/Sparkline.vue';
-import { bindOf, fmtAge, fmtBytes, fmtLatency } from '@/utils/format';
+import {
+  bindOf,
+  fmtAge,
+  fmtBytes,
+  fmtLatency,
+  speedAllFailed,
+  speedSummary,
+  speedSummaryTitle,
+} from '@/utils/format';
 import { mergeKeepOrder } from '@/utils/merge';
 import { seriesTimeWindow, sparkStats, toRates, type NumericPoint } from '@/utils/series';
 import type { MenuItem } from '@/types/ui';
@@ -608,11 +616,13 @@ onBeforeUnmount(() => {
                     <span v-else-if="rowSpeedTest(p)?.error" class="badge badge-danger" data-testid="strip-speedtest">
                       测速失败：{{ rowSpeedTest(p)!.error }}
                     </span>
-                    <span v-else-if="rowSpeedTest(p)?.result" class="badge badge-info" data-testid="strip-speedtest">
-                      ↓{{ rowSpeedTest(p)!.result!.download?.best_mbps?.toFixed(1) ?? '-' }}
-                      ↑{{ rowSpeedTest(p)!.result!.upload?.best_mbps?.toFixed(1) ?? '-' }} · Mbps
-                      · {{ rowSpeedTest(p)!.time }}
-                    </span>
+                    <span
+                      v-else-if="rowSpeedTest(p)?.result"
+                      class="badge"
+                      :class="speedAllFailed(rowSpeedTest(p)!.result!) ? 'badge-danger' : 'badge-info'"
+                      :title="speedSummaryTitle(rowSpeedTest(p)!.result!)"
+                      data-testid="strip-speedtest"
+                    >{{ speedSummary(rowSpeedTest(p)!.result!) }} · {{ rowSpeedTest(p)!.time }}</span>
                     <span v-else class="badge badge-muted" data-testid="strip-speedtest">未测速</span>
                   </div>
                 </div>

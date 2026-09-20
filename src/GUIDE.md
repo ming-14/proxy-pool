@@ -46,5 +46,6 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │       ├── logpanel_probe.html        # LogPanel 探针页：直接 import 组件源码 + 固定种子假日志源（不经 serve）
 │       └── test_logpanel_virtual.py   # LogPanel 虚拟视图 5 项：全程滚动无空白/淘汰补偿钉位/估算行高收敛/跟随模式补窗不空转/暂停继续后补上日志
 └── vendor/                            # vendor 库回归测试
-    └── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用等）
+    ├── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用等）
+    └── test_pspeed_vendor.py          # pspeed 测速口径（curl 传输窗口/真实 hard_limit）/multi 取峰/节点名校验/面板失败渲染
 ```
