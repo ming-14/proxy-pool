@@ -14,11 +14,12 @@
 - retry_probe: 对单个待补测代理退避复核：间隔 1s/2s/4s...（上限 30s），
               成功更新 latency + 清零恢复；失败累计到阈值拉黑。
 
-**链路门控与熔断**：fill/heartbeat/retry_probe 在探测前和探测后各调一次
-network_gate.check()（每次调用都真实探测、无结论缓存），两次都正常才允许执行
-正常拉黑操作——链路不可用或探测期间劣化时跳过本轮（不计数/不拉黑/不补测），
-队列保持现状、恢复后自动续跑；链路抖动 10~20 秒即可攒满阈值删掉整批代理，
-门控把它拦在 per-proxy 失败计数之外。
+**链路门控**：fill/heartbeat/retry_probe 在探测前和探测后各调一次
+network_gate.check()，两次都正常才允许执行正常拉黑操作——链路不可用或探测期间
+劣化时跳过本轮（不计数/不拉黑/不补测），队列保持现状、恢复后自动续跑；链路抖动
+10~20 秒即可攒满阈值删掉整批代理，门控把它拦在 per-proxy 失败计数之外。
+门控只缓存"不可用"结论（成功结论每次真实探测）：异常期调用方的高频轮询命中缓存
+不产生外网请求，代价是链路恢复最多晚 network_unhealthy_cache_ttl 被感知。
 
 fill/heartbeat/retry_probe 均为 async（探测走 CheckProxiesUseCase.execute，
 网络请求在 asyncio.to_thread 中执行），serve 事件循环不被同步阻塞。
@@ -94,7 +95,7 @@ class StandbyQueueUseCase:
             pool:                   代理池领域模型
             record:                 记录用例（连续失败计数/拉黑）
             check_proxies:          并发探测用例
-            network_gate:           本地链路门控（链路不可用时跳过本轮；判定链路事件轮不计分）
+            network_gate:           本地链路门控（链路不可用时跳过本轮；探测期间劣化则该轮不计分）
             standby_group:          代理服务队列组名（配置 role="standby"）
             fill_groups:            填充候选组（按优先级顺序，靠前优先）
             fill_probe_multiplier:  候选数 = 缺口 × 倍率
@@ -304,7 +305,7 @@ class StandbyQueueUseCase:
           - 存活 + 队列满 + latency < 队尾：踢队尾 move trusted，新代理入 standby，调 on_change
           - 存活 + 队列满 + latency >= 队尾：新代理 move trusted（响应太快没进队列不浪费探测成果）
           - 失败：整轮结束后统一计分（record_fail，should_blacklist 才 remove 拉黑，
-                  否则留原组待下次 fill）；整轮判为链路事件时本轮失败不计分
+                  否则留原组待下次 fill）；探测后复检判链路劣化时本轮失败不计分
 
         Args:
             on_change: 每次队列成员变更（入队/踢尾）后调（serve 传 lambda 实时同步 pproxy 上游）
@@ -499,7 +500,8 @@ class StandbyQueueUseCase:
                     return
                 await asyncio.sleep(backoff)
                 # 链路门控（探测前）：不可用时不计分/不拉黑（非代理问题），退避重置到
-                # 初始值快速轮询门控，链路恢复后立即继续补测
+                # 初始值快速轮询门控，链路恢复后立即继续补测。轮询本身不发外网请求——
+                # 门控缓存失败结论，命中缓存即返回（恢复感知粒度见该缓存时长）
                 if not await self._gate.check():
                     backoff = RETRY_BACKOFF_INITIAL
                     if not paused:
@@ -520,7 +522,7 @@ class StandbyQueueUseCase:
                     logger.info("代理 %s 补测成功, 恢复使用", proxy)
                     return
                 # 链路门控（探测后复检）：链路在探测期间劣化，本轮失败不归因到代理，
-                # 退避重置快速复检（同探测前门控处理）
+                # 退避重置快速复检（同探测前门控处理，同样命中失败结论缓存）
                 if not await self._gate.check():
                     backoff = RETRY_BACKOFF_INITIAL
                     if not paused:

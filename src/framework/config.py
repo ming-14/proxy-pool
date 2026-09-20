@@ -173,6 +173,9 @@ SERVER_PROXY_TYPES: tuple[str, ...] = tuple(_toml["server"]["proxy_types"])
 # 本地链路门控（serve 心跳/补测/fill 探测前后各 check 一次本地链路，任何一次不可用即跳过本轮/不计分避免误拉黑）
 NETWORK_PROBE_URLS: tuple[str, ...] = tuple(_toml["server"]["network_probe_urls"])  # 探测目标（任一返回 <400 即正常）
 NETWORK_PROBE_TIMEOUT = float(_toml["server"]["network_probe_timeout"])             # 单个目标超时秒数
+# "链路不可用"结论复用时长秒（0 = 每次真实探测）：只缓存失败结论（成功结论陈旧会授权
+# 误拉黑），缓存期内不再探测——同时是链路恢复的最大感知延迟，并抑制异常期的探测放大
+NETWORK_UNHEALTHY_CACHE_TTL = float(_toml["server"]["network_unhealthy_cache_ttl"])
 # 无探测目标则链路永远判为不可用（serve 静默停摆），配置错误直接在启动时暴露
 if not NETWORK_PROBE_URLS:
     raise ValueError("serve.toml [server].network_probe_urls 不可为空（链路门控无探测目标）")

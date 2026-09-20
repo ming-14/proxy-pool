@@ -632,7 +632,7 @@ class TestStandbyNetworkGate(unittest.TestCase):
     def test_retry_probe_network_down_no_count_no_blacklist(self):
         """网络异常时补测不计数、不拉黑，代理保留在队列
 
-        retry_probe 在 gate 异常时重置退避到初始值快速轮询 gate 缓存，
+        retry_probe 在 gate 异常时重置退避到初始值快速轮询 gate 失败结论缓存，
         不调 check_proxies、不 record_fail。用 wait_for 超时取出（gate 一直异常，
         循环不退出），验证超时期间代理状态不变。
         """

@@ -11,8 +11,8 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_autoload.py               # autoload 清单入队
 │   ├── test_check_purity.py           # 纯洁度多源合并与缓存
 │   ├── test_ip_geo.py                 # IP 归属三步编排与聚合
-│   ├── test_network_gate.py           # 本地链路门控（状态码/缓存/退避/并发共享/链路事件判定）
-│   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路事件
+│   ├── test_network_gate.py           # 本地链路门控（状态码/多目标/失败结论缓存/成功不缓存/并发共享）
+│   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化
 │   └── test_use_cases.py              # fetch/get/record/request_with_retry/check_proxies
 ├── interfaces/                        # 接口适配器测试
 │   ├── __init__.py
