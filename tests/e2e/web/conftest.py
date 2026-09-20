@@ -144,8 +144,11 @@ def panel(request):
     config_dir = _make_config_dir(tmpdir, mocks.ports[0])
 
     env = dict(os.environ, PROXY_POOL_CONFIG=str(config_dir))
+    # --type http：serve.toml 默认 proxy_types=["https"]，而 mock 上游是纯 HTTP 代理；
+    # 允许类型不含 http 时 standby.fill 一个候选都选不中（队列永不填充）。
     proc = subprocess.Popen(
-        [sys.executable, "cli.py", "serve", "--port", str(SERVER_PORT), "--web-port", str(WEB_PORT)],
+        [sys.executable, "cli.py", "serve", "--port", str(SERVER_PORT),
+         "--web-port", str(WEB_PORT), "--type", "http"],
         cwd=str(PROJECT_ROOT), env=env,
         stdout=open(tmpdir / "serve.out", "w", encoding="utf-8"),
         stderr=subprocess.STDOUT,

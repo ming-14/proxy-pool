@@ -6,6 +6,7 @@
 - 未知节点名静默跳过 → probe_one 仍判 ok=True，产出"通过但没速度"的假结果
 - hard_limit 不是硬时限：写死 timeout=(5, 12)，面板设 10s 实测最坏 ~17s
 - 下载速率含 TTFB 而上传只算传输阶段，两个维度不可比（慢代理上出现数十倍假差距）
+- tcp_ping 硬编码 AF_INET：IPv6 代理一律判为不通而遭误淘汰
 
 全部离线：subprocess 与 requests 均被替换，时钟可控。
 """
@@ -17,6 +18,7 @@ import io
 import itertools
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -35,7 +37,7 @@ from pspeed.nodes import (  # noqa: E402
 )
 from pspeed.probe import (  # noqa: E402
     _curl_download, _download_once, _requests_download, _requests_upload,
-    _transfer_mbps, download, probe_one, upload,
+    _transfer_mbps, download, probe_one, tcp_ping, upload,
 )
 from pspeed.proxy import parse_one  # noqa: E402
 
@@ -323,6 +325,38 @@ class TestCurlAgainstLocalProxy(unittest.TestCase):
             self.assertLessEqual(res["ms"], 3_000)
         finally:
             self.loop.call_soon_threadsafe(slow.close)
+
+
+class TestTcpPing(unittest.TestCase):
+    """TCP 连通探测：地址族交给 getaddrinfo，硬编码 AF_INET 会把 IPv6 代理误判为不通"""
+
+    def _listen(self, family: int, addr: tuple) -> int:
+        """在回环上起监听，返回端口；本机不支持该地址族时跳过"""
+        try:
+            srv = socket.socket(family, socket.SOCK_STREAM)
+            srv.bind(addr)
+        except OSError:
+            self.skipTest(f"本机不支持 {addr} 监听")
+        srv.listen(1)
+        self.addCleanup(srv.close)
+        return srv.getsockname()[1]
+
+    def test_ipv4_listener_is_connected(self):
+        port = self._listen(socket.AF_INET, ("127.0.0.1", 0))
+        res = tcp_ping(parse_one(f"http://127.0.0.1:{port}"), timeout=2.0)
+        self.assertTrue(res["connected"])
+        self.assertIsNotNone(res["latency_ms"])
+
+    def test_ipv6_literal_is_connected(self):
+        port = self._listen(socket.AF_INET6, ("::1", 0))
+        res = tcp_ping(parse_one(f"http://[::1]:{port}"), timeout=2.0)
+        self.assertTrue(res["connected"])
+        self.assertIsNotNone(res["latency_ms"])
+
+    def test_closed_port_is_not_connected(self):
+        res = tcp_ping(parse_one("http://127.0.0.1:1"), timeout=1.0)
+        self.assertFalse(res["connected"])
+        self.assertIsNone(res["latency_ms"])
 
 
 class TestCliNodeErrors(unittest.TestCase):

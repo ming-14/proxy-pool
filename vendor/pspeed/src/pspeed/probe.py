@@ -48,12 +48,15 @@ def _now() -> float:
 
 
 def tcp_ping(proxy: Proxy, timeout: float = 5.0) -> dict:
+    """TCP 连通性探测（时延）
+
+    经 create_connection 走 getaddrinfo：IPv4/IPv6 字面量与域名统一处理。
+    硬编码 AF_INET 会让 IPv6 代理（如 [::1]:1080）一律判为不通而遭误淘汰。
+    """
     t0 = _now()
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(timeout)
-        s.connect((proxy.host, proxy.port))
-        s.close()
+        with socket.create_connection((proxy.host, proxy.port), timeout=timeout):
+            pass
         return {"connected": True, "latency_ms": round((_now() - t0) * 1000, 1)}
     except Exception:
         return {"connected": False, "latency_ms": None}
