@@ -1,27 +1,19 @@
 /**
- * 日志面板集成：LogPanel 单例 + 后端日志源（增量轮询）。
- *
- * 数据流：后端 logbuffer 环形缓冲（2000 条）→ GET /api/logs?since=seq 增量
- * → 本地缓冲（与后端容量一致）→ LogPanel source 接口。
+ * 控制台日志接入：后端 logbuffer 环形缓冲（2000 条）→ GET /api/logs?since=seq 增量
+ * → 本地缓冲（与后端容量一致）→ LogPanel 的 source / rules。
  *
  * 性能约定（核心）：
- * - 轮询只发生在面板可见期间：visibleChange=false 立即停表（零请求）；
- *   打开时启动并立即拉一次。面板关闭后不产生任何 /api/logs 请求。
- * - 增量拉取：本地只保留自上次游标起的新条目，响应体小。
- * - 本地缓冲有界（BUFFER_CAPACITY=2000，与后端一致），防内存膨胀。
- * - 拉取失败静默重试，不打断整体 UI（后端不可达时面板显示历史数据）。
- *
- * 主题：LogPanel 的 auto 模式读 body[data-theme]（本前端主题挂在 html 上），
- * 因此构造与运行时都显式跟随 themeStore，保证与面板主界面同主题。
+ * - 轮询只发生在面板可见期间：隐藏即停表（零请求），打开时启动并立即拉一次。
+ * - 增量拉取：只取自上轮游标起的新条目，响应体小；本地缓冲有界，防内存膨胀。
+ * - 拉取失败静默重试，不打断整体 UI（后端不可达时面板显示历史数据，下轮重试）。
  */
 import { ref, watch } from 'vue';
 import { api } from '@/api/client';
-import { useThemeStore } from '@/stores/theme';
-import { LogPanel } from '@/vendor/logpanel';
+import type { LogPanelRules, LogPanelSource } from '@/vendor/logpanel';
 import type { LogEntry, LogsResponse } from '@/types/api';
 
-export const POLL_INTERVAL = 1000;
 export const BUFFER_CAPACITY = 2000;
+const POLL_INTERVAL = 1000;
 
 /** 纯函数：合并增量并裁剪到容量上限（服务端 seq 单调递增，直接 concat 截尾）。可单测。 */
 export function appendEntries(existing: LogEntry[], incoming: LogEntry[], max: number = BUFFER_CAPACITY): LogEntry[] {
@@ -40,46 +32,40 @@ export function needsFullReload(cursor: number, data: LogsResponse): boolean {
   return cursor > 0 && (data.cursor < cursor || data.buffer_start > cursor);
 }
 
-/** 毫秒时间戳 → HH:MM:SS.mmm（与后端控制台日志时间格式对齐，日志面板专用） */
-export function fmtLogTime(tsMs: number): string {
-  const d = new Date(tsMs);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
-}
-
-// ---- 单例状态（SPA 常驻，应用生命周期内只建一次） ----
-let panel: LogPanel | null = null;
+// ---- 模块级状态（SPA 常驻，应用生命周期内只维护一份缓冲） ----
+/** 面板可见性：侧边栏按钮高亮与轮询开关共用 */
+const visible = ref(false);
 let entries: LogEntry[] = [];
 let cursor = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let listener: ((entry: LogEntry | { type: 'clear' }) => void) | null = null;
-let polling = false;  // 防重入：慢响应时跳过本轮，避免请求堆积
+let polling = false; // 防重入：慢响应时跳过本轮，避免请求堆积
+const listeners = new Set<(item: LogEntry | { type: 'clear' }) => void>();
 
-/** 面板可见性（按钮高亮用；与 LogPanel visibleChange 同步） */
-export const logPanelVisible = ref(false);
+function notify(item: LogEntry | { type: 'clear' }): void {
+  for (const listener of listeners) listener(item);
+}
 
 async function pollOnce(): Promise<void> {
-  if (!listener || polling) return;
+  if (polling) return;
   polling = true;
   try {
     const data = await api.logs(cursor || undefined);
     if (needsFullReload(cursor, data)) {
-      // 增量失效（serve 重启 seq 回绕 / 缓冲淘汰越过游标）：全量重拉并替换缓冲
-      // 先拉取成功再清空 UI，拉取失败时保留旧数据（下轮重试）
+      // 增量失效（serve 重启 seq 回绕 / 缓冲淘汰越过游标）：全量重拉并整体替换
       const full = await api.logs();
       cursor = full.cursor;
       entries = appendEntries([], full.entries);
-      listener({ type: 'clear' });
-      for (const e of full.entries) listener(e);
+      notify({ type: 'clear' });
+      for (const entry of full.entries) notify(entry);
       return;
     }
     cursor = data.cursor;
     if (data.entries.length) {
       entries = appendEntries(entries, data.entries);
-      for (const e of data.entries) listener(e);
+      for (const entry of data.entries) notify(entry);
     }
   } catch {
-    // 静默：面板后端不可达时保留历史，下轮重试
+    // 静默：保留历史数据，下一轮重试
   } finally {
     polling = false;
   }
@@ -92,62 +78,43 @@ function startPoller(): void {
 }
 
 function stopPoller(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
+  if (!pollTimer) return;
+  clearInterval(pollTimer);
+  pollTimer = null;
 }
 
-function getPanel(): LogPanel {
-  if (!panel) {
-    const theme = useThemeStore();
-    panel = new LogPanel({
-      source: {
-        subscribe(cb) {
-          listener = cb;
-          return () => {
-            listener = null;
-            stopPoller();
-          };
-        },
-        getEntries: () => entries,
-        clear: () => {
-          entries = [];
-          api.clearLogs().catch(() => {});
-          listener?.({ type: 'clear' });
-        },
-        getSize: () => entries.length,
-        getCapacity: () => BUFFER_CAPACITY,
-      },
-      rules: {
-        // 模块标签去掉 src. 前缀：src.use_cases.fetch_proxies → use_cases.fetch_proxies
-        tag: (e) => e.tag.replace(/^src\./, ''),
-        tsStr: (e) => fmtLogTime(e.ts),
-      },
-      theme: theme.theme,
-      title: '控制台日志',
-      storageKeyPrefix: 'proxy-pool-logpanel_',
-      initialVisible: false,
-    });
-    // 性能核心：面板隐藏即停轮询（零 /api/logs 请求），打开即恢复
-    panel.on('visibleChange', (visible) => {
-      logPanelVisible.value = visible;
-      if (visible) startPoller();
-      else stopPoller();
-    });
-    // 主题跟随（构造时已用当前值，此后增量同步）
-    watch(() => theme.theme, (t) => panel?.setOption('theme', t));
-  }
-  return panel;
-}
+/** 面板数据源：清空时推送清空信号（组件据此丢弃展开态并重读快照） */
+const source: LogPanelSource<LogEntry> = {
+  subscribe(handler) {
+    listeners.add(handler);
+    return () => listeners.delete(handler);
+  },
+  getEntries: () => entries,
+  clear() {
+    entries = [];
+    void api.clearLogs().catch(() => {});
+    notify({ type: 'clear' });
+  },
+  getSize: () => entries.length,
+  getCapacity: () => BUFFER_CAPACITY,
+};
 
+/** 取值覆盖项：模块标签去掉 src. 前缀；key 用服务端单调 seq（跨过滤与环形淘汰保持稳定） */
+const rules: Partial<LogPanelRules<LogEntry>> = {
+  tag: (entry) => entry.tag.replace(/^src\./, ''),
+  key: (entry) => entry.seq,
+};
+
+/** 面板接入点：可见性（v-model）+ 数据源 + 取值规则 */
 export function useLogPanel() {
+  // 面板隐藏即停轮询（零 /api/logs 请求），打开即恢复
+  watch(visible, (shown) => (shown ? startPoller() : stopPoller()), { immediate: true });
   return {
-    visible: logPanelVisible,
-    toggle() {
-      const p = getPanel();
-      if (p.isVisible()) p.hide();
-      else p.show();
+    visible,
+    source,
+    rules,
+    toggle(): void {
+      visible.value = !visible.value;
     },
   };
 }

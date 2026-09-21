@@ -66,11 +66,13 @@ proxy-pool/
 │               ├── world.json     # 世界地图 GeoJSON（ECharts registerMap，懒加载）
 │               └── assets/        # 带内容 hash 的 JS/CSS（immutable 缓存）
 ├── frontend/                      # Web 面板前端工程（Vue 3 + Vite + TypeScript + Tailwind CSS 4 + ECharts + Pinia）
-│   ├── package.json               # 依赖与脚本（dev/build/test）
+│   ├── package.json               # 依赖与脚本（dev/build/build:probe/test）
 │   ├── vite.config.ts             # 构建（outDir=src/framework/web/static）+ dev 代理 /api→8083
+│   ├── vite.probe.config.ts       # LogPanel 探针页构建（产物 build-artifacts/logpanel-probe，供 e2e 驱动）
+│   ├── probe/                     # LogPanel 探针应用（固定种子合成日志源 + window.__probe 驱动器，只读组件 DOM）
 │   ├── index.html                 # 入口模板（主题防闪屏内联脚本）
 │   ├── public/world.json          # 地图数据源文件
-│   ├── tests/unit/                # Vitest 单测（format/merge/csv/series/status-store/standby-series/useLogPanel/chart-options）
+│   ├── tests/unit/                # Vitest 单测（format/merge/csv/series/status-store/standby-series/useLogPanel/logpanel-filter/logpanel-format/logpanel-defaults/chart-options）
 │   └── src/
 │       ├── main.ts                # 应用装配（pinia/router/轮询启动）
 │       ├── App.vue                # 壳：侧边栏（含底部控制台日志按钮）+ 顶栏（暂停/连接态/主题）+ 路由视图 + Toast
@@ -80,7 +82,7 @@ proxy-pool/
 │       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）/ series（降采样·速率差分·共享时间窗口·sparkline 坐标）
 │       ├── composables/           # useRowSelection（框选）/ usePurity（纯洁度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+可见性节流+主题联动）
-│       ├── vendor/logpanel/       # 日志视窗组件（vendored 零依赖，Shadow DOM + TS 声明 + --lp-* 主题变量化）
+│       ├── vendor/logpanel/       # 日志视窗组件（vendored Vue 3 + TS，可整体复用到其它 Vue 3 项目）：默认值/契约类型 + LogPanel 外壳 + parts（TitleBar/ToolBar/SidePanel/LogLine/VirtualList/ToastStack/IconSvg）+ composables（useLogView 视图状态机、useWindowGeometry 悬浮窗几何、useToasts）+ utils（filter/format/tagColor/storage/clipboard/icons）；样式 scoped + --lp-* 变量，虚拟列表用 @tanstack/vue-virtual
 │       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）

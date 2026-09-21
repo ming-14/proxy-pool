@@ -106,11 +106,10 @@ body {
 }
 
 /*
- * LogPanel 悬浮日志视窗（frontend/src/vendor/logpanel）：--lp-* 全量映射到
- * 设计令牌，主题（light/dark）自动跟随。自定义属性可穿透 host 进入 Shadow DOM，
- * 且 #logpanel-host 优先级高于组件内 :host 默认值；级别色无需重复定义。
+ * LogPanel 悬浮日志视窗（frontend/src/vendor/logpanel）：--lp-* 全量映射到设计令牌，
+ * 明暗主题自动跟随。组件把默认值写在 --lp-*-c 解析层，这里只需给出 --lp-*。
  */
-#logpanel-host {
+.lp-root {
   --lp-bg: var(--color-card);
   --lp-fg: var(--color-t-primary);
   --lp-border: var(--color-line);

@@ -11,12 +11,18 @@ import type { IconName } from '@/components/ui/icons';
 import { useLogPanel } from '@/composables/useLogPanel';
 import { useStatusStore } from '@/stores/status';
 import { useThemeStore } from '@/stores/theme';
+import { LogPanel } from '@/vendor/logpanel';
 
 const route = useRoute();
 const statusStore = useStatusStore();
 const themeStore = useThemeStore();
 // 控制台日志面板（侧边栏底部按钮启停；面板隐藏时不发 /api/logs 请求）
-const { visible: logPanelVisible, toggle: toggleLogPanel } = useLogPanel();
+const {
+  visible: logPanelVisible,
+  source: logPanelSource,
+  rules: logPanelRules,
+  toggle: toggleLogPanel,
+} = useLogPanel();
 
 const pageTitle = computed(() => String(route.meta.title ?? '仪表盘'));
 const sidebarOpen = ref(false);
@@ -109,4 +115,13 @@ const NAV: { name: string; label: string; icon: IconName }[] = [
   <div v-show="sidebarOpen" class="fixed inset-0 bg-black/30 z-30 lg:hidden" @click="sidebarOpen = false" />
 
   <ToastHost />
+
+  <LogPanel
+    v-model:visible="logPanelVisible"
+    :source="logPanelSource"
+    :rules="logPanelRules"
+    :theme="themeStore.theme"
+    title="控制台日志"
+    storage-key-prefix="proxy-pool-logpanel_"
+  />
 </template>

@@ -1,9 +1,9 @@
 /**
- * useLogPanel 纯逻辑单测：增量合并裁剪 + 日志时间格式化。
+ * useLogPanel 纯逻辑单测：增量合并裁剪 + 增量失效判定。
  * 轮询/可见性节流属组件行为（依赖 DOM 定时器），由 Playwright E2E 覆盖。
  */
 import { describe, expect, it } from 'vitest';
-import { appendEntries, BUFFER_CAPACITY, fmtLogTime, needsFullReload } from '@/composables/useLogPanel';
+import { appendEntries, BUFFER_CAPACITY, needsFullReload } from '@/composables/useLogPanel';
 import type { LogEntry, LogsResponse } from '@/types/api';
 
 function entry(seq: number): LogEntry {
@@ -50,18 +50,5 @@ describe('needsFullReload', () => {
   it('首次拉取（cursor=0）恒不触发', () => {
     expect(needsFullReload(0, resp(0, 1))).toBe(false);
     expect(needsFullReload(0, resp(5, 1))).toBe(false);
-  });
-});
-
-describe('fmtLogTime', () => {
-  it('毫秒时间戳 → HH:MM:SS.mmm（两位补零，本地时区）', () => {
-    // 用本地时间构造（fmtLogTime 走本地时区，避免 UTC/本地偏移差异）
-    const ts = new Date(2026, 8, 12, 21, 44, 15, 324).getTime();
-    expect(fmtLogTime(ts)).toBe('21:44:15.324');
-  });
-
-  it('毫秒补零到三位', () => {
-    const ts = new Date(2026, 8, 12, 0, 0, 0, 5).getTime();
-    expect(fmtLogTime(ts)).toBe('00:00:00.005');
   });
 });

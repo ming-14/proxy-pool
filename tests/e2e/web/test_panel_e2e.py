@@ -624,30 +624,50 @@ class TestSources:
 
 # ---------------------------------------------------------------- 控制台日志面板
 class TestLogPanel:
-    """侧边栏底部按钮启停的控制台日志面板（shadow DOM 渲染）"""
+    """侧边栏底部按钮启停的控制台日志面板（Vue 组件，scoped 样式）"""
 
     def test_open_shows_entries(self, page):
         """打开面板：按钮激活、面板可见、日志行渲染、标题正确"""
         btn = page.locator('[data-testid="btn-logpanel"]')
+        panel = page.locator('[data-testid="logpanel"]')
         assert btn.is_visible()
+        assert not panel.is_visible(), "面板初始应隐藏"
+
         btn.click()
-        # 面板 host 可见（shadow DOM 内渲染 .lp-log-line）
-        page.wait_for_function("""() => {
-            const host = document.querySelector('#logpanel-host');
-            if (!host || host.hasAttribute('data-hidden') || !host.shadowRoot) return false;
-            return host.shadowRoot.querySelector('.lp-log-line') !== null;
-        }""", timeout=10000)
+        # 面板可见且渲染出日志行（fixed 定位元素的 offsetParent 恒为 null，可见性按 display 判）
+        page.wait_for_function(
+            "() => { const root = document.querySelector('[data-testid=logpanel]');"
+            " return root !== null && getComputedStyle(root).display !== 'none'"
+            " && root.querySelector('.lp-log-line') !== null; }",
+            timeout=10000,
+        )
         # 标题与模块标签（控制台日志 + 无 src. 前缀）
-        title = page.evaluate("document.querySelector('#logpanel-host').shadowRoot.querySelector('.lp-title span').textContent")
-        assert title == "控制台日志"
-        tag_text = page.evaluate("document.querySelector('#logpanel-host').shadowRoot.querySelector('.lp-log-line .lp-tag').textContent")
+        assert page.evaluate("document.querySelector('.lp-title span').textContent") == "控制台日志"
+        tag_text = page.evaluate("document.querySelector('.lp-log-line .lp-tag').textContent")
         assert tag_text and "src." not in tag_text
         # 按钮呈激活态（打开时主题色高亮）
         assert 'btn-primary' in (btn.get_attribute('class') or '')
-        # 关闭后按钮恢复 ghost 态
+
         btn.click()
-        assert page.evaluate("document.querySelector('#logpanel-host').hasAttribute('data-hidden')")
+        assert not panel.is_visible(), "再次点击应隐藏面板"
         assert 'btn-primary' not in (btn.get_attribute('class') or '')
+
+    def test_search_and_copy(self, page):
+        """搜索过滤实时生效并可恢复，复制给出结果提示"""
+        page.click('[data-testid="btn-logpanel"]')
+        page.wait_for_selector('[data-testid="logpanel"] .lp-log-line', timeout=10000)
+        page.fill('[data-testid="lp-search"]', '不存在的关键字 zzz')
+        page.wait_for_function(
+            "() => (document.querySelector('[data-testid=lp-status]').textContent || '').trim().startsWith('0 /')",
+            timeout=5000,
+        )
+        page.fill('[data-testid="lp-search"]', '')
+        page.wait_for_function(
+            "() => !(document.querySelector('[data-testid=lp-status]').textContent || '').trim().startsWith('0 /')",
+            timeout=5000,
+        )
+        page.click('[data-testid="lp-copy"]')
+        page.wait_for_selector('[data-testid="logpanel"] .lp-toast', timeout=5000)
 
     def test_hidden_stops_polling(self, page):
         """性能约束：面板隐藏时零 /api/logs 请求，重新打开恢复"""
