@@ -634,16 +634,17 @@ class TestLogPanel:
         assert not panel.is_visible(), "面板初始应隐藏"
 
         btn.click()
-        # 面板可见且渲染出日志行（fixed 定位元素的 offsetParent 恒为 null，可见性按 display 判）
+        # 面板可见且渲染出日志行（fixed 定位元素的 offsetParent 恒为 null，可见性按 display 判；
+        # 行选择器限定 .lp-row：面板内还有隐藏的测高池行，那不是列表内容）
         page.wait_for_function(
             "() => { const root = document.querySelector('[data-testid=logpanel]');"
             " return root !== null && getComputedStyle(root).display !== 'none'"
-            " && root.querySelector('.lp-log-line') !== null; }",
+            " && root.querySelector('.lp-row .lp-log-line') !== null; }",
             timeout=10000,
         )
         # 标题与模块标签（控制台日志 + 无 src. 前缀）
         assert page.evaluate("document.querySelector('.lp-title span').textContent") == "控制台日志"
-        tag_text = page.evaluate("document.querySelector('.lp-log-line .lp-tag').textContent")
+        tag_text = page.evaluate("document.querySelector('.lp-row .lp-log-line .lp-tag').textContent")
         assert tag_text and "src." not in tag_text
         # 按钮呈激活态（打开时主题色高亮）
         assert 'btn-primary' in (btn.get_attribute('class') or '')
@@ -655,7 +656,7 @@ class TestLogPanel:
     def test_search_and_copy(self, page):
         """搜索过滤实时生效并可恢复，复制给出结果提示"""
         page.click('[data-testid="btn-logpanel"]')
-        page.wait_for_selector('[data-testid="logpanel"] .lp-log-line', timeout=10000)
+        page.wait_for_selector('[data-testid="logpanel"] .lp-row .lp-log-line', timeout=10000)
         page.fill('[data-testid="lp-search"]', '不存在的关键字 zzz')
         page.wait_for_function(
             "() => (document.querySelector('[data-testid=lp-status]').textContent || '').trim().startsWith('0 /')",

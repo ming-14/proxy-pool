@@ -6,6 +6,7 @@
 
 覆盖的不变式：
 - 全程滚动不出现空白（顶部/底部露白）
+- 滚动过程中总高与滚动位置无关（滚动条滑块按 scrollTop/scrollHeight 映射，总高一变就与鼠标失步）
 - 环形缓冲淘汰时，锚定行保持在视口原位
 - 跟随模式下始终贴底，且 DOM 行数远小于条目数（虚拟化生效）
 - 手动关闭跟随后，新日志不得被程序侧滚动顶回跟随
@@ -118,6 +119,29 @@ def test_scrolling_full_range_has_no_gap(probe):
     assert not errors
 
 
+def test_scroll_height_stable_while_scrolling(probe):
+    """总高不得随滚动位置变化：原生滚动条滑块按 scrollTop/scrollHeight 映射，
+    总高被滚动过程中的行高修正改变时，滑块就与鼠标脱节（拖动滚动条跟不上鼠标）"""
+    p, errors = probe
+    p.fill(1500)
+    p.run("() => window.__probe.clickAutoScroll()")  # 关跟随，避免贴底掩盖滚动
+    p.wait(300)
+    state = p.state()
+    assert state["follow"] is False, "自动滚动未关闭"
+    max_pos = int(state["scrollHeight"] - state["clientHeight"])
+    assert max_pos > 0, "内容未铺满滚动区（无法验证滚动）"
+
+    heights = set()
+    for pos in range(0, max_pos, 2000):
+        p.run("(v) => window.__probe.scrollTo(v)", pos)
+        p.wait(120)
+        state = p.state()
+        assert state["scrollTop"] == pos, f"滚动位置被程序改写：{pos} → {state['scrollTop']}"
+        heights.add(state["scrollHeight"])
+    assert len(heights) == 1, f"滚动过程中总高发生变化（滚动条会与鼠标失步）：{sorted(heights)}"
+    assert not errors
+
+
 def test_trim_compensation_keeps_anchor_line(probe):
     """缓冲满后继续推送：未被淘汰的锚定行必须留在视口原位"""
     p, errors = probe
@@ -207,7 +231,7 @@ def test_filters_and_highlight(probe):
     searched = p.state()
     assert 0 < searched["shown"] < total, f"搜索未生效：{searched['shown']} / {total}"
     assert searched["domLines"] > 0, "搜索命中后应有渲染行"
-    marks = p.run("() => document.querySelectorAll('[data-testid=logpanel] .lp-text mark').length")
+    marks = p.run("() => document.querySelectorAll('[data-testid=logpanel] .lp-row .lp-text mark').length")
     assert marks > 0, "命中文本未高亮"
     _assert_no_gap(searched, "过滤后")
 

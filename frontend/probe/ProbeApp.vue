@@ -103,7 +103,8 @@ const shown = ref(true);
 // ---- 驱动器：只经 DOM 读状态、经真实交互改状态 ----
 const rootEl = () => document.querySelector<HTMLElement>('[data-testid="logpanel"]');
 const listEl = () => rootEl()?.querySelector<HTMLElement>('.lp-list') ?? null;
-const lineEls = () => Array.from(rootEl()?.querySelectorAll<HTMLElement>('.lp-log-line') ?? []);
+// 只认渲染出来的行：.lp-measure 里的测高池行不是列表内容
+const lineEls = () => Array.from(rootEl()?.querySelectorAll<HTMLElement>('.lp-row .lp-log-line') ?? []);
 
 function pressed(testId: string): boolean {
   return rootEl()?.querySelector(`[data-testid="${testId}"]`)?.getAttribute('aria-pressed') === 'true';
