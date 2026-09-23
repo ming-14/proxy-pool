@@ -140,6 +140,19 @@ class _AsyncResponse:
         self.status_code = status_code
 
 
+SOCKS_SCHEMES = ("socks4://", "socks5://")
+
+
+def needs_socks_connector(proxy: str | None) -> bool:
+    """该代理是否需要 aiohttp_socks 的 ProxyConnector（aiohttp 原生 proxy= 只认 http/https）
+
+    判据集中在此处：原先只判 socks5://，socks4 代理会落到 aiohttp 原生 proxy= 并直接抛
+    "Only http and https proxies are supported" → 探测恒失败（正常工作的 socks4 代理被
+    误判心跳失败、进而拉黑）。
+    """
+    return bool(proxy) and proxy.startswith(SOCKS_SCHEMES)
+
+
 class AsyncHttpGetter:
     """原生 async HTTP 请求（aiohttp），SSL 在事件循环管理，不经线程池
 
@@ -166,7 +179,7 @@ class AsyncHttpGetter:
         """async GET 请求
 
         Args:
-            proxy:  代理 URL 字符串（"http://..." / "socks5://..."），None 直连
+            proxy:  代理 URL 字符串（"http://..." / "socks4://..." / "socks5://..."），None 直连
             verify: 是否校验 SSL 证书
         """
         # aiohttp ssl 语义：True=校验证书, False=不校验, None=默认校验(=True)。
@@ -175,8 +188,8 @@ class AsyncHttpGetter:
         aio_timeout = aiohttp.ClientTimeout(total=timeout)
         hdrs = headers or {}
 
-        if proxy and proxy.startswith("socks5://"):
-            # socks5：aiohttp 不原生支持，用 ProxyConnector 创建临时 session
+        if needs_socks_connector(proxy):
+            # socks4/socks5：aiohttp 不原生支持，用 ProxyConnector 创建临时 session
             connector = ProxyConnector.from_url(proxy)
             async with aiohttp.ClientSession(connector=connector, timeout=aio_timeout) as sess:
                 async with sess.get(url, headers=hdrs, ssl=ssl_ctx) as resp:
