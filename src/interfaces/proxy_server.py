@@ -45,7 +45,7 @@ class TrafficSample(NamedTuple):
 def _pproxy_uri(proxy: str) -> str:
     """将池内代理字符串转换为 pproxy 上游 URI
 
-    http:// 与 socks5:// 直接可用；https:// 是 HTTPS 代理（代理本身走 TLS），
+    http:// 与 socks4:// 与 socks5:// 直接可用；https:// 是 HTTPS 代理（代理本身走 TLS），
     pproxy 用 http+ssl:// 前缀表示。
     """
     if proxy.startswith("https://"):

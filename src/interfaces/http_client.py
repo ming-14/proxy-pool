@@ -161,8 +161,8 @@ class AsyncHttpGetter:
 
     http/https 代理：复用模块级 ClientSession（aiohttp async 安全，可跨协程共享），
     通过 proxy= 参数指定代理。
-    socks5 代理：aiohttp 不原生支持，用 aiohttp_socks.ProxyConnector 创建临时 session
-    （socks5 代理数少，临时 session 开销可忽略）。
+    socks4/socks5 代理：aiohttp 不原生支持，用 aiohttp_socks.ProxyConnector 创建临时 session
+    （显式 rdns=True，域名交给上游解析；socks 代理数少，临时 session 开销可忽略）。
     """
 
     def __init__(self) -> None:
@@ -189,8 +189,12 @@ class AsyncHttpGetter:
         hdrs = headers or {}
 
         if needs_socks_connector(proxy):
-            # socks4/socks5：aiohttp 不原生支持，用 ProxyConnector 创建临时 session
-            connector = ProxyConnector.from_url(proxy)
+            # socks4/socks5：aiohttp 不原生支持，用 ProxyConnector 创建临时 session。
+            # rdns=True 必须显式传（不能依赖默认）：python_socks 的 SOCKS4 连接器把
+            # rdns=None 当 False —— 会在**本机**解析探测目标域名后只发 IPv4，与"域名
+            # 交给上游解析"的不变量矛盾，本地 DNS 抖动/污染还会让 socks4 探测误判失败；
+            # SOCKS5 默认虽是 True，一并显式声明，语义不随上游依赖的默认值漂移。
+            connector = ProxyConnector.from_url(proxy, rdns=True)
             async with aiohttp.ClientSession(connector=connector, timeout=aio_timeout) as sess:
                 async with sess.get(url, headers=hdrs, ssl=ssl_ctx) as resp:
                     return _AsyncResponse(resp.status)

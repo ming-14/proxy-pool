@@ -59,6 +59,15 @@ class TestAsyncGetterRouting(unittest.TestCase):
         self.assertEqual(status, 204)
         self.assertEqual(called.args, ("socks5://1.2.3.4:1080",))
 
+    def test_socks_connector_requests_remote_dns(self):
+        """必须显式传 rdns=True：python_socks 的 SOCKS4 连接器把 rdns=None 当 False，
+        会在本机解析目标域名后只发 IPv4（与"域名交上游解析"的不变量矛盾，且本地
+        DNS 抖动/污染会让 socks4 探测误判失败）"""
+        for proxy in ("socks4://1.2.3.4:1080", "socks5://1.2.3.4:1080"):
+            with self.subTest(proxy=proxy):
+                _, called = self._get(proxy)
+                self.assertIs(called.kwargs.get("rdns"), True)
+
     def test_http_proxy_uses_shared_session(self):
         status, called = self._get("http://1.2.3.4:8080")
         self.assertEqual(status, 204)

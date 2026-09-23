@@ -17,7 +17,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 ├── interfaces/                        # 接口适配器测试
 │   ├── __init__.py
 │   ├── test_geoip_client.py           # GeoLite2Locator City/Country 自动识别（真实 mmdb）
-│   ├── test_http_client.py            # http_client 的 socks 路由（socks4/socks5 走 ProxyConnector，http/https 复用共享 session）
+│   ├── test_http_client.py            # http_client 的 socks 路由（socks4/socks5 走 ProxyConnector 且 rdns=True，http/https 复用共享 session）
 │   ├── test_proxy_scheduler.py        # 异步调度器
 │   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False/上游存活标记）
 │   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/purity 缓存）

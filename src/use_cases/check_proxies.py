@@ -52,7 +52,7 @@ class CheckProxiesUseCase:
         """并发测试代理是否可访问 url
 
         返回 {proxy: {"success", "status_code", "elapsed", "error"}}。
-        http/socks5 代理严格校验证书（verify=True），筛掉伪造证书的中间人代理；
+        http/socks4/socks5 代理严格校验证书（verify=True），筛掉伪造证书的中间人代理；
         https 代理不校验（TLS 直连代理本身，自签证书校验会误杀，见 do_test）。
 
         Args:
@@ -64,7 +64,7 @@ class CheckProxiesUseCase:
         async def do_test(proxy: str, _url: str) -> dict:
             t0 = time.time()
             # verify 语义按代理类型区分：
-            #   http/socks5 代理 + https 目标走隧道端到端 TLS，verify 校验的是目标证书
+            #   http/socks4/socks5 代理 + https 目标走隧道端到端 TLS，verify 校验的是目标证书
             #   （防伪造证书的中间人代理），保留 True；
             #   https 代理的 TLS 直连代理本身，verify 校验的是代理自签证书，免费代理
             #   全部失败，须 False（与项目"免费代理多自签证书，校验会误杀"原则一致）。

@@ -52,7 +52,7 @@ class HttpGetter(Protocol):
     返回 duck-typed response（只读取 status_code/text/headers/encoding 属性），
     用例层不 import requests。
     verify: 是否校验证书。默认 False（免费代理多自签证书，直连校验会误杀）；
-            探测类用例（check_proxies）对 http/socks5 代理显式传 True 以筛掉伪造证书的
+            探测类用例（check_proxies）对 http/socks4/socks5 代理显式传 True 以筛掉伪造证书的
             中间人代理（隧道端到端校验目标证书）；https 代理 TLS 直连代理本身，
             校验的是代理自签证书，仍传 False（见 check_proxies.do_test）。
     """
