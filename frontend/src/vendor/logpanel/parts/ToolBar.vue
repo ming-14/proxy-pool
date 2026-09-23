@@ -289,7 +289,7 @@ const regex = defineModel<boolean>('regex', { required: true });
   gap: 4px;
 }
 [data-form='sheet'] .lp-chip {
-  padding: 3px 6px;
+  padding: 2px 5px;
   font-size: 10px;
 }
 [data-form='sheet'] .lp-divider {

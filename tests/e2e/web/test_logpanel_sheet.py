@@ -215,22 +215,30 @@ def test_long_press_opens_menu_without_changing_detent(probe_mobile):
     assert not errors
 
 
-def test_sheet_chrome_leaves_room_for_logs(probe_mobile):
-    """抽屉里的 chrome 不得吃掉太多高度：工具栏一旦折成三行，日志区就被压到一半以下"""
-    p, errors = probe_mobile
-    p.fill(200)
-    box = p.root_box()
-    heights = p.run(
+def _chrome_heights(p) -> dict:
+    """标题栏 / 工具栏 / 列表的渲染高度"""
+    return p.run(
         """() => {
           const root = document.querySelector('[data-testid="logpanel"]');
           const h = (sel) => Math.round(root.querySelector(sel).getBoundingClientRect().height);
           return { titlebar: h('.lp-titlebar'), toolbar: h('.lp-toolbar'), list: h('.lp-list') };
         }"""
     )
-    chrome = heights["titlebar"] + heights["toolbar"]
-    assert heights["toolbar"] <= 100, f"工具栏折行过多：{heights['toolbar']}px"
-    assert chrome <= box["h"] * 0.4, f"chrome 占抽屉 {chrome / box['h']:.0%}，日志区被压得太小"
-    assert heights["list"] >= box["h"] * 0.65, f"日志区仅占抽屉 {heights['list'] / box['h']:.0%}"
+
+
+def test_sheet_chrome_leaves_room_for_logs(probe_mobile):
+    """抽屉里的 chrome 不得吃掉太多高度：工具栏一旦折成三行，日志区就被压到一半以下"""
+    p, errors = probe_mobile
+    p.fill(200)
+    for width in (MOBILE_VIEWPORT["width"], 360):
+        p.page.set_viewport_size({"width": width, "height": MOBILE_VIEWPORT["height"]})
+        p.wait(DETENT_SETTLE_MS)
+        box = p.root_box()
+        heights = _chrome_heights(p)
+        chrome = heights["titlebar"] + heights["toolbar"]
+        assert heights["toolbar"] <= 100, f"{width}px 宽下工具栏折行过多：{heights['toolbar']}px"
+        assert chrome <= box["h"] * 0.4, f"{width}px 宽下 chrome 占抽屉 {chrome / box['h']:.0%}"
+        assert heights["list"] >= box["h"] * 0.65, f"{width}px 宽下日志区仅占抽屉 {heights['list'] / box['h']:.0%}"
     assert not errors
 
 
