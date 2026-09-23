@@ -141,6 +141,7 @@ for attempt in range(max_retries):
 ### 本地代理服务器（PproxyServer）
 
 - 基于 **pproxy**，本地监听 `http+socks4+socks5://host:port`（一个端口同时提供三种协议）；
+- **协议能力边界**（TCP only）：SOCKS4/SOCKS4a 与 SOCKS5 CONNECT 完整支持；**UDP 不中继**——`UDP ASSOCIATE` 与未实现的 `BIND(0x02)`/未知 CMD 统一回 RFC 1928 REP `0x07`（command not supported），客户端据此退回 TCP，**绝不静默直连**（UDP 直连=真实 IP 泄漏，等同 no-direct 的红线）。不实现 UDP 的依据：上游是 HTTP/HTTPS/SOCKS5 免费代理——HTTP(S) 协议上无法承载 UDP，SOCKS5 上游还缺 UDP ASSOCIATE 客户端（vendor 只有服务端 `accept`，且 `ProxySimple` 未覆盖 `udp_open_connection`，数据报会被发到上游的 TCP 端口），实测命中率≈0；完整实现需新增 ASSOCIATE 客户端 + 中继端口生命周期 + 每上游 UDP 能力探测，收益与代价不成比例。回归：`tests/vendor/test_pproxy_vendor.py::TestUdpAssociateNotRelayed`、`TestSocks5UnsupportedCommand`。SOCKS4a 由 `Socks4.accept` 解析（IP 为 `0.0.0.x` 时域名在 userid 之后），域名作为目标交给上游远端解析；`socks4://` 作上游时按 4a 下发域名（不再本机 `getaddrinfo`，避免 DNS 泄漏）——见 `TestSocks4a`。
 - 池内代理字符串 → pproxy 上游 URI：`https://` 前缀（HTTPS 代理，代理本身走 TLS）转换为 `http+ssl://`；http/socks5 原样传递；
 - **rserver 动态同步**：`sync(proxies)` 对上游列表做集合差集增删，rserver 是同一列表引用，运行中增删对 pproxy schedule 实时生效；
 - 调度算法 `salgorithm="rc"`（随机）：每次请求随机选存活代理，坏代理有概率被跳过；不用 `fa`（first_available）是因为 fa 会固定命中第一个坏代理导致持续失败。

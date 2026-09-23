@@ -1051,6 +1051,155 @@ class TestNoDirectFallback(unittest.TestCase):
         asyncio.run(run())
 
 
+async def _socks5_command_reply(cmd: int) -> bytes:
+    """对本地 socks5 代理发一次指定 CMD 的请求，返回服务端应答（10 字节）"""
+    server = PproxyServer("socks5://127.0.0.1:0")
+    await server.start([])
+    port = server._handler.sockets[0].getsockname()[1]
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        await reader.readexactly(2)                       # 05 00 no-auth
+        writer.write(bytes([0x05, cmd, 0x00, 0x01]) + b"\x00" * 4 + (80).to_bytes(2, "big"))
+        await writer.drain()
+        resp = await asyncio.wait_for(reader.readexactly(10), timeout=10)
+        writer.close()
+        return resp
+    finally:
+        await server.close()
+
+
+class TestSocks5UnsupportedCommand(unittest.TestCase):
+    """未实现的 SOCKS5 CMD（BIND 0x02 / 未知值）回 RFC 1928 REP 0x07
+
+    原实现 `assert head[1] == 0x01` → 客户端收不到任何字节，只看到连接中断；
+    与"未配置 UDP 中继回 0x07"也不一致。修复后两类共用 REP 0x07 应答。
+    """
+
+    def test_bind_returns_command_not_supported(self):
+        """BIND(0x02)：回 05 07（旧行为：零字节裸断连）"""
+        self.assertEqual(asyncio.run(_socks5_command_reply(0x02)), b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+
+    def test_unknown_command_returns_command_not_supported(self):
+        """未知 CMD(0x09)：同样回 05 07，不裸断连"""
+        self.assertEqual(asyncio.run(_socks5_command_reply(0x09)), b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+
+
+class TestUdpAssociateNotRelayed(unittest.TestCase):
+    """UDP ASSOCIATE 未启用时回 REP 0x07（行为约定，防回归）
+
+    本项目不建 UDP 中继：上游是 HTTP/HTTPS/SOCKS5 免费代理——HTTP(S) 协议上无法承载
+    UDP，SOCKS5 上游还需要 UDP ASSOCIATE 客户端（vendor 只实现了服务端 accept，且
+    ProxySimple 未覆盖 udp_open_connection，数据报会被发到上游的 TCP 端口），命中率≈0。
+    唯一"能跑通"的形态是 UDP 直连=真实 IP 泄漏，故不做。
+    约定：回 0x07，让客户端明确退回 TCP，绝不静默直连、也不静默丢包。
+    """
+
+    def test_udp_associate_returns_command_not_supported(self):
+        self.assertEqual(asyncio.run(_socks5_command_reply(0x03)), b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+
+
+class TestSocks4a(unittest.TestCase):
+    """SOCKS4a：IP 字段为 0.0.0.x（x≠0）时目标以域名给出（紧跟 userid 的 NUL 之后）
+
+    原实现把 0.0.0.x 当目标地址 → 连到假地址，且域名字节留在读缓冲被当作隧道数据
+    发给"目标"（连错目标 + 客户端仍收到 granted）。修复：解析域名作目标（远端 DNS）。
+    反向（socks4 作上游）同样走 4a：域名下发给上游解析，不再本机 getaddrinfo。
+    """
+
+    async def _serve(self, upstreams: list[str]):
+        server = PproxyServer("socks4://127.0.0.1:0")
+        await server.start(upstreams)
+        return server, server._handler.sockets[0].getsockname()[1]
+
+    async def _recording_http_proxy(self, seen: list):
+        """记录 CONNECT 行与隧道负载的 HTTP 上游"""
+        async def handler(reader, writer):
+            try:
+                seen.append(await reader.readuntil(b"\r\n\r\n"))
+                writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                await writer.drain()
+                try:                                        # 隧道阶段再读一小窗口
+                    data = await asyncio.wait_for(reader.read(256), timeout=0.3)
+                except asyncio.TimeoutError:
+                    data = b""
+                if data:
+                    seen.append(data)
+            finally:
+                writer.close()
+
+        srv = await asyncio.start_server(handler, "127.0.0.1", 0)
+        return srv, srv.sockets[0].getsockname()[1]
+
+    def test_client_4a_connects_to_domain_and_leaks_no_payload(self):
+        """客户端 4a：上游被告知连 example.com:80（不是假地址），域名不作为隧道数据"""
+        async def run():
+            seen: list = []
+            upstream, up_port = await self._recording_http_proxy(seen)
+            server, port = await self._serve([f"http://127.0.0.1:{up_port}"])
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"\x04\x01" + (80).to_bytes(2, "big") + b"\x00\x00\x00\x01"
+                             + b"u\x00" + b"example.com\x00")
+                await writer.drain()
+                granted = await asyncio.wait_for(reader.readexactly(8), timeout=10)
+                self.assertEqual(granted[:2], b"\x00\x5a", f"应回 granted: {granted!r}")
+                writer.close()
+            finally:
+                await server.close()
+                upstream.close()
+            self.assertTrue(seen and b"CONNECT example.com:80" in seen[0],
+                            f"上游应被要求连域名: {seen!r}")
+            self.assertEqual(seen[1:], [], "域名残留字节不得作为隧道数据发出")
+
+        asyncio.run(run())
+
+    def test_upstream_4a_keeps_dns_remote(self):
+        """socks4 作上游：域名按 4a 下发（0.0.0.1 + 域名），本机不解析
+
+        用不可解析的域名做判据：若实现仍在本地 getaddrinfo，请求会在本地失败、
+        上游根本收不到；只有真 4a 才能把域名原样交给上游。
+        """
+        async def run():
+            seen: list = []
+
+            async def socks4_upstream(reader, writer):
+                try:
+                    head = await reader.readexactly(8)              # VN CMD PORT(2) IP(4)
+                    term = await reader.readexactly(1)              # userid 结束 NUL
+                    domain = await reader.readuntil(b"\x00")
+                    seen.append(head + term + domain)
+                    writer.write(b"\x00\x5a" + head[2:8])
+                    await writer.drain()
+                    await asyncio.sleep(0.05)
+                finally:
+                    writer.close()
+
+            upstream = await asyncio.start_server(socks4_upstream, "127.0.0.1", 0)
+            up_port = upstream.sockets[0].getsockname()[1]
+            server = PproxyServer("http://127.0.0.1:0")
+            await server.start([f"socks4://127.0.0.1:{up_port}"])
+            port = server._handler.sockets[0].getsockname()[1]
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"GET http://no-such-host.invalid/ HTTP/1.1\r\n"
+                             b"Host: no-such-host.invalid\r\n\r\n")
+                await writer.drain()
+                await asyncio.wait_for(reader.read(64), timeout=10)
+                await asyncio.sleep(0.2)
+                writer.close()
+            finally:
+                await server.close()
+                upstream.close()
+            self.assertTrue(seen, "上游未收到请求（说明域名仍在本地解析）")
+            self.assertEqual(seen[0], b"\x04\x01\x00\x50\x00\x00\x00\x01\x00"
+                             + b"no-such-host.invalid\x00",
+                             f"应按 4a 下发域名（0.0.0.1 + 域名）: {seen[0]!r}")
+
+        asyncio.run(run())
+
+
 class TestSocks4ReplyDeferred(unittest.TestCase):
     """SOCKS4 成功应答推迟到上游隧道建立后（与 SOCKS5 #169 同模式）
 

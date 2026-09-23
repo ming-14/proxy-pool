@@ -14,12 +14,14 @@
 | `sslwrap` verbose 静默 | 原 `verbose=None` 时退化为 `print` 刷 stdout，改为静默 |
 | SOCKS5 认证失败应答 | 无可接受认证方法回 `05 FF`（RFC 1928 §3）、凭证错误回 `01 01`（RFC 1929 §2）后再关闭，不再裸断连 |
 | SOCKS4 应答推迟 + 失败应答 | `Socks4.accept` 原在握手后**立即回 `00 5A`（granted）**，之后无论目标连接是否成功，客户端都只看到"已授权"——失败码永远发不出去（失败表现为"授权后立刻断连"）。改为与 Socks5 同模式：成功应答推迟到隧道建立后（`client_connected`），并新增 `error_reply` 回 `00 5B`（request rejected or failed），与 SOCKS5 的 REP 码 / HTTP 的 502 对齐 |
-| SOCKS5 UDP ASSOCIATE | 支持 RFC 1928 §7 UDP 中继握手；未配置 `-ul` 时回 `0x07` command not supported |
+| SOCKS4a 双向支持 | 原实现只认"IP 直连形式"：客户端发 4a（IP 为 `0.0.0.x` 标记 + userid 后附域名）时把假 IP 当目标 → **连错地址**，且域名字节留在读缓冲被当作隧道数据发给"目标"；反向（`socks4://` 作上游）在本地 `getaddrinfo` 后只发 IPv4 → **DNS 泄漏**。修复：`Socks4.accept` 识别 4a 标记并解析域名作目标（远端解析）；`Socks4.connect` 对域名按 4a 下发（`0.0.0.1` + 域名），IP 字面量仍直发 |
+| SOCKS5 未实现的 CMD 应答 | `assert head[1] == 0x01`（BIND 0x02 及未知 CMD → 断言失败）客户端只能看到**零字节裸断连**。改为回 RFC 1928 §6 REP `0x07`（command not supported，与"未配置 UDP 中继"共用同一应答）再关闭 |
+| SOCKS5 UDP ASSOCIATE | 支持 RFC 1928 §7 UDP 中继握手；未配置 `-ul` 时回 `0x07` command not supported（本项目不启用 UDP 中继，上游免费代理无法承载 UDP，见 `docs/architecture.md` 的「协议能力边界」） |
 | SOCKS5 成功应答推迟（#169） | 目标连接成功后回 `05 00`；失败时经 `error_reply` 回 RFC 1928 REP 错误码（refused→`05`、DNS/IDNA 失败→`04`、超时→`06`、BLOCK→`02`），客户端不再收到空响应 |
 | HTTP 非代理形式请求 | 直接访问代理端口（path-only GET）回真实 `404 Not Found` 再关闭，不裸断连 |
 | WebSocket 握手修复 | `Sec-WebSocket-Accept` 改用 RFC 6455 标准 GUID + 完整 20 字节摘要（原用固定字符串且截断 16 字节）；`guess()` 比较真实请求头（原 `StreamReader == bytes` 恒 False） |
 | 无效转义序列（#196） | `netloc_split` 正则加 `r` 前缀，消除 Python 3.12+ `SyntaxWarning` |
-| `get_event_loop` → `get_running_loop`（#200/#205） | Socks4/Socks5 连接路径，兼容 Python 3.14 |
+| `get_event_loop` → `get_running_loop`（#200/#205） | `sslwrap`，兼容 Python 3.14（原 `Socks4.connect` 的本地 `getaddrinfo` 已随 SOCKS4a 改造移除） |
 
 ### server.py
 

@@ -267,16 +267,34 @@ class Socks4(BaseProtocol):
             elif not user:
                 raise Exception(f'Unauthorized SOCKS {userid}')
             authtable.set_authed(user)
+        # SOCKS4a：IP 为 0.0.0.x（x≠0）是"目标以域名给出"的标记，域名紧跟 userid 的 NUL
+        # 之后（curl/PySocks 默认 rdns 即发此形式）。原实现直接把该 IP 当目标 → 连到假
+        # 地址，且域名字节留在读缓冲被当作隧道数据发给"目标"（连错目标 + 客户端收 granted）。
+        if ip[:3] == b'\x00\x00\x00' and ip[3:4] != b'\x00':
+            host_name = (await reader.read_until(b'\x00'))[:-1].decode()
+        else:
+            host_name = socket.inet_ntoa(ip)
         # 成功应答推迟到上游隧道建立后（stream_handler 调 client_connected 时），
         # 与 Socks5 同模式：原实现在 accept 里先回 granted，之后无论目标连接是否
         # 成功客户端都只看到"已授权"，失败表现为"授权后立刻断连"（无失败码可回）。
         async def client_connected(writer_remote):
             writer.write(b'\x00\x5a' + port.to_bytes(2, 'big') + ip)
             await writer.drain()
-        return user, socket.inet_ntoa(ip), port, client_connected
+        return user, host_name, port, client_connected
     async def connect(self, reader_remote, writer_remote, rauth, host_name, port, **kw):
-        ip = socket.inet_aton((await asyncio.get_running_loop().getaddrinfo(host_name, port, family=socket.AF_INET))[0][4][0])
-        writer_remote.write(b'\x04\x01' + port.to_bytes(2, 'big') + ip + rauth + b'\x00')
+        """连到 socks4 上游：域名按 SOCKS4a 下发，不在本机解析
+
+        原实现在本地 getaddrinfo 后只发 IPv4：用 socks4 上游时域名在本机解析（DNS 泄漏，
+        且上游无法按域名/就近解析）。改为 4a——目标以域名形式交给上游解析；host_name
+        已是 IP 字面量时直接发该 IP。
+        """
+        try:
+            ip = socket.inet_aton(host_name)
+            hostname_tail = b''
+        except OSError:
+            ip = b'\x00\x00\x00\x01'          # 4a 约定：0.0.0.x（x≠0）表示后附域名
+            hostname_tail = host_name.encode() + b'\x00'
+        writer_remote.write(b'\x04\x01' + port.to_bytes(2, 'big') + ip + rauth + b'\x00' + hostname_tail)
         assert await reader_remote.read_n(2) == b'\x00\x5a'
         await reader_remote.read_n(6)
     async def error_reply(self, writer, ex):
@@ -296,6 +314,17 @@ class Socks5(BaseProtocol):
         if header == b'\x05':
             return True
         reader.rollback(header)
+    async def reply_command_not_supported(self, writer):
+        """RFC 1928 §6 REP 0x07（command not supported）：回应答后由调用方关闭连接
+
+        未配置 UDP 中继、以及 BIND 等未实现的 CMD 共用此应答（原 BIND 走 assert →
+        客户端收不到任何字节，只能看到连接中断）。
+        """
+        writer.write(b'\x05\x07\x00' + b'\x01\x00\x00\x00\x00\x00\x00')
+        try:
+            await writer.drain()
+        except Exception:
+            pass
     async def accept(self, reader, user, writer, users, authtable, **kw):
         methods = await reader.read_n((await reader.read_n(1))[0])
         user = authtable.authed()
@@ -344,11 +373,7 @@ class Socks5(BaseProtocol):
             sockname = writer.get_extra_info('sockname') or (None, None)
             if relay is None:
                 # 未配置 UDP 中继（-ul）：回 0x07 command not supported
-                writer.write(b'\x05\x07\x00' + b'\x01\x00\x00\x00\x00\x00\x00')
-                try:
-                    await writer.drain()
-                except Exception:
-                    pass
+                await self.reply_command_not_supported(writer)
                 raise Exception('UDP relay not configured')
             if relay.port:
                 host = relay.host_name or sockname[0] or '127.0.0.1'
@@ -367,7 +392,12 @@ class Socks5(BaseProtocol):
                 pass
             # 复用 'empty' 语义：channel 读取并丢弃数据，连接保持到客户端关闭
             return user, 'empty', 0
-        assert head[1] == 0x01, 'Unknown SOCKS protocol'
+        if head[1] != 0x01:
+            # 只实现 CONNECT(0x01) 与 UDP ASSOCIATE(0x03)：其余 CMD（BIND 0x02 及未知
+            # 值）按 RFC 1928 §6 回 REP 0x07 command not supported。原实现是 assert，
+            # 客户端只拿到裸断连（连错误码都没有，与未配置 UDP 中继时的 0x07 不一致）。
+            await self.reply_command_not_supported(writer)
+            raise Exception(f'Unsupported SOCKS5 command 0x{head[1]:02x}')
         header = await reader.read_n(1)
         host_name, port, data = await socks_address_stream(reader, header[0])
         # #169：成功应答推迟到目标连接成功后（stream_handler 调 client_connected 时），

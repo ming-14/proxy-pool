@@ -47,6 +47,6 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │       ├── test_logpanel_virtual.py   # LogPanel 悬浮形态 14 项（驱动前端 probe/ 构建出的探针页）：全程滚动无空白/滚动中总高恒定/淘汰补偿钉位/跟随贴底且虚拟化生效/手动关跟随不被顶回/暂停继续后补上日志/过滤与高亮/正则非法标红与清空归零/展开态跨行回收保持/隐藏显示跟随与位置/右键菜单开合/拖拽窗口并持久化几何/缩放后重测行高/拖高后仍贴底
 │       └── test_logpanel_sheet.py     # LogPanel 抽屉形态 14 项（移动端模拟上下文 390×844 触屏）：形态随宽度切换且内联样式无残留/两形态日志字号一致/满宽贴底不溢出/按钮与标题栏点按切档后仍贴底/拖拽与快滑切档/拖动中底边不悬空/松手从手指位置继续滑向目标档位/长按开菜单不改档位/chrome 不吃掉日志区（390 与 360 宽）/安全区垫底/搜索框 16px 防 iOS 缩放/形态切换后按新宽度重测/视口变矮高度跟随/筛选条开合与横排/抽屉不写悬浮几何
 └── vendor/                            # vendor 库回归测试
-    ├── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用/无上游不回退直连/SOCKS4 应答推迟等）
+    ├── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答与未实现 CMD=REP 0x07/UDP ASSOCIATE 未中继/SOCKS4 应答时序与 4a/socks4 上游远端 DNS/无上游不回退直连/sslcontexts 弱引用等）
     └── test_pspeed_vendor.py          # pspeed 测速口径（curl 传输窗口/真实 hard_limit）/multi 取峰/节点名校验/面板失败渲染
 ```
