@@ -261,16 +261,22 @@ const regex = defineModel<boolean>('regex', { required: true });
   background: var(--lp-btn-hover-c);
 }
 
-/* 触屏：加大目标尺寸 */
+/* 触屏：只把可点目标抬到手指可用；搜索框要容纳 16px 字号（iOS 聚焦 <16px 输入框会整页缩放），
+   该字号是硬约束，其余尺寸两形态一致 */
 [data-touch='true'] .lp-btn {
-  height: 30px;
-  padding: 0 12px;
-  font-size: 12px;
+  height: 28px;
+  padding: 0 10px;
+}
+[data-touch='true'] .lp-search {
+  height: 28px;
+}
+[data-touch='true'] .lp-search input {
+  font-size: 16px;
 }
 
-/* 抽屉形态（写在触控规则之后：同特异性下由顺序决定，抽屉优先）：
-   搜索独占首行，第二行放等级 chip / 筛选开关 / 操作；尺寸按 360px 窄屏收紧（并排总宽 ≤ 344px），
-   否则会折成三行、把抽屉的三成高度吃在 chrome 上。输入框字号 16px——iOS 聚焦更小字号会整页缩放。 */
+/* 抽屉形态（写在触控规则之后：同特异性下由顺序决定，抽屉优先）——只做布局与空间分配，不放大尺度：
+   搜索独占首行；第二行要在 360px 窄屏的 344px 里塞下 4 个等级 chip + 筛选开关 + 3 个操作，
+   所以 chip 与按钮在这里收窄（宽度所迫，不是尺度放大）。 */
 [data-form='sheet'] .lp-toolbar {
   gap: 6px;
   padding: 8px;
@@ -278,10 +284,6 @@ const regex = defineModel<boolean>('regex', { required: true });
 [data-form='sheet'] .lp-search {
   flex: 1 1 100%;
   order: -1;
-  height: 36px;
-}
-[data-form='sheet'] .lp-search input {
-  font-size: 16px;
 }
 [data-form='sheet'] .lp-level-group {
   gap: 4px;
@@ -294,8 +296,8 @@ const regex = defineModel<boolean>('regex', { required: true });
   display: none;
 }
 [data-form='sheet'] .lp-icon-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
 }
 [data-form='sheet'] .lp-actions {
   gap: 6px;
@@ -303,8 +305,8 @@ const regex = defineModel<boolean>('regex', { required: true });
 }
 [data-form='sheet'] .lp-btn {
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   padding: 0;
 }
 [data-form='sheet'] .lp-btn-label {

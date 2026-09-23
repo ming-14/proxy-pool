@@ -300,22 +300,12 @@ onBeforeUnmount(() => {
   background: var(--lp-close-hover-c);
 }
 
-/* 触屏：加大目标尺寸与行距 */
+/* 触屏：只把可点目标抬到手指可用，其余尺寸两形态一致 */
 [data-touch='true'] .lp-titlebar {
-  height: 34px;
+  height: 32px;
 }
 [data-touch='true'] .lp-iconbtn {
-  width: 28px;
-  height: 28px;
-}
-
-/* 抽屉形态（写在触控规则之后：同特异性下由顺序决定，抽屉优先） */
-[data-form='sheet'] .lp-titlebar {
-  height: 46px;
-  padding: 8px 10px 0 14px;
-}
-[data-form='sheet'] .lp-iconbtn {
-  width: 36px;
-  height: 36px;
+  width: 26px;
+  height: 26px;
 }
 </style>

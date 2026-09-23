@@ -708,8 +708,7 @@ class TestLogPanel:
         assert abs(box["x"]) <= 1 and abs(box["w"] - 390) <= 1, f"抽屉未满宽：{box}"
         assert abs(box["bottom"] - 844) <= 1, f"抽屉未贴底：{box}"
 
-        # 抽屉态输入框字号 16px（iOS 聚焦更小字号会整页缩放），搜索照常生效
-        assert page.evaluate("getComputedStyle(document.querySelector('[data-testid=lp-search]')).fontSize") == "16px"
+        # 搜索照常生效（输入框字号 16px 防 iOS 聚焦缩放是触屏规则，由探针移动端用例覆盖）
         page.fill('[data-testid="lp-search"]', "不存在的关键字 zzz")
         page.wait_for_function(
             "() => (document.querySelector('[data-testid=lp-status]').textContent || '').trim().startsWith('0 /')",

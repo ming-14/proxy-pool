@@ -152,18 +152,16 @@ function onActivate(event: MouseEvent): void {
   border-radius: 3px;
 }
 
-/* 触屏：加大行距与展开图标、详情区高度（字号由列表统一给，两形态一致） */
+/* 触屏：只把可点目标（展开图标）抬到手指可用，字号与行距两形态一致 */
 [data-touch='true'] .lp-log-line {
-  padding-top: 3px;
-  padding-bottom: 3px;
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 [data-touch='true'] .lp-expand-icon {
-  width: 18px;
-  font-size: 10px;
+  width: 16px;
+  font-size: 9px;
 }
 [data-touch='true'] .lp-line-detail {
   max-height: 400px;
-  padding: 8px 10px 8px 24px;
-  font-size: 12px;
 }
 </style>

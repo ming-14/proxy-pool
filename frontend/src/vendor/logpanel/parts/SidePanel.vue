@@ -239,18 +239,15 @@ const bufferText = computed(() =>
   transition: width 0.2s;
 }
 
-/* 触屏：加大目标尺寸与行距 */
+/* 触屏：只把可点目标（模块行）抬到手指可用，字号两形态一致 */
 [data-touch='true'] .lp-side {
   width: 170px;
   padding: 10px 12px;
-  font-size: 12px;
 }
 [data-touch='true'] .lp-tag-row {
   padding: 5px 6px;
-  font-size: 12px;
 }
 [data-touch='true'] .lp-level-row {
-  font-size: 12px;
   line-height: 1.8;
 }
 
