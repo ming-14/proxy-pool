@@ -176,14 +176,31 @@ class TestPproxyServer(unittest.TestCase):
         import pproxy
 
         listen = self.server._server  # 真实 ProxySimple（URI 解析，无网络）
-        args = dict(rserver=[], verbose=lambda *a: None,
-                    salgorithm=self.server._salgorithm, modstat=self.server._make_modstat())
+        args = self.server._handler_args()
         handler = functools.partial(pproxy.server.stream_handler, **vars(listen), **args)
         bound = inspect.signature(pproxy.server.stream_handler).bind_partial(**handler.keywords)
         bound.apply_defaults()
         # salgorithm 必须绑定到实参（否则走默认 'fa'），且 s 不得落入 **kwargs
         self.assertEqual(bound.arguments.get("salgorithm"), "rc")
         self.assertNotIn("s", bound.arguments.get("kwargs", {}))
+        # direct_fallback 同理：落入 **kwargs 就被静默忽略，空上游会退回直连
+        self.assertIs(bound.arguments.get("direct_fallback"), False)
+        self.assertNotIn("direct_fallback", bound.arguments.get("kwargs", {}))
+
+    def test_no_direct_fallback(self):
+        """上游为空时不得回退直连（direct_fallback=False 必须传给 pproxy）"""
+        async def run():
+            handler = MagicMock()
+            handler.wait_closed = AsyncMock()
+            with patch("pproxy.Connection", side_effect=lambda uri: MagicMock(bind=_realistic_bind(uri))), \
+                 patch.object(self.server._server, "start_server", new_callable=AsyncMock) as mock_start:
+                mock_start.return_value = handler
+                await self.server.start([])
+                self.assertIs(mock_start.call_args[0][0]["direct_fallback"], False)
+                await self.server.set_salgorithm("lc")
+                self.assertIs(mock_start.call_args[0][0]["direct_fallback"], False,
+                              "切换调度算法重建 handler 时同样不得开启直连回退")
+        asyncio.run(run())
 
 
 class TestPerProxyTraffic(unittest.TestCase):
@@ -211,7 +228,7 @@ class TestPerProxyTraffic(unittest.TestCase):
         self.assertEqual(total_down, 350)
 
     def test_direct_bind(self):
-        """DIRECT（直连）流量用 'DIRECT' 作 key"""
+        """显式 direct:// 上游（bind == "DIRECT"）的流量仍用 'DIRECT' 作 key"""
         self.server._add_upload("DIRECT", 500)
         self.server._add_download("DIRECT", 800)
         traffic = self.server.per_proxy_traffic()
@@ -226,14 +243,6 @@ class TestPerProxyTraffic(unittest.TestCase):
         m(2)(3000)
         traffic = self.server.per_proxy_traffic()
         self.assertEqual(traffic["3.3.3.3:3128"], {"upload": 1000, "download": 3000})
-
-    def test_modstat_direct_when_no_roption(self):
-        """roption=None（schedule 返回 None，直连）时归入 DIRECT"""
-        modstat = self.server._make_modstat()
-        m = modstat(None, "127.0.0.1", "example.com", None)
-        m(0)(200)
-        traffic = self.server.per_proxy_traffic()
-        self.assertEqual(traffic["DIRECT"], {"upload": 200, "download": 0})
 
     def test_modstat_connection_change_ignored(self):
         """i ∈ {4,5}（连接数变化）不统计流量"""

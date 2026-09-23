@@ -267,13 +267,28 @@ class Socks4(BaseProtocol):
             elif not user:
                 raise Exception(f'Unauthorized SOCKS {userid}')
             authtable.set_authed(user)
-        writer.write(b'\x00\x5a' + port.to_bytes(2, 'big') + ip)
-        return user, socket.inet_ntoa(ip), port
+        # 成功应答推迟到上游隧道建立后（stream_handler 调 client_connected 时），
+        # 与 Socks5 同模式：原实现在 accept 里先回 granted，之后无论目标连接是否
+        # 成功客户端都只看到"已授权"，失败表现为"授权后立刻断连"（无失败码可回）。
+        async def client_connected(writer_remote):
+            writer.write(b'\x00\x5a' + port.to_bytes(2, 'big') + ip)
+            await writer.drain()
+        return user, socket.inet_ntoa(ip), port, client_connected
     async def connect(self, reader_remote, writer_remote, rauth, host_name, port, **kw):
         ip = socket.inet_aton((await asyncio.get_running_loop().getaddrinfo(host_name, port, family=socket.AF_INET))[0][4][0])
         writer_remote.write(b'\x04\x01' + port.to_bytes(2, 'big') + ip + rauth + b'\x00')
         assert await reader_remote.read_n(2) == b'\x00\x5a'
         await reader_remote.read_n(6)
+    async def error_reply(self, writer, ex):
+        """SOCKS4 失败应答：VN=0, CD=0x5B（request rejected or failed），后续 6 字节为
+        目的地址（失败时无意义，置零）。原实现无此方法 → 连接失败/无可用上游时裸断连，
+        客户端只能看到连接中断而非明确失败（SOCKS5 有 REP 码、HTTP 有 502，此处对齐）。
+        """
+        writer.write(b'\x00\x5b' + b'\x00' * 6)
+        try:
+            await writer.drain()
+        except Exception:
+            pass
 
 class Socks5(BaseProtocol):
     async def guess(self, reader, **kw):

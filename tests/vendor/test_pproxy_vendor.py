@@ -16,6 +16,13 @@
 - #169 补漏：目标连接**超时**曾单独一个 `except asyncio.TimeoutError` 分支只 `raise`，
   绕过 `error_reply` → 超时场景客户端仍收空响应。修复后超时与其它连接失败统一回错误应答
   （HTTP 502 / Socks5 REP 0x06），见 `TestConnectTimeoutErrorReply`（本测试防回归）
+- no-direct：`schedule` 返回 None 时 `or DIRECT` 使空/全挂上游的请求以本机真实 IP
+  直连目标（静默泄漏，客户端拿到的还是成功响应）。修复：handler 支持
+  `direct_fallback=False`（本项目默认关闭），无可用上游时按协议回错误，
+  见 `TestNoDirectFallback`（本测试防回归）
+- SOCKS4 应答时序：`Socks4.accept` 原立即回 `00 5A`，失败码永远发不出去
+  （失败=授权后立刻断连）。修复：成功应答推迟到隧道建立后 + 失败回 `00 5B`，
+  见 `TestSocks4ReplyDeferred`（本测试防回归）
 """
 
 import asyncio
@@ -607,7 +614,10 @@ class TestConnectTimeoutErrorReply(unittest.TestCase):
 
     async def _drive(self, listen_uri: str, drive):
         server = PproxyServer(f"{listen_uri}://127.0.0.1:0")
-        await server.start([])          # 无上游 → roption = DIRECT，走直连
+        # 显式 direct:// 上游：本项目默认不回退直连（no-direct），本用例要打的是
+        # "上游连接卡住"的超时路径，故把直连作为**显式上游**放进去（等价于旧用例
+        # 依赖的隐式回退，但不触发 no-direct 拒绝）
+        await server.start(["direct://"])
         port = server._handler.sockets[0].getsockname()[1]
         try:
             return await drive(port)
@@ -788,7 +798,8 @@ class TestSessionIdleReclaim(unittest.TestCase):
     async def _drive(self, mode: str, total_deadline: float):
         """mode: stream 慢速流式 / hang 收下请求永不响应 / quick 立即完整响应
 
-        与 serve 相同的 PproxyServer 路径；无上游 → DIRECT，只验证通道空闲语义。
+        与 serve 相同的 PproxyServer 路径；显式 direct:// 上游（本项目默认不回退直连），
+        只验证通道空闲语义。
         """
         async def origin_handler(reader, writer):
             await reader.read_until(b"\r\n\r\n")
@@ -820,7 +831,7 @@ class TestSessionIdleReclaim(unittest.TestCase):
         origin_port = origin.sockets[0].getsockname()[1]
         proxy_port = _free_port()
         server = PproxyServer(f"http://127.0.0.1:{proxy_port}")
-        await server.start([])  # 空上游 → schedule 返回 None → DIRECT
+        await server.start(["direct://"])  # 显式直连上游（no-direct 下唯一允许直连的途径）
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
             writer.write(f"GET http://127.0.0.1:{origin_port}/ HTTP/1.1\r\n"
@@ -870,6 +881,247 @@ class TestSessionIdleReclaim(unittest.TestCase):
         buf, _ = self._run("quick", total_deadline=10)
         self.assertIn(b"200 OK", buf)
         self.assertTrue(buf.endswith(b"ok"))
+
+
+class TestNoDirectFallback(unittest.TestCase):
+    """无可用上游时**不得回退直连**（本项目 direct_fallback=False）
+
+    旧行为（上游 pproxy 语义）：schedule 返回 None 即 `or DIRECT`——上游列表空/全部
+    不可用时，客户端请求会以**本机真实 IP 直连**目标，且返回成功响应，客户端无从察觉
+    （为换出口 IP 而用代理的场景下这是静默 IP 泄漏）。修复：无可用上游时按协议回错误
+    （HTTP 502 / SOCKS5 REP 0x01 / SOCKS4 CD 0x5B）并关闭；需要直连须显式配置 direct://。
+    参数默认仍为 True（保留 pproxy CLI「-r 缺省即直连」的库语义），由 PproxyServer 显式关闭。
+    """
+
+    async def _serve_serve_path(self, upstreams: list[str]):
+        """本项目 serve 路径（PproxyServer，恒 direct_fallback=False）→ (server, port)"""
+        server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+        await server.start(upstreams)
+        return server, server._handler.sockets[0].getsockname()[1]
+
+    async def _serve_library_default(self):
+        """pproxy 库默认路径（不经 PproxyServer，故不传 direct_fallback）→ (handler, port)"""
+        server = pproxy.Server("http://127.0.0.1:0")
+        handler = await server.start_server(dict(rserver=[], verbose=lambda *a: None, salgorithm="fa"))
+        return handler, handler.sockets[0].getsockname()[1]
+
+    async def _counting_target(self):
+        """起一个"目标服务器"，记录是否被连上（直连泄漏的判据）"""
+        hits = []
+
+        async def handler(reader, writer):
+            hits.append(1)
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await writer.drain()
+            writer.close()
+
+        srv = await asyncio.start_server(handler, "127.0.0.1", 0)
+        return srv, srv.sockets[0].getsockname()[1], hits
+
+    def test_http_rejected_without_upstream_and_no_direct_connect(self):
+        """空上游：回 502 且**从未**连过目标（旧行为：直连成功并回 200）"""
+        async def run():
+            target, target_port, hits = await self._counting_target()
+            server, port = await self._serve_serve_path([])
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(f"GET http://127.0.0.1:{target_port}/ HTTP/1.1\r\n"
+                             f"Host: 127.0.0.1:{target_port}\r\n\r\n".encode())
+                await writer.drain()
+                buf = await asyncio.wait_for(reader.read(4096), timeout=10)
+                writer.close()
+            finally:
+                await server.close()
+                target.close()
+            self.assertTrue(buf.startswith(b"HTTP/1.1 502"), f"应回 502: {buf!r}")
+            self.assertEqual(hits, [], "无上游时不得直连目标（真实 IP 泄漏）")
+
+        asyncio.run(run())
+
+    def test_socks5_rejected_without_upstream(self):
+        """空上游：SOCKS5 连接请求回 REP 0x01（general failure），而非直连成功"""
+        async def run():
+            server, port = await self._serve_serve_path([])
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"\x05\x01\x00")
+                await writer.drain()
+                await reader.readexactly(2)          # 05 00 no-auth
+                writer.write(b"\x05\x01\x00\x03\x09" + b"127.0.0.1" + (80).to_bytes(2, "big"))
+                await writer.drain()
+                resp = await asyncio.wait_for(reader.readexactly(10), timeout=10)
+                writer.close()
+            finally:
+                await server.close()
+            self.assertEqual(resp[0], 0x05)
+            self.assertEqual(resp[1], 0x01, f"应为 general failure: {resp!r}")
+
+        asyncio.run(run())
+
+    def test_socks4_rejected_without_upstream(self):
+        """空上游：SOCKS4 连接请求回 CD 0x5B（request rejected），而非裸断连"""
+        async def run():
+            server, port = await self._serve_serve_path([])
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"\x04\x01" + (80).to_bytes(2, "big") + b"\x7f\x00\x00\x01" + b"user\x00")
+                await writer.drain()
+                resp = await asyncio.wait_for(reader.readexactly(8), timeout=10)
+                writer.close()
+            finally:
+                await server.close()
+            self.assertEqual(resp[0], 0x00)
+            self.assertEqual(resp[1], 0x5B, f"应为 request rejected: {resp!r}")
+
+        asyncio.run(run())
+
+    def test_library_default_still_falls_back_direct(self):
+        """库语义保留：direct_fallback 缺省 True 时，空上游仍走直连（pproxy CLI -r 缺省行为）"""
+        async def run():
+            target, target_port, hits = await self._counting_target()
+            handler, port = await self._serve_library_default()
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(f"GET http://127.0.0.1:{target_port}/ HTTP/1.1\r\n"
+                             f"Host: 127.0.0.1:{target_port}\r\n\r\n".encode())
+                await writer.drain()
+                buf = await asyncio.wait_for(reader.read(4096), timeout=10)
+                writer.close()
+            finally:
+                handler.close()
+                await handler.wait_closed()
+                target.close()
+            self.assertIn(b"200 OK", buf)
+            self.assertEqual(len(hits), 1, "缺省 direct_fallback=True 应仍走直连")
+
+        asyncio.run(run())
+
+    def test_udp_dropped_without_upstream(self):
+        """UDP 路一致：无上游 + direct_fallback=False 时丢弃报文，不直连（UDP 无错误应答通道）"""
+        async def run():
+            sent = []
+
+            class FakeWriter:
+                def get_extra_info(self, key):
+                    return None
+
+                def sendto(self, data, addr):
+                    sent.append((data, addr))
+
+            payload = (b"\x00\x00\x00\x03\x09" + b"127.0.0.1"
+                       + (53).to_bytes(2, "big") + b"q")
+            await pproxy.server.datagram_handler(
+                FakeWriter(), payload, ("127.0.0.1", 40000),
+                [pproxy.proto.Socks5(None)], [], None, None, "rc", direct_fallback=False)
+            self.assertEqual(sent, [], "无 UDP 上游时不得发出任何数据报（真实 IP 泄漏）")
+
+        asyncio.run(run())
+
+    def test_udp_direct_when_fallback_enabled(self):
+        """门控确实起作用：缺省 direct_fallback=True 时 UDP 报文仍按直连发出"""
+        async def run():
+            got = []
+
+            class Sink(asyncio.DatagramProtocol):
+                def datagram_received(self, data, addr):
+                    got.append(data)
+
+            transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                Sink, local_addr=("127.0.0.1", 0))
+            sink_port = transport.get_extra_info("socket").getsockname()[1]
+
+            class FakeWriter:
+                def get_extra_info(self, key):
+                    return None
+
+                def sendto(self, data, addr):
+                    pass
+
+            payload = (b"\x00\x00\x00\x03\x09" + b"127.0.0.1"
+                       + sink_port.to_bytes(2, "big") + b"q")
+            try:
+                await pproxy.server.datagram_handler(
+                    FakeWriter(), payload, ("127.0.0.1", 40000),
+                    [pproxy.proto.Socks5(None)], [], None, None, "rc")
+                await asyncio.sleep(0.5)
+            finally:
+                transport.close()
+            self.assertEqual(got, [b"q"], f"缺省应走直连发出 payload: {got!r}")
+
+        asyncio.run(run())
+
+
+class TestSocks4ReplyDeferred(unittest.TestCase):
+    """SOCKS4 成功应答推迟到上游隧道建立后（与 SOCKS5 #169 同模式）
+
+    原行为：`Socks4.accept` 收到 CONNECT 立即回 `00 5A`（granted），之后无论目标
+    连接是否成功，客户端都只看到"已授权"——失败表现为"授权后立刻断连"，失败码
+    （`00 5B`）永远发不出去。修复：应答推迟到 `client_connected`，失败经
+    `error_reply` 回 `00 5B`。
+    """
+
+    async def _serve(self):
+        """显式 direct:// 上游（测握手时序，与 no-direct 语义无关）→ (server, port)"""
+        server = PproxyServer("socks4://127.0.0.1:0")
+        await server.start(["direct://"])
+        return server, server._handler.sockets[0].getsockname()[1]
+
+    def test_granted_only_after_tunnel_established(self):
+        """目标可达时：拿到 granted 后转发正常（应答推迟不破坏成功路径）"""
+        async def run():
+            origin_hits = []
+
+            async def origin_handler(reader, writer):
+                origin_hits.append(1)
+                await reader.readuntil(b"\r\n\r\n")
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                await writer.drain()
+                writer.close()
+
+            origin = await asyncio.start_server(origin_handler, "127.0.0.1", 0)
+            origin_port = origin.sockets[0].getsockname()[1]
+            server, port = await self._serve()
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"\x04\x01" + origin_port.to_bytes(2, "big")
+                             + b"\x7f\x00\x00\x01" + b"u\x00")
+                await writer.drain()
+                granted = await asyncio.wait_for(reader.readexactly(8), timeout=10)
+                self.assertEqual(granted[:2], b"\x00\x5a", f"应回 granted: {granted!r}")
+                writer.write(b"GET / HTTP/1.0\r\n\r\n")
+                await writer.drain()
+                data = b""
+                while True:
+                    chunk = await asyncio.wait_for(reader.read(4096), timeout=10)
+                    if not chunk:
+                        break
+                    data += chunk
+                writer.close()
+            finally:
+                await server.close()
+                origin.close()
+            self.assertEqual(len(origin_hits), 1, "应已连到目标")
+            self.assertIn(b"ok", data)
+
+        asyncio.run(run())
+
+    def test_closed_target_returns_request_rejected(self):
+        """目标不可达时：回 `00 5B`（旧行为：先回 granted 再断连）"""
+        async def run():
+            dead_port = _free_port()
+            server, port = await self._serve()
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"\x04\x01" + dead_port.to_bytes(2, "big")
+                             + b"\x7f\x00\x00\x01" + b"u\x00")
+                await writer.drain()
+                resp = await asyncio.wait_for(reader.readexactly(8), timeout=10)
+                writer.close()
+            finally:
+                await server.close()
+            self.assertEqual(resp[:2], b"\x00\x5b", f"应为 request rejected: {resp!r}")
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

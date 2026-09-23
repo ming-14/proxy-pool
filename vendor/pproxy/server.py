@@ -59,7 +59,7 @@ def schedule(rserver, salgorithm, host_name, port):
     else:
         raise Exception('Unknown scheduling algorithm') #Unreachable
 
-async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, sslserver, debug=0, authtime=86400*30, block=None, salgorithm='fa', verbose=DUMMY, modstat=lambda u,r,h,o:lambda i:DUMMY, **kwargs):
+async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, sslserver, debug=0, authtime=86400*30, block=None, salgorithm='fa', verbose=DUMMY, modstat=lambda u,r,h,o:lambda i:DUMMY, direct_fallback=True, **kwargs):
     try:
         reader, writer = proto.sslwrap(reader, writer, sslserver, True, None, verbose)
         if unix:
@@ -82,7 +82,16 @@ async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, s
                 await lproto.error_reply(writer, Exception('BLOCK ' + host_name))
             raise Exception('BLOCK ' + host_name)
         else:
-            roption = schedule(rserver, salgorithm, host_name, port) or DIRECT
+            roption = schedule(rserver, salgorithm, host_name, port)
+            if roption is None and not direct_fallback:
+                # 无可用上游时不回退直连：直连会以本机真实 IP 访问目标（对"只为隐蔽
+                # 出口 IP 而用代理"的场景是泄漏），必须按协议明确告知客户端失败。
+                # 需要直连的场景应显式在上游列表里放 direct://（那时 schedule 返回
+                # ProxyDirect 实例，不走本分支）。
+                if hasattr(lproto, 'error_reply'):
+                    await lproto.error_reply(writer, Exception('No upstream available'))
+                raise Exception('No upstream available')
+            roption = roption or DIRECT
             verbose(f'{lproto.name} {remote_text}{roption.logtext(host_name, port)}')
             try:
                 reader_remote, writer_remote = await roption.open_connection(host_name, port, local_addr, lbind)
@@ -147,7 +156,7 @@ async def stream_handler(reader, writer, unix, lbind, protos, rserver, cipher, s
         if debug:
             raise
 
-async def datagram_handler(writer, data, addr, protos, urserver, block, cipher, salgorithm, verbose=DUMMY, **kwargs):
+async def datagram_handler(writer, data, addr, protos, urserver, block, cipher, salgorithm, verbose=DUMMY, direct_fallback=True, **kwargs):
     try:
         remote_ip, remote_port, *_ = addr
         remote_text = f'{remote_ip}:{remote_port}'
@@ -160,7 +169,12 @@ async def datagram_handler(writer, data, addr, protos, urserver, block, cipher, 
         elif block and block(host_name):
             raise Exception('BLOCK ' + host_name)
         else:
-            roption = schedule(urserver, salgorithm, host_name, port) or DIRECT
+            roption = schedule(urserver, salgorithm, host_name, port)
+            if roption is None and not direct_fallback:
+                # 同 stream_handler：无 UDP 上游时不回退直连（直连会以本机真实 IP
+                # 发出数据报）。数据面没有错误应答通道，直接丢弃该报文。
+                raise Exception('No upstream available')
+            roption = roption or DIRECT
             verbose(f'UDP {lproto.name} {remote_text}{roption.logtext(host_name, port)}')
             data = roption.udp_prepare_connection(host_name, port, data)
             def reply(rdata):

@@ -307,9 +307,9 @@ class TestServeE2E(ServeE2EBase):
             resp = await http_request_via_proxy(listen_port)
             self.assertIn(MOCK_BODY, resp)
 
-            # 动态移除上游 -> 请求目标改为必然被拒的地址（rserver 空时 pproxy 直连）。
-            # 断言"不再由 mock 应答"（mock 对任何目标都回 MOCK_BODY）+ "直连失败回明确
-            # 错误"（pproxy 连接失败走 error_reply 回 502，而非空响应）。
+            # 动态移除上游 -> 请求必须被拒绝：上游列表为空时 serve 不回退直连
+            # （direct_fallback=False），直接回 502。断言"不再由 mock 应答"（mock 对任何
+            # 目标都回 MOCK_BODY）+ "明确错误"（502，而非空响应）。
             dead_port = free_local_port()
             server.sync([])
             resp = await http_request_via_proxy(listen_port, host=f"127.0.0.1:{dead_port}")
@@ -323,6 +323,49 @@ class TestServeE2E(ServeE2EBase):
 
             await server.close()
             await close_server(upstream)
+
+        asyncio.run(run())
+
+    def test_no_direct_leak_when_upstream_empty(self):
+        """上游为空时绝不直连目标（防真实 IP 泄漏）
+
+        旧行为：pproxy `schedule(...) or DIRECT` —— 上游空/全挂时请求以本机真实 IP
+        直连目标并返回成功响应，客户端无从察觉。修复后必须回错误，且**目标服务器
+        一个连接都不能收到**。
+        """
+        async def run():
+            hits = []
+
+            async def target_handler(reader, writer):
+                hits.append(1)
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                await writer.drain()
+                writer.close()
+
+            target = await asyncio.start_server(target_handler, "127.0.0.1", 0)
+            target_port = target.sockets[0].getsockname()[1]
+
+            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            await server.start([])   # 无上游：队列尚未补入代理
+            listen_port = server._handler.sockets[0].getsockname()[1]
+
+            resp = await http_request_via_proxy(listen_port, host=f"127.0.0.1:{target_port}")
+            self.assertTrue(resp.startswith(b"HTTP/1.1 502"), f"应回明确 502 而非空响应: {resp!r}")
+            self.assertEqual(hits, [], "上游为空时不得直连目标（真实 IP 泄漏）")
+
+            await server.close()
+
+            # 上游恢复后同一目标可正常访问（确认拒绝只由"无上游"导致）
+            upstream, mock_port = await start_mock_upstream()
+            server2 = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            await server2.start([f"http://127.0.0.1:{mock_port}"])
+            port2 = server2._handler.sockets[0].getsockname()[1]
+            resp = await http_request_via_proxy(port2, host=f"127.0.0.1:{target_port}")
+            self.assertIn(MOCK_BODY, resp)
+
+            await server2.close()
+            await close_server(upstream)
+            target.close()
 
         asyncio.run(run())
 

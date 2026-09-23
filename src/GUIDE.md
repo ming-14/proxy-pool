@@ -18,7 +18,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── __init__.py
 │   ├── test_geoip_client.py           # GeoLite2Locator City/Country 自动识别（真实 mmdb）
 │   ├── test_proxy_scheduler.py        # 异步调度器
-│   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步）
+│   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False）
 │   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/purity 缓存）
 │   ├── test_ua_generator.py           # 确定性 UA 生成
 │   └── sources/                       # 代理源测试
@@ -37,7 +37,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
 │   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手）
-│   ├── test_serve_e2e.py              # serve 全链路（pproxy 启动→转发→心跳移除→sync）
+│   ├── test_serve_e2e.py              # serve 全链路（pproxy 启动→转发→心跳移除→sync→上游空时拒绝且不直连）
 │   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→优雅退出）
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
@@ -47,6 +47,6 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │       ├── test_logpanel_virtual.py   # LogPanel 悬浮形态 14 项（驱动前端 probe/ 构建出的探针页）：全程滚动无空白/滚动中总高恒定/淘汰补偿钉位/跟随贴底且虚拟化生效/手动关跟随不被顶回/暂停继续后补上日志/过滤与高亮/正则非法标红与清空归零/展开态跨行回收保持/隐藏显示跟随与位置/右键菜单开合/拖拽窗口并持久化几何/缩放后重测行高/拖高后仍贴底
 │       └── test_logpanel_sheet.py     # LogPanel 抽屉形态 14 项（移动端模拟上下文 390×844 触屏）：形态随宽度切换且内联样式无残留/两形态日志字号一致/满宽贴底不溢出/按钮与标题栏点按切档后仍贴底/拖拽与快滑切档/拖动中底边不悬空/松手从手指位置继续滑向目标档位/长按开菜单不改档位/chrome 不吃掉日志区（390 与 360 宽）/安全区垫底/搜索框 16px 防 iOS 缩放/形态切换后按新宽度重测/视口变矮高度跟随/筛选条开合与横排/抽屉不写悬浮几何
 └── vendor/                            # vendor 库回归测试
-    ├── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用等）
+    ├── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用/无上游不回退直连/SOCKS4 应答推迟等）
     └── test_pspeed_vendor.py          # pspeed 测速口径（curl 传输窗口/真实 hard_limit）/multi 取峰/节点名校验/面板失败渲染
 ```

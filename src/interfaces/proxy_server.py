@@ -4,6 +4,9 @@
 正向代理服务器。rserver 是同一列表引用，运行中增删对 schedule 实时生效，
 配合 pproxy 的 rc（random）调度——每次请求随机选存活代理，坏代理有概率被跳过，
 避免 fa（first_available）固定命中第一个坏代理导致持续失败（见 __init__），实现无缝切换。
+
+**绝不直连**：无可用上游时按协议回错误（HTTP 502 / SOCKS5 REP 0x01 / SOCKS4 CD 0x5B），
+不退回以本机真实 IP 直连目标（见 _handler_args 的 direct_fallback=False）。
 """
 
 from __future__ import annotations
@@ -70,6 +73,8 @@ class PproxyServer:
         self._server = pproxy.Server(listen_uri)
         self._handler = None
         self._rserver: list = []
+        # 上游是否为空（见 _log_upstream_change）：空上游 = 所有请求被拒绝的状态
+        self._upstream_empty = False
         # uri → Connection 索引：sync 按完整 uri 匹配（pproxy.Connection.bind 只存地址不含
         # scheme 前缀，直接用 bind 比较会导致 http+ssl:// 上游每轮全量增删 → SSLContext 雪崩泄漏）
         self._uri_index: dict[str, object] = {}
@@ -77,7 +82,7 @@ class PproxyServer:
         self._traffic_upload = 0       # 累计上行字节
         self._traffic_download = 0     # 累计下行字节
         self._traffic_history: deque[TrafficSample] = deque()
-        # 按上游代理地址（roption.bind）的累计上下行字节；DIRECT 的 bind 为 "DIRECT"
+        # 按上游代理地址（roption.bind）的累计上下行字节；显式 direct:// 上游的 bind 为 "DIRECT"
         self._per_proxy_upload: dict[str, int] = {}
         self._per_proxy_download: dict[str, int] = {}
         # 按上游代理地址的流量采样历史（与 _traffic_history 同机制），供按 IP 查流量趋势
@@ -88,12 +93,40 @@ class PproxyServer:
         self._rserver = [pproxy.Connection(_pproxy_uri(p)) for p in proxies]
         self._uri_index = {_pproxy_uri(p): conn for p, conn in zip(proxies, self._rserver)}
         self._loop = asyncio.get_running_loop()
-        # 调度参数键名必须为 salgorithm：pproxy stream_handler 只认 salgorithm，
-        # 传 s= 会被 **kwargs 吞掉导致实际恒为 fa（first_available），rc/rr/lc 全部失效
-        args = dict(rserver=self._rserver, verbose=lambda *a: None, salgorithm=self._salgorithm,
-                    modstat=self._make_modstat())
-        self._handler = await self._server.start_server(args)
+        self._handler = await self._server.start_server(self._handler_args())
+        self._upstream_empty = not self._rserver
         logger.info("代理服务器已启动: %s, 上游 %d 个代理, 调度 %s", self._listen_uri, len(self._rserver), self._salgorithm)
+
+    def _handler_args(self) -> dict:
+        """pproxy stream_handler 参数（start 与 set_salgorithm 重建 handler 共用一份）
+
+        键名必须与 pproxy stream_handler 签名一致，否则被 **kwargs 静默吞掉：
+        `salgorithm`（传 s= 会恒为默认 fa）、`modstat`（不传则无流量统计）、
+        `direct_fallback`。
+
+        direct_fallback=False 是本项目的硬约束：**无可用上游时按协议回错误，
+        绝不以本机真实 IP 直连目标**（直连会让"只为换出口 IP 而用代理"的场景
+        静默泄漏真实 IP，客户端拿到的是成功响应，无从察觉）。需要直连的场景
+        必须显式把 direct:// 放进上游列表。
+        """
+        return dict(rserver=self._rserver, verbose=lambda *a: None,
+                    salgorithm=self._salgorithm, modstat=self._make_modstat(),
+                    direct_fallback=False)
+
+    def _log_upstream_change(self) -> None:
+        """上游空/恢复的状态翻转日志（sync 每轮调用，只在翻转时输出）
+
+        空上游时所有请求都被拒绝（见 _handler_args），不记日志的话运维只能看到
+        "客户端全部 502"而不知原因。
+        """
+        empty = not self._rserver
+        if empty == self._upstream_empty:
+            return
+        self._upstream_empty = empty
+        if empty:
+            logger.warning("上游代理已清空：请求将被拒绝（不回退直连，避免泄漏本机 IP）")
+        else:
+            logger.info("上游代理恢复: %d 个代理", len(self._rserver))
 
     def sync(self, proxies: list[str]) -> None:
         """将 rserver 同步到给定代理列表（运行中增删，schedule 实时可见）
@@ -120,6 +153,7 @@ class PproxyServer:
             self._rserver.append(conn)
 
         logger.debug("上游同步: %d 个代理", len(self._rserver))
+        self._log_upstream_change()
 
     async def set_salgorithm(self, salgorithm: str) -> None:
         """运行时切换上游调度算法（Web 面板调整；重启 rserver 生效，保留现有上游列表）"""
@@ -129,9 +163,7 @@ class PproxyServer:
         if self._handler is not None:
             self._handler.close()
             await self._handler.wait_closed()
-            args = dict(rserver=self._rserver, verbose=lambda *a: None, salgorithm=self._salgorithm,
-                    modstat=self._make_modstat())
-            self._handler = await self._server.start_server(args)
+            self._handler = await self._server.start_server(self._handler_args())
             logger.info("调度算法已切换为 %s, 上游 %d 个代理", self._salgorithm, len(self._rserver))
 
     async def close(self) -> None:
@@ -153,10 +185,11 @@ class PproxyServer:
           i ∈ {2,3} → 下行（远程→客户端）
           i ∈ {4,5} → 连接数变化（不统计）
 
-        per-proxy 维度：roption.bind（上游代理地址，DIRECT 为 "DIRECT"）作 key 分发到 per-proxy 计数器。
+        per-proxy 维度：roption.bind（上游代理地址，直连上游为 "DIRECT"）作 key 分发到 per-proxy 计数器。
+        pproxy 选定上游后才会调 modstat（无上游直接回错误，不进入统计），故 roption 恒非 None。
         """
         def modstat(user, remote_ip, host_name, roption):
-            bind = roption.bind if roption is not None else "DIRECT"
+            bind = roption.bind
             def m(i):
                 if i in (0, 1):
                     return lambda n: self._add_upload(bind, n)
@@ -207,7 +240,7 @@ class PproxyServer:
     def per_proxy_traffic(self) -> dict[str, dict[str, int]]:
         """按上游代理地址（bind）的累计上下行字节，供 /api/status 下发前端按 IP 展示流量
 
-        key 为 roption.bind（上游代理地址如 "1.2.3.4:8080"，直连为 "DIRECT"），
+        key 为 roption.bind（上游代理地址如 "1.2.3.4:8080"；显式 direct:// 上游为 "DIRECT"），
         value 为 {"upload": int, "download": int}。仅内存实时计数，重启清零。
         """
         binds = set(self._per_proxy_upload) | set(self._per_proxy_download)
