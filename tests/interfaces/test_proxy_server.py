@@ -203,6 +203,88 @@ class TestPproxyServer(unittest.TestCase):
         asyncio.run(run())
 
 
+class TestUpstreamHealth(unittest.TestCase):
+    """上游存活标记：心跳判定写进 pproxy 上游对象的 alive，让调度过滤器真正生效
+
+    背景：pproxy 的 `alive` 只由 `check_server_alive` 翻转，而它仅在 CLI（`-a`）里启动
+    ——本项目不走 CLI，故上游 `alive` 恒为 True、`schedule` 的 filter_cond 形同虚设，
+    心跳判失败的代理在补测成功/拉黑前仍会被 rc 随机选中。修复：`sync(unhealthy=...)`
+    把代理池的存活判定写进上游对象（存活判定唯一来源 = 代理池心跳）。
+    """
+
+    def setUp(self):
+        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080")
+
+    async def _start(self, proxies):
+        with patch.object(self.server._server, "start_server", new_callable=AsyncMock):
+            await self.server.start(proxies)
+
+    def test_unhealthy_marked_dead(self):
+        """unhealthy 中的上游置 alive=False，其余保持 True"""
+        async def run():
+            a, b = "http://1.1.1.1:8080", "socks5://2.2.2.2:1080"
+            await self._start([a, b])
+            self.server.sync([a, b], unhealthy=[b])
+            self.assertEqual(
+                {uri: conn.alive for uri, conn in self.server._uri_index.items()},
+                {a: True, b: False},
+            )
+        asyncio.run(run())
+
+    def test_recovery_restores_alive(self):
+        """补测成功（unhealthy 不再包含该代理）后 alive 恢复"""
+        async def run():
+            a = "http://1.1.1.1:8080"
+            await self._start([a])
+            self.server.sync([a], unhealthy=[a])
+            self.assertFalse(self.server._uri_index[a].alive)
+            self.server.sync([a])
+            self.assertTrue(self.server._uri_index[a].alive)
+        asyncio.run(run())
+
+    def test_flag_survives_membership_change(self):
+        """标记随 Connection 复用保持（增删其它上游不影响已标记对象）"""
+        async def run():
+            a, b = "http://1.1.1.1:8080", "http://2.2.2.2:8080"
+            await self._start([a])
+            self.server.sync([a], unhealthy=[a])
+            conn_a = self.server._uri_index[a]
+            self.server.sync([a, b], unhealthy=[a])
+            self.assertIs(self.server._uri_index[a], conn_a)
+            self.assertFalse(conn_a.alive)
+            self.assertTrue(self.server._uri_index[b].alive)
+        asyncio.run(run())
+
+    def test_schedule_skips_dead_upstream(self):
+        """全部标记为失败时 schedule 返回 None（请求转由 no-direct 拒绝，不再打已知死代理）"""
+        async def run():
+            import pproxy
+            a = "http://1.1.1.1:8080"
+            await self._start([a])
+            self.server.sync([a], unhealthy=[a])
+            self.assertIsNone(pproxy.server.schedule(self.server._rserver, "rc", "example.com", 80))
+            self.server.sync([a])
+            self.assertIsNotNone(pproxy.server.schedule(self.server._rserver, "rc", "example.com", 80))
+        asyncio.run(run())
+
+    def test_no_upstream_state_tracks_all_dead(self):
+        """无可用上游状态：列表为空或成员全部失败 → True，任一恢复 → False（驱动告警日志）
+
+        日志本身被测试全局 logging.disable(WARNING) 屏蔽，故断言驱动它的状态位。
+        """
+        async def run():
+            a, b = "http://1.1.1.1:8080", "http://2.2.2.2:8080"
+            await self._start([a, b])
+            self.assertFalse(self.server._no_upstream)
+            self.server.sync([a, b], unhealthy=[a, b])
+            self.assertTrue(self.server._no_upstream)
+            self.server.sync([a, b], unhealthy=[a])
+            self.assertFalse(self.server._no_upstream)
+            self.server.sync([], unhealthy=[])
+            self.assertTrue(self.server._no_upstream)
+        asyncio.run(run())
+
+
 class TestPerProxyTraffic(unittest.TestCase):
     """按上游代理 IP 的流量统计测试"""
 

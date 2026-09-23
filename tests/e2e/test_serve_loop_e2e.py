@@ -101,13 +101,14 @@ class _FakeCheck:
 
 
 class _FakeServer:
-    """serve._run 内的 PproxyServer 替身：记录 sample_traffic 调用时刻（monotonic）"""
+    """serve._run 内的 PproxyServer 替身：记录 sync 调用与 sample_traffic 时刻（monotonic）"""
 
     def __init__(self, *args, **kwargs):
         self.sample_ts: list[float] = []
+        self.sync_calls: list[tuple] = []  # 每次 sync 的 (proxies, unhealthy)
 
-    def sync(self, proxies):
-        pass
+    def sync(self, proxies, unhealthy=()):
+        self.sync_calls.append((list(proxies), set(unhealthy)))
 
     async def start(self, proxies):
         pass
@@ -267,6 +268,48 @@ class TestServeMainLoop(unittest.TestCase):
             self.assertTrue(all(g < 5.0 for g in gaps), f"锁定期间采样间隔应 ~2s，实际 {gaps}")
 
             await close_server(upstream)
+
+        asyncio.run(run())
+
+
+class TestUpstreamHealthWiring(unittest.TestCase):
+    """serve 主循环把心跳判定同步给 pproxy：失败代理随 sync 以 unhealthy 下发
+
+    pproxy 的 `alive` 只由 CLI（`-a`）的 check_server_alive 翻转，本项目不用它——
+    存活判定必须由 serve 每轮 sync 写入（否则调度过滤器形同虚设）。
+    """
+
+    def test_heartbeat_failure_synced_as_unhealthy(self):
+        async def run():
+            good = "http://127.0.0.1:1"
+            flaky = "http://127.0.0.1:2"
+            pool = make_pool()
+            pool.add_to_group("default-http", good)
+            pool.add_to_group("default-http", flaky)
+            record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
+            check = _FakeCheck([good, flaky])   # 先都存活 → 两个都入队
+            standby = make_standby(pool, record, check)
+            fake_server = _FakeServer()
+
+            with patch("src.framework.serve.PproxyServer", return_value=fake_server):
+                c = make_min_container(pool, standby)
+                task = asyncio.create_task(
+                    _run(c, interval=0.2, probe_url="http://probe.local", allowed_types={"http"},
+                         concurrency=2, host="127.0.0.1", port=0, capacity=5, web_enabled=False)
+                )
+                try:
+                    await _wait_until(lambda: sorted(standby_list(pool)) == sorted([good, flaky]))
+                    check.alive_proxies = {good}   # flaky 心跳失败 → 进入退避补测
+                    await _wait_until(
+                        lambda: any(flaky in unhealthy for _, unhealthy in fake_server.sync_calls))
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+            self.assertTrue(
+                any(flaky in unhealthy for _, unhealthy in fake_server.sync_calls),
+                f"失败代理未作为 unhealthy 下发给 pproxy: {fake_server.sync_calls}",
+            )
 
         asyncio.run(run())
 

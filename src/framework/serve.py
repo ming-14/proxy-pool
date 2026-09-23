@@ -65,8 +65,14 @@ async def _run(
     _SAVE_INTERVAL = 30.0
 
     def sync_upstream() -> None:
-        """同步 pproxy 上游列表（轻量，每轮调用）"""
-        server.sync(standby.upstream_proxies())
+        """同步 pproxy 上游列表与存活标记（轻量，每轮调用）
+
+        unhealthy 取正在退避补测的队列成员：它们在 pproxy 侧被标记 alive=False，
+        rc/rr/lc 调度不再选中——否则心跳判失败的代理在补测成功/拉黑之前仍会被随机
+        选中，把请求交给已知死掉的代理（pproxy 自带的存活检查只在 CLI 里启动，
+        本项目不用；存活判定以代理池心跳为唯一来源）。
+        """
+        server.sync(standby.upstream_proxies(), unhealthy=standby.pending_retries())
 
     def sync_and_save() -> None:
         """同步 pproxy 上游 + 节流持久化（30 秒一次，非每轮）"""
@@ -85,13 +91,12 @@ async def _run(
     async def fill_if_needed() -> None:
         """缺口补入并同步上游（fill 期间实时 sync，结束后统一 sync + save）
 
-        on_change 回调让 fill 流式入队时每个代理入队即同步 pproxy 上游，
+        on_change 回调让 fill 流式入队时每个代理入队即同步 pproxy 上游（含存活标记），
         探测成功的代理立即可用，不必等整批探测完成。
         """
         if len(standby.standby_proxies()) < capacity:
             await standby.fill(control.allowed_types, control.probe_url, control.timeout,
-                               control.concurrency, capacity,
-                               on_change=lambda: server.sync(standby.upstream_proxies()))
+                               control.concurrency, capacity, on_change=sync_upstream)
         sync_and_save()
 
     # 启动：探测补入代理服务队列并启动服务器

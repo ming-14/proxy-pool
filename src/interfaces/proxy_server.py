@@ -17,7 +17,7 @@ import os
 import sys
 import time
 from collections import deque
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 
 # pproxy 已 vendor 化（vendor/pproxy/），本地维护，修复已内化进源码，无需 monkey-patch：
 #   - proto.sslwrap：verbose=None 时静默（原退化为 print 刷 stdout）
@@ -73,8 +73,8 @@ class PproxyServer:
         self._server = pproxy.Server(listen_uri)
         self._handler = None
         self._rserver: list = []
-        # 上游是否为空（见 _log_upstream_change）：空上游 = 所有请求被拒绝的状态
-        self._upstream_empty = False
+        # 是否处于"无可用上游"状态（列表为空或成员全部被标记失败，见 _log_upstream_change）
+        self._no_upstream = False
         # uri → Connection 索引：sync 按完整 uri 匹配（pproxy.Connection.bind 只存地址不含
         # scheme 前缀，直接用 bind 比较会导致 http+ssl:// 上游每轮全量增删 → SSLContext 雪崩泄漏）
         self._uri_index: dict[str, object] = {}
@@ -94,7 +94,7 @@ class PproxyServer:
         self._uri_index = {_pproxy_uri(p): conn for p, conn in zip(proxies, self._rserver)}
         self._loop = asyncio.get_running_loop()
         self._handler = await self._server.start_server(self._handler_args())
-        self._upstream_empty = not self._rserver
+        self._no_upstream = not self._rserver
         logger.info("代理服务器已启动: %s, 上游 %d 个代理, 调度 %s", self._listen_uri, len(self._rserver), self._salgorithm)
 
     def _handler_args(self) -> dict:
@@ -114,26 +114,35 @@ class PproxyServer:
                     direct_fallback=False)
 
     def _log_upstream_change(self) -> None:
-        """上游空/恢复的状态翻转日志（sync 每轮调用，只在翻转时输出）
+        """无可用上游 ↔ 恢复 的状态翻转日志（_apply_health 每次调用，只在翻转时输出）
 
-        空上游时所有请求都被拒绝（见 _handler_args），不记日志的话运维只能看到
-        "客户端全部 502"而不知原因。
+        无可用上游（列表为空、或成员全部被标记为失败）时所有请求都被拒绝（见
+        _handler_args），不记日志的话运维只能看到"客户端全部 502"而不知原因。
         """
-        empty = not self._rserver
-        if empty == self._upstream_empty:
+        alive = sum(1 for conn in self._rserver if conn.alive)
+        no_upstream = alive == 0
+        if no_upstream == self._no_upstream:
             return
-        self._upstream_empty = empty
-        if empty:
-            logger.warning("上游代理已清空：请求将被拒绝（不回退直连，避免泄漏本机 IP）")
+        self._no_upstream = no_upstream
+        if no_upstream:
+            logger.warning("无可用上游（%d 个上游全部不可用）：请求将被拒绝（不回退直连，避免泄漏本机 IP）",
+                           len(self._rserver))
         else:
-            logger.info("上游代理恢复: %d 个代理", len(self._rserver))
+            logger.info("上游可用: %d/%d 个代理", alive, len(self._rserver))
 
-    def sync(self, proxies: list[str]) -> None:
-        """将 rserver 同步到给定代理列表（运行中增删，schedule 实时可见）
+    def sync(self, proxies: list[str], unhealthy: Iterable[str] = ()) -> None:
+        """将 rserver 同步到给定代理列表（运行中增删，schedule 实时可见）+ 写入存活标记
 
         用完整 pproxy uri 作匹配键（_uri_index），而非 Connection.bind——bind 只存地址
         不含 scheme 前缀，对 http+ssl:// 上游会与 target（含前缀）永远对不上，导致每轮
         全量移除+全量新建，触发 pproxy SSLContext 雪崩式创建 → 内存泄漏/堆损坏崩溃。
+
+        unhealthy 是代理池判定"当前不可用"的成员（正在退避补测），对应上游对象置
+        alive=False：pproxy 的 schedule 按 alive 过滤（vendor server.py 的 filter_cond），
+        于是 rc/rr/lc 只在存活代理里挑，不会把请求交给已知死掉的代理；全部不可用时
+        schedule 返回 None → 按 no-direct 回错误（见 _handler_args）。pproxy 自带的
+        check_server_alive 只在 CLI（-a）里启动、本项目不用它：存活判定唯一来源是
+        代理池心跳（避免重复探测，且"TCP 能连"≠代理可用）。
 
         需在服务器启动后、事件循环同线程调用。
         """
@@ -153,6 +162,20 @@ class PproxyServer:
             self._rserver.append(conn)
 
         logger.debug("上游同步: %d 个代理", len(self._rserver))
+        self._apply_health(unhealthy)
+
+    def _apply_health(self, unhealthy: Iterable[str]) -> None:
+        """把代理池的存活判定写进 pproxy 上游对象的 alive（schedule 的过滤条件）
+
+        未被标记的自动回到 alive（补测成功 / 新入队即恢复）；标记项不在上游列表中
+        （已拉黑移出等）自然忽略。Connection 对象按 uri 复用，故标记在 sync 间保持。
+        """
+        dead = {_pproxy_uri(p) for p in unhealthy}
+        for uri, conn in self._uri_index.items():
+            alive = uri not in dead
+            if conn.alive != alive:
+                logger.debug("上游存活标记变更: %s -> %s", uri, "alive" if alive else "dead")
+                conn.alive = alive
         self._log_upstream_change()
 
     async def set_salgorithm(self, salgorithm: str) -> None:

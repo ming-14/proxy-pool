@@ -369,6 +369,46 @@ class TestServeE2E(ServeE2EBase):
 
         asyncio.run(run())
 
+    def test_unhealthy_upstream_not_selected(self):
+        """心跳判失败的代理（unhealthy）不再被调度选中——alive 过滤器真正生效
+
+        两个 mock 上游返回不同 body 以区分请求实际走了谁：标记 unhealthy 的上游一次
+        都不该被选中；恢复后两者都该被选中；全部不可用时按 no-direct 拒绝（502）。
+        """
+        async def run():
+            up_a, port_a = await start_mock_upstream(body=b"upstream-A")
+            up_b, port_b = await start_mock_upstream(body=b"upstream-B")
+            proxy_a, proxy_b = f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"
+
+            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            await server.start([proxy_a, proxy_b])
+            listen_port = server._handler.sockets[0].getsockname()[1]
+
+            # A 心跳失败 → 标记不可用：连续请求都只能走 B
+            server.sync([proxy_a, proxy_b], unhealthy=[proxy_a])
+            for _ in range(10):
+                resp = await http_request_via_proxy(listen_port)
+                self.assertIn(b"upstream-B", resp)
+
+            # 恢复：rc 随机下两个上游都应被选中（20 次内几乎必然都出现）
+            server.sync([proxy_a, proxy_b])
+            seen = set()
+            for _ in range(20):
+                resp = await http_request_via_proxy(listen_port)
+                seen.add(b"upstream-A" if b"upstream-A" in resp else b"upstream-B")
+            self.assertEqual(seen, {b"upstream-A", b"upstream-B"})
+
+            # 全部不可用 → 拒绝（不回退直连）
+            server.sync([proxy_a, proxy_b], unhealthy=[proxy_a, proxy_b])
+            resp = await http_request_via_proxy(listen_port)
+            self.assertIn(b"502", resp)
+
+            await server.close()
+            await close_server(up_a)
+            await close_server(up_b)
+
+        asyncio.run(run())
+
     def test_https_prefix_converted_to_http_ssl(self):
         async def run():
             upstream, mock_port = await start_mock_upstream()

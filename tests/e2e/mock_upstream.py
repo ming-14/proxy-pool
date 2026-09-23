@@ -32,7 +32,7 @@ class _ReplayReader:
         return await self._inner.read(n)
 
 
-async def _handle_socks5(reader, writer):
+async def _handle_socks5(reader, writer, body=MOCK_BODY):
     """SOCKS5 握手：版本协商 -> 连接请求 -> 应答成功，之后回传模拟响应"""
     greeting = await reader.read(2)
     if len(greeting) < 2 or greeting[0] != 0x05:
@@ -63,13 +63,12 @@ async def _handle_socks5(reader, writer):
     data = await reader.read(1024)
     if data:
         writer.write(
-            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s"
-            % (len(MOCK_BODY), MOCK_BODY)
+            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body)
         )
         await writer.drain()
 
 
-async def _handle_http(reader, writer):
+async def _handle_http(reader, writer, body=MOCK_BODY):
     """HTTP 代理：CONNECT 隧道 + 普通请求"""
     req = await reader.read(1024)
     if not req:
@@ -81,19 +80,17 @@ async def _handle_http(reader, writer):
         data = await reader.read(1024)
         if data:
             writer.write(
-                b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s"
-                % (len(MOCK_BODY), MOCK_BODY)
+                b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body)
             )
             await writer.drain()
     else:
         writer.write(
-            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s"
-            % (len(MOCK_BODY), MOCK_BODY)
+            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body)
         )
         await writer.drain()
 
 
-async def _handle_mock_upstream(reader, writer):
+async def _handle_mock_upstream(reader, writer, body=MOCK_BODY):
     """按首个字节判断协议：0x05 走 SOCKS5，否则走 HTTP"""
     try:
         first = await reader.read(1)
@@ -101,9 +98,9 @@ async def _handle_mock_upstream(reader, writer):
             return
         replay = _ReplayReader(first, reader)
         if first[0] == 0x05:
-            await _handle_socks5(replay, writer)
+            await _handle_socks5(replay, writer, body)
         else:
-            await _handle_http(replay, writer)
+            await _handle_http(replay, writer, body)
     except Exception as e:
         logger.warning("mock 上游异常: %s", e)
     finally:
@@ -113,8 +110,14 @@ async def _handle_mock_upstream(reader, writer):
             pass
 
 
-async def start_mock_upstream(loop=None) -> tuple:
-    """启动 mock 上游代理服务器，返回 (server, port)"""
-    srv = await asyncio.start_server(_handle_mock_upstream, "127.0.0.1", 0)
+async def start_mock_upstream(loop=None, body: bytes = MOCK_BODY) -> tuple:
+    """启动 mock 上游代理服务器，返回 (server, port)
+
+    body 可自定义响应体：多上游场景用不同 body 区分请求实际走了哪个上游。
+    """
+    async def handler(reader, writer):
+        await _handle_mock_upstream(reader, writer, body)
+
+    srv = await asyncio.start_server(handler, "127.0.0.1", 0)
     port = srv.sockets[0].getsockname()[1]
     return srv, port

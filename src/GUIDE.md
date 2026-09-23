@@ -18,7 +18,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── __init__.py
 │   ├── test_geoip_client.py           # GeoLite2Locator City/Country 自动识别（真实 mmdb）
 │   ├── test_proxy_scheduler.py        # 异步调度器
-│   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False）
+│   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False/上游存活标记）
 │   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/purity 缓存）
 │   ├── test_ua_generator.py           # 确定性 UA 生成
 │   └── sources/                       # 代理源测试
@@ -36,9 +36,9 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯洁度/geo/日志增量与清空）
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
-│   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手）
-│   ├── test_serve_e2e.py              # serve 全链路（pproxy 启动→转发→心跳移除→sync→上游空时拒绝且不直连）
-│   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→优雅退出）
+│   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手，响应体可自定义以区分多上游）
+│   ├── test_serve_e2e.py              # serve 全链路（pproxy 启动→转发→心跳移除→sync→上游空时拒绝且不直连→不可用上游不被选中）
+│   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→失败代理随 sync 下发为 unhealthy→优雅退出）
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
 │       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆（默认空闲端口，PP_E2E_* 可固定）+ 组件探针页 fixture
