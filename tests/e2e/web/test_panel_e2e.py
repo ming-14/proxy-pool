@@ -691,3 +691,27 @@ class TestLogPanel:
         while time.time() < deadline and len(logs_seen) == count_at_close:
             page.wait_for_timeout(200)
         assert len(logs_seen) > count_at_close, "重新打开后应恢复 /api/logs 请求"
+
+    def test_sheet_form_on_narrow_viewport(self, page):
+        """窄屏：面板落在抽屉形态，满宽贴底，搜索仍可用（真实令牌映射与真实数据）"""
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.click('header button.lg\\:hidden')  # 移动端先展开侧边栏（真实路径）
+        page.click('[data-testid="btn-logpanel"]')
+        page.wait_for_selector('[data-testid="logpanel"] .lp-row .lp-log-line', timeout=10000)
+
+        form = page.evaluate("document.querySelector('[data-testid=logpanel]').getAttribute('data-form')")
+        assert form == "sheet", f"窄屏未落在抽屉形态：{form}"
+        box = page.evaluate(
+            "() => { const r = document.querySelector('[data-testid=logpanel]').getBoundingClientRect();"
+            " return { x: r.x, w: r.width, bottom: r.bottom }; }"
+        )
+        assert abs(box["x"]) <= 1 and abs(box["w"] - 390) <= 1, f"抽屉未满宽：{box}"
+        assert abs(box["bottom"] - 844) <= 1, f"抽屉未贴底：{box}"
+
+        # 抽屉态输入框字号 16px（iOS 聚焦更小字号会整页缩放），搜索照常生效
+        assert page.evaluate("getComputedStyle(document.querySelector('[data-testid=lp-search]')).fontSize") == "16px"
+        page.fill('[data-testid="lp-search"]', "不存在的关键字 zzz")
+        page.wait_for_function(
+            "() => (document.querySelector('[data-testid=lp-status]').textContent || '').trim().startsWith('0 /')",
+            timeout=5000,
+        )

@@ -1,8 +1,12 @@
 /**
  * 悬浮窗几何：拖拽、缩放、视口夹紧、尺寸预设与持久化。
  *
+ * 只负责悬浮形态：抽屉形态的尺寸由视口算出（见 useSheetDetent），本 composable 在抽屉下
+ * 照常维护悬浮几何但不参与渲染，因此形态来回切换不会丢桌面窗口的位置与大小。
+ *
  * 坐标是视口坐标系的 px，几何值即窗口宽高，夹取只做算术（不读布局），
  * 因此手势过程中不触发布局抖动。手势用 pointer 事件统一鼠标与触摸。
+ * 度量固定用布局视口：可视视口受捏合缩放影响，用它夹取会把缩放后的尺寸持久化。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import {
@@ -22,8 +26,6 @@ export interface WindowGeometryOptions {
   storage: PanelStorage;
   /** 初始几何（显式给出时优先于本地持久化） */
   initial?: Partial<LogPanelGeometry>;
-  /** 尺寸变化结束回调：宽度变化会改变行高，列表需要重测 */
-  onResizeEnd?: () => void;
 }
 
 interface DragSession {
@@ -44,7 +46,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function useWindowGeometry(options: WindowGeometryOptions) {
-  const { storage, initial, onResizeEnd } = options;
+  const { storage, initial } = options;
   const geometry = reactive<LogPanelGeometry>(load());
   /** 拖拽/缩放进行中：面板据此禁用内容区交互，避免误触选中 */
   const interacting = ref(false);
@@ -136,7 +138,6 @@ export function useWindowGeometry(options: WindowGeometryOptions) {
     window.removeEventListener('pointerup', endResize);
     window.removeEventListener('pointercancel', endResize);
     persist();
-    onResizeEnd?.();
   }
 
   function startResize(event: PointerEvent): void {
@@ -166,7 +167,6 @@ export function useWindowGeometry(options: WindowGeometryOptions) {
     geometry.y = clamp(geometry.y, 0, window.innerHeight - geometry.h);
     const changed = geometry.w !== before.w || geometry.h !== before.h;
     if (changed || geometry.x !== before.x || geometry.y !== before.y) persist();
-    if (changed) onResizeEnd?.();
   }
 
   function applyPreset(size: LogPanelWindowSize): void {
@@ -176,7 +176,6 @@ export function useWindowGeometry(options: WindowGeometryOptions) {
     geometry.x = clamp(geometry.x, 0, window.innerWidth - geometry.w);
     geometry.y = clamp(geometry.y, 0, window.innerHeight - geometry.h);
     persist();
-    onResizeEnd?.();
   }
 
   onMounted(() => window.addEventListener('resize', onViewportResize));

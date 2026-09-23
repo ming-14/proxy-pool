@@ -100,14 +100,27 @@ function onScroll(): void {
   if (!el) return;
   // 直接量 DOM：库内 scrollOffset 由其自身的滚动监听更新，与本监听器的执行顺序不确定
   const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= END_THRESHOLD;
-  if (follow.value && !atEnd) follow.value = false;
-  else if (!follow.value && atEnd) follow.value = true;
+  if (follow.value && !atEnd) {
+    // 内容刚增长时位置还没跟上（程序侧贴底在同帧稍后才写），此时"不在末尾"不代表用户上滚；
+    // 隔一帧复核：真上滚会保持不在末尾，而增长触发的贴底已经把位置带到末尾。
+    if (!verifyFrame) verifyFrame = requestAnimationFrame(verifyFollow);
+    return;
+  }
+  if (!follow.value && atEnd) follow.value = true;
+}
+
+/** 复核跟随意图：一帧后仍不在末尾才判定用户上滚 */
+function verifyFollow(): void {
+  verifyFrame = 0;
+  const el = scrollEl.value;
+  if (!el || !follow.value) return;
+  if (el.scrollHeight - el.scrollTop - el.clientHeight > END_THRESHOLD) follow.value = false;
 }
 
 /**
  * 贴底跟随。不能用库的 followOnAppend：Vue 适配器在选项变更时立即调 _willUpdate，此刻本框架
  * 尚未提交 DOM（撑高块还是旧高度），按 'end' 算出的目标偏移是过期的，写回反而把视口拉到上面。
- * 因此等本次提交完成后再算。
+ * 因此等本次提交完成后再算。落点交由库自己维护（它会在后续帧把目标对齐到末尾）。
  */
 async function stickToEnd(): Promise<void> {
   await nextTick();
@@ -127,6 +140,7 @@ const measuredIds = new Set<string>();
 /** 扫描游标：环形推进，避免每批都从 0 重扫 */
 let measureCursor = 0;
 let measureFrame = 0;
+let verifyFrame = 0;
 let measuring = false;
 let disposed = false;
 
@@ -226,24 +240,30 @@ async function measurePass(): Promise<void> {
 }
 
 /**
- * 内容高度变化时也要贴底：新条目之外，行高实测修正（估算 → 实测）会撑高内容，
- * 面板由隐藏转为显示时撑高块高度也从 0 恢复，都走同一条贴底路径。
+ * 尺寸变化都要贴底：
+ * - 撑高块高度变化：新条目、行高实测修正（估算 → 实测）、面板由隐藏转为显示（0 → N）；
+ * - 滚动容器自身高度变化：窗口或抽屉高度变化时 scrollTop 不变而可视高度变大，跟随态下
+ *   末行会落到视口下方——内容高度没变，只盯撑高块发现不了。
+ * 只有撑高块变化才补跑测高（容器高度变化与换行无关）。
  */
-let sizerObserver: ResizeObserver | null = null;
+let sizeObserver: ResizeObserver | null = null;
 onMounted(() => {
-  if (!sizerEl.value) return;
-  sizerObserver = new ResizeObserver(() => {
+  const sizer = sizerEl.value;
+  if (!sizer) return;
+  sizeObserver = new ResizeObserver((entries) => {
     void stickToEnd();
-    scheduleMeasure(); // 由隐藏转为显示（高度 0 → N）时补跑测高
+    if (entries.some((entry) => entry.target === sizer)) scheduleMeasure(); // 由隐藏转为显示时补跑测高
   });
-  sizerObserver.observe(sizerEl.value);
+  sizeObserver.observe(sizer);
+  if (scrollEl.value) sizeObserver.observe(scrollEl.value);
   scheduleMeasure();
 });
 
 onBeforeUnmount(() => {
   disposed = true;
   if (measureFrame !== 0) cancelAnimationFrame(measureFrame);
-  sizerObserver?.disconnect();
+  if (verifyFrame !== 0) cancelAnimationFrame(verifyFrame);
+  sizeObserver?.disconnect();
 });
 
 defineExpose({
@@ -305,6 +325,9 @@ defineExpose({
   font-family: var(--lp-font-mono-c);
   font-size: 11.5px;
   line-height: 1.5;
+  /* 纵向滚动留给列表，横向手势不在此起手；滚动到端部不把滚动链传给背后的页面 */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
   /* 虚拟列表自己维护锚定，禁用浏览器滚动锚定以免相互拉扯（与代理组虚拟表格同因） */
   overflow-anchor: none;
   scrollbar-color: var(--lp-scrollbar-c) transparent;

@@ -151,4 +151,20 @@ function onActivate(event: MouseEvent): void {
   background: var(--lp-titlebar-bg-c);
   border-radius: 3px;
 }
+
+/* 触屏：加大行距与展开图标、详情区高度 */
+[data-touch='true'] .lp-log-line {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  font-size: 12px;
+}
+[data-touch='true'] .lp-expand-icon {
+  width: 18px;
+  font-size: 10px;
+}
+[data-touch='true'] .lp-line-detail {
+  max-height: 400px;
+  padding: 8px 10px 8px 24px;
+  font-size: 12px;
+}
 </style>

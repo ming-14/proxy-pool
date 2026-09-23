@@ -1,10 +1,15 @@
 <script setup lang="ts" generic="E extends object">
 /**
- * LogPanel：通用悬浮日志视窗。
+ * LogPanel：通用日志视窗（悬浮窗 / 底部抽屉两种形态）。
  *
  * 数据与取值由宿主注入（source / rules / hooks），组件只负责视窗交互与渲染管线；
  * 样式经 scoped CSS + --lp-* 变量暴露——宿主在组件根或其任意祖先设置变量即可换肤，
  * 组件默认值写在 --lp-*-c 解析层，避免默认值屏蔽宿主传入的变量。
+ *
+ * 三条轴相互正交，不要混成一个判断：
+ * - 形态（data-form）：看视口宽度，决定定位方式、几何来源与 chrome 布局；
+ * - 触控（data-touch）：看主指针类型，决定目标尺寸与长按手势；
+ * - 视口度量：悬浮几何用布局视口（不受缩放影响），抽屉尺寸用可视视口（软键盘只改它）。
  *
  * source / rules / hooks 视为常量（组件不监听其身份变化），主题/尺寸/透明度随 props 响应。
  *
@@ -12,9 +17,18 @@
  *   <LogPanel v-model:visible="shown" :source="source" :rules="rules" title="控制台日志" />
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { DEFAULT_FEATURES, STORAGE_KEYS, VIEWPORT_MARGIN, resolveRules, translator } from './defaults';
+import {
+  DEFAULT_FEATURES,
+  SHEET_MEDIA_QUERY,
+  STORAGE_KEYS,
+  TOUCH_MEDIA_QUERY,
+  VIEWPORT_MARGIN,
+  resolveRules,
+  translator,
+} from './defaults';
 import type {
   LogPanelFeatures,
+  LogPanelForm,
   LogPanelGeometry,
   LogPanelHooks,
   LogPanelRules,
@@ -24,10 +38,14 @@ import type {
   LogPanelWindowSize,
 } from './types';
 import { useLogView } from './composables/useLogView';
+import { useMediaQuery } from './composables/useMediaQuery';
+import { useSheetDetent } from './composables/useSheetDetent';
 import { useToasts } from './composables/useToasts';
+import { useViewport } from './composables/useViewport';
 import { useWindowGeometry } from './composables/useWindowGeometry';
 import { copyText } from './utils/clipboard';
 import { exportFileName } from './utils/format';
+import { keyboardInset, resolveForm } from './utils/sheet';
 import { createStorage } from './utils/storage';
 import SidePanel from './parts/SidePanel.vue';
 import TitleBar from './parts/TitleBar.vue';
@@ -42,13 +60,15 @@ const props = withDefaults(
     hooks?: LogPanelHooks<E>;
     features?: Partial<LogPanelFeatures>;
     theme?: LogPanelTheme;
+    /** 形态：auto 按视口宽度判定，也可显式锁定为悬浮窗或抽屉 */
+    form?: LogPanelForm;
     /** 标题，缺省用内置文案 logpanel.title */
     title?: string;
     /** t(key, params) 本地化函数，缺省用内置中文文案 */
     t?: LogPanelTranslator;
     /** localStorage 键前缀 */
     storageKeyPrefix?: string;
-    /** 初始几何（显式给出时优先于本地持久化） */
+    /** 初始几何（显式给出时优先于本地持久化，只对悬浮形态生效） */
     initialGeometry?: Partial<LogPanelGeometry>;
     /** 尺寸预设 */
     windowSize?: LogPanelWindowSize | null;
@@ -57,6 +77,7 @@ const props = withDefaults(
   }>(),
   {
     theme: 'auto',
+    form: 'auto',
     storageKeyPrefix: 'logpanel_',
     windowSize: null,
     windowOpacity: null,
@@ -98,11 +119,59 @@ const {
 const { toasts, push } = useToasts();
 const listRef = ref<{ remeasure: () => void; toEnd: () => Promise<void> } | null>(null);
 
-const { style: geometryStyle, interacting, startDrag, startResize, applyPreset } = useWindowGeometry({
-  storage,
-  initial: props.initialGeometry,
-  onResizeEnd: () => listRef.value?.remeasure(),
-});
+// ---- 形态 ----
+const narrow = useMediaQuery(SHEET_MEDIA_QUERY);
+const coarse = useMediaQuery(TOUCH_MEDIA_QUERY);
+const form = computed(() => resolveForm(props.form, narrow.value));
+const sheet = computed(() => form.value === 'sheet');
+
+// ---- 几何：悬浮用持久化 px 几何，抽屉用视口算出的高度 ----
+const viewport = useViewport();
+const { geometry, style: geometryStyle, interacting, startDrag, startResize, applyPreset } =
+  useWindowGeometry({ storage, initial: props.initialGeometry });
+const {
+  detent,
+  height: detentHeight,
+  offset: detentOffset,
+  dragging: detentDragging,
+  toggle: toggleDetent,
+  begin: beginDetent,
+  move: moveDetent,
+  commit: commitDetent,
+  cancel: cancelDetent,
+} = useSheetDetent({ storage, visualHeight: () => viewport.visualHeight });
+
+/** 手势进行中（悬浮拖拽/缩放或抽屉拖拽）：禁用内容区交互，避免误触选中 */
+const interactingAny = computed(() => interacting.value || detentDragging.value);
+
+const rootStyle = computed(() => ({
+  ...(sheet.value
+    ? {
+        bottom: `${keyboardInset(viewport.layoutHeight, viewport.visualHeight, viewport.visualTop)}px`,
+        height: `${detentHeight.value}px`,
+      }
+    : geometryStyle.value),
+  opacity: props.windowOpacity === null ? undefined : props.windowOpacity / 100,
+  // 拖拽中的实时位移走 transform（不触发布局）：抬手定档后由 height 过渡接管
+  ...(detentDragging.value ? { transform: `translateY(${detentOffset.value}px)` } : {}),
+}));
+
+/**
+ * 行高重测的唯一判据：渲染宽度变化。正文换行使行高依赖行宽，而高度变化（档位切换、
+ * 软键盘、地址栏伸缩）与换行无关，不该触发全量重测。
+ * 手势过程中跳过（拖拽缩放逐帧改宽度），抬手时补一次。
+ */
+const renderedWidth = computed(() => (sheet.value ? viewport.layoutWidth : geometry.w));
+let measuredWidth = 0;
+watch(
+  [renderedWidth, interactingAny],
+  ([width, busy]) => {
+    if (busy || width === measuredWidth) return;
+    measuredWidth = width;
+    listRef.value?.remeasure();
+  },
+  { flush: 'post' },
+);
 
 /** 尺寸预设：初值也要生效（watch 非 immediate），此后随 prop 变化 */
 if (props.windowSize) applyPreset(props.windowSize);
@@ -117,10 +186,18 @@ watch(
 const follow = ref(storage.readBool(STORAGE_KEYS.follow, true));
 watch(follow, (value) => storage.writeBool(STORAGE_KEYS.follow, value));
 
-const rootStyle = computed(() => ({
-  ...geometryStyle.value,
-  opacity: props.windowOpacity === null ? undefined : props.windowOpacity / 100,
-}));
+/** 抽屉里的模块筛选条默认收起（持久化）；悬浮形态侧栏常显，与此无关 */
+const sideOpen = ref(storage.readBool(STORAGE_KEYS.sideOpen, false));
+watch(sideOpen, (value) => storage.writeBool(STORAGE_KEYS.sideOpen, value));
+
+/** 抽屉里的侧栏只剩模块筛选横条：窄屏放不下等级统计块（筛选反馈由工具栏等级 chip 承担） */
+const showFilterStrip = computed(() => sheet.value && features.value.tagFilter);
+const showSidePanel = computed(() =>
+  sheet.value
+    ? showFilterStrip.value && sideOpen.value
+    : features.value.tagFilter || features.value.stats,
+);
+const showStats = computed(() => features.value.stats && !sheet.value);
 
 // 主题：显式指定优先，auto 跟随系统偏好
 const systemDark = ref(false);
@@ -138,7 +215,6 @@ onMounted(() => {
 onBeforeUnmount(() => systemTheme?.removeEventListener('change', onSystemTheme));
 
 const dark = computed(() => props.theme === 'dark' || (props.theme === 'auto' && systemDark.value));
-const touch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
 const status = computed(
   () => `${view.value.length} / ${bufferSize.value}${paused.value ? t('logpanel.pausedSuffix') : ''}`,
@@ -182,21 +258,22 @@ function onClear(): void {
   push(t('logpanel.logCleared'), 'success');
 }
 
-// 右键菜单：组件内固定定位（根节点无 transform/contain，不会被裁剪或改写坐标系）
+// 右键/长按菜单：组件内固定定位（根节点平时无 transform/contain，不会被裁剪或改写坐标系）
 const menu = ref<{ x: number; y: number } | null>(null);
 const menuStyle = ref<Record<string, string>>({});
 const menuEl = ref<HTMLElement | null>(null);
 
-async function onMenu(event: MouseEvent): Promise<void> {
-  const at = { x: event.clientX, y: event.clientY };
+async function onMenu(at: { x: number; y: number }): Promise<void> {
   menu.value = at;
   menuStyle.value = { left: `${at.x}px`, top: `${at.y}px` };
   await nextTick();
   const rect = menuEl.value?.getBoundingClientRect();
   if (!rect) return;
+  // 下界取可视视口底边：软键盘收起动画期间布局视口仍允许菜单落到键盘区
+  const bottom = viewport.visualTop + viewport.visualHeight;
   menuStyle.value = {
     left: `${Math.min(Math.max(at.x, VIEWPORT_MARGIN), window.innerWidth - rect.width - VIEWPORT_MARGIN)}px`,
-    top: `${Math.min(Math.max(at.y, VIEWPORT_MARGIN), window.innerHeight - rect.height - VIEWPORT_MARGIN)}px`,
+    top: `${Math.min(Math.max(at.y, VIEWPORT_MARGIN), bottom - rect.height - VIEWPORT_MARGIN)}px`,
   };
 }
 
@@ -218,6 +295,12 @@ function closePanel(): void {
   visible.value = false;
 }
 
+/** 抽屉拖拽起手：拖拽期根节点带 transform，fixed 菜单的包含块会被改写，先收掉 */
+function onDetentBegin(event: PointerEvent): void {
+  closeMenu();
+  beginDetent(event.clientY);
+}
+
 onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPointerDown, true));
 </script>
 
@@ -225,9 +308,11 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   <div
     v-show="visible"
     class="lp-root"
-    :class="{ 'lp-interacting': interacting }"
+    :class="{ 'lp-interacting': interactingAny, 'lp-detent-dragging': detentDragging }"
+    :data-form="form"
+    :data-detent="sheet ? detent : undefined"
     :data-theme="dark ? 'dark' : undefined"
-    :data-touch="touch ? 'true' : undefined"
+    :data-touch="coarse ? 'true' : undefined"
     :style="rootStyle"
     data-testid="logpanel"
   >
@@ -237,11 +322,19 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
       :t="t"
       :paused="paused"
       :follow="follow"
-      :draggable="features.drag"
+      :draggable="features.drag && !sheet"
+      :sheet="sheet"
+      :detent="detent"
+      :detent-enabled="features.resize"
       :show-pause="features.pause"
       :show-follow="features.autoScroll"
       :show-menu="features.contextMenu"
       @drag-start="startDrag"
+      @drag-begin="onDetentBegin"
+      @drag-move="(event) => moveDetent(event.clientY)"
+      @drag-end="(event) => commitDetent(event.clientY)"
+      @drag-cancel="cancelDetent"
+      @toggle-detent="toggleDetent"
       @pause="togglePause"
       @follow="onToggleFollow"
       @close="closePanel"
@@ -255,7 +348,10 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
       :t="t"
       :levels="levels"
       :regex-invalid="matcher.invalid"
+      :show-filter-toggle="showFilterStrip"
+      :side-open="sideOpen"
       @toggle-level="toggleLevel"
+      @toggle-side="sideOpen = !sideOpen"
       @clear="onClear"
       @copy="onCopy"
       @export="onExport"
@@ -263,7 +359,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 
     <div class="lp-body">
       <SidePanel
-        v-if="features.tagFilter || features.stats"
+        v-if="showSidePanel"
         :t="t"
         :tags="tags"
         :hidden-tags="hiddenTags"
@@ -272,7 +368,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
         :used="bufferSize"
         :capacity="bufferCapacity"
         :show-tags="features.tagFilter"
-        :show-stats="features.stats"
+        :show-stats="showStats"
         @toggle-tag="toggleTag"
         @toggle-all-tags="toggleAllTags"
       />
@@ -289,7 +385,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
       />
     </div>
 
-    <div v-if="features.resize" class="lp-resize" data-testid="lp-resize" @pointerdown="startResize" />
+    <div
+      v-if="features.resize && !sheet"
+      class="lp-resize"
+      data-testid="lp-resize"
+      @pointerdown="startResize"
+    />
 
     <ToastStack :toasts="toasts" />
 
@@ -363,6 +464,29 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   --lp-mark-bg-c: var(--lp-mark-bg, #b8860b);
 }
 
+/**
+ * 抽屉形态：满宽贴底，高度与底部内缩由内联样式按视口算出（见 rootStyle）。
+ * 安全区垫在根节点上——背景铺满到屏幕边缘，内容让开。
+ */
+.lp-root[data-form='sheet'] {
+  --lp-safe-bottom-c: var(--lp-safe-bottom, env(safe-area-inset-bottom, 0px));
+  --lp-safe-left-c: var(--lp-safe-left, env(safe-area-inset-left, 0px));
+  --lp-safe-right-c: var(--lp-safe-right, env(safe-area-inset-right, 0px));
+
+  inset: auto 0 0 0;
+  padding: 0 var(--lp-safe-right-c) var(--lp-safe-bottom-c) var(--lp-safe-left-c);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  transition: height 0.18s ease;
+}
+.lp-root[data-form='sheet'].lp-detent-dragging {
+  transition: none;
+}
+/* 抽屉里侧栏是列表上方的横条，不是左栏 */
+.lp-root[data-form='sheet'] .lp-body {
+  flex-direction: column;
+}
+
 .lp-body {
   display: flex;
   flex: 1;
@@ -388,6 +512,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   height: 6px;
   border-right: 2px solid var(--lp-muted-c);
   border-bottom: 2px solid var(--lp-muted-c);
+}
+
+/* 触屏：加大缩放手柄的抓取面积（其余触控度量在各 part 自己的样式里，就近维护） */
+.lp-root[data-touch='true'] .lp-resize {
+  width: 20px;
+  height: 20px;
 }
 
 .lp-interacting {
@@ -424,50 +554,5 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 }
 .lp-menu-item:hover {
   background: var(--lp-hover-bg-c);
-}
-
-/* 触摸端：加大点击目标与行距（子组件内部元素用 :deep 穿透 scoped 作用域） */
-.lp-root[data-touch='true'] :deep(.lp-titlebar) {
-  height: 34px;
-}
-.lp-root[data-touch='true'] :deep(.lp-iconbtn) {
-  width: 28px;
-  height: 28px;
-}
-.lp-root[data-touch='true'] :deep(.lp-btn) {
-  height: 30px;
-  padding: 0 12px;
-  font-size: 12px;
-}
-.lp-root[data-touch='true'] :deep(.lp-log-line) {
-  padding-top: 3px;
-  padding-bottom: 3px;
-  font-size: 12px;
-}
-.lp-root[data-touch='true'] :deep(.lp-expand-icon) {
-  width: 18px;
-  font-size: 10px;
-}
-.lp-root[data-touch='true'] :deep(.lp-line-detail) {
-  max-height: 400px;
-  padding: 8px 10px 8px 24px;
-  font-size: 12px;
-}
-.lp-root[data-touch='true'] :deep(.lp-side) {
-  width: 170px;
-  padding: 10px 12px;
-  font-size: 12px;
-}
-.lp-root[data-touch='true'] :deep(.lp-tag-row) {
-  padding: 5px 6px;
-  font-size: 12px;
-}
-.lp-root[data-touch='true'] :deep(.lp-level-row) {
-  font-size: 12px;
-  line-height: 1.8;
-}
-.lp-root[data-touch='true'] :deep(.lp-resize) {
-  width: 20px;
-  height: 20px;
 }
 </style>

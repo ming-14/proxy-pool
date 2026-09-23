@@ -60,7 +60,13 @@ export interface LogPanelHooks<E> {
   formatText?(text: string, entry: E): string;
 }
 
-/** 功能开关：关掉即不渲染对应控件（拖拽/缩放/右键菜单等交互一并停用） */
+/**
+ * 功能开关：关掉即不渲染对应控件（拖拽/缩放/右键菜单等交互一并停用）。
+ *
+ * 形态相关的语义：`resize` 在抽屉形态下把关「档位切换」（点按/上下滑），关掉则固定半屏且不渲染抓手；
+ * `drag` 只对悬浮形态有意义（抽屉没有自由定位），抽屉下惰性；`contextMenu` 两种形态都生效
+ * （触屏经长按打开，见 parts/TitleBar.vue）。
+ */
 export interface LogPanelFeatures {
   drag: boolean;
   resize: boolean;
@@ -84,6 +90,12 @@ export interface LogPanelGeometry {
   w: number;
   h: number;
 }
+
+/** 视窗形态：auto 按视口宽度判定，floating 悬浮窗（桌面），sheet 底部抽屉（窄屏/触屏） */
+export type LogPanelForm = 'auto' | 'floating' | 'sheet';
+
+/** 抽屉档位：half 半屏（可视视口比例），full 全屏 */
+export type LogPanelDetent = 'half' | 'full';
 
 export type LogPanelTheme = 'auto' | 'light' | 'dark';
 

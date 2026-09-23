@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 工具栏：等级筛选、搜索（普通/正则，非法标红）与清空/复制/导出。
+ * 工具栏：等级筛选、搜索（普通/正则，非法标红）与清空/复制/导出，抽屉态另加模块筛选条开关。
  */
 import { LEVELS } from '../defaults';
 import type { LogPanelFeatures, LogPanelTranslator } from '../types';
@@ -11,10 +11,14 @@ defineProps<{
   t: LogPanelTranslator;
   levels: ReadonlySet<number>;
   regexInvalid: boolean;
+  /** 抽屉态显示模块筛选条开关（窄屏下筛选条默认收起） */
+  showFilterToggle: boolean;
+  sideOpen: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'toggle-level', level: number): void;
+  (e: 'toggle-side'): void;
   (e: 'clear'): void;
   (e: 'copy'): void;
   (e: 'export'): void;
@@ -66,6 +70,18 @@ const regex = defineModel<boolean>('regex', { required: true });
       </button>
     </div>
 
+    <button
+      v-if="showFilterToggle"
+      class="lp-icon-btn"
+      type="button"
+      data-testid="lp-side-toggle"
+      :title="t('logpanel.moduleFilter')"
+      :aria-expanded="sideOpen"
+      @click="emit('toggle-side')"
+    >
+      <IconSvg name="filter" />
+    </button>
+
     <div class="lp-actions">
       <button
         v-if="features.clear"
@@ -75,7 +91,7 @@ const regex = defineModel<boolean>('regex', { required: true });
         :title="t('logpanel.clearLog')"
         @click="emit('clear')"
       >
-        <IconSvg name="clear" />{{ t('logpanel.clear') }}
+        <IconSvg name="clear" /><span class="lp-btn-label">{{ t('logpanel.clear') }}</span>
       </button>
       <button
         v-if="features.copy"
@@ -85,7 +101,7 @@ const regex = defineModel<boolean>('regex', { required: true });
         :title="t('logpanel.copyFilter')"
         @click="emit('copy')"
       >
-        <IconSvg name="copy" />{{ t('logpanel.copy') }}
+        <IconSvg name="copy" /><span class="lp-btn-label">{{ t('logpanel.copy') }}</span>
       </button>
       <button
         v-if="features.export"
@@ -95,7 +111,7 @@ const regex = defineModel<boolean>('regex', { required: true });
         :title="t('logpanel.exportTxt')"
         @click="emit('export')"
       >
-        <IconSvg name="export" />{{ t('logpanel.export') }}
+        <IconSvg name="export" /><span class="lp-btn-label">{{ t('logpanel.export') }}</span>
       </button>
     </div>
   </div>
@@ -201,6 +217,26 @@ const regex = defineModel<boolean>('regex', { required: true });
   background: var(--lp-accent-c);
 }
 
+.lp-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--lp-muted-c);
+  background: var(--lp-btn-bg-c);
+  border: 1px solid var(--lp-input-border-c);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.lp-icon-btn[aria-expanded='true'] {
+  color: #fff;
+  background: var(--lp-accent-c);
+  border-color: var(--lp-accent-c);
+}
+
 .lp-actions {
   display: flex;
   gap: 4px;
@@ -223,5 +259,48 @@ const regex = defineModel<boolean>('regex', { required: true });
 }
 .lp-btn:hover {
   background: var(--lp-btn-hover-c);
+}
+
+/* 触屏：加大目标尺寸 */
+[data-touch='true'] .lp-btn {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+/* 抽屉形态（写在触控规则之后：同特异性下由顺序决定，抽屉优先）：
+   搜索独占首行，按钮图标化，输入框字号提到 16px——iOS 聚焦更小字号会整页缩放并抖动形态 */
+[data-form='sheet'] .lp-toolbar {
+  gap: 8px;
+  padding: 8px;
+}
+[data-form='sheet'] .lp-search {
+  flex: 1 1 100%;
+  order: -1;
+  height: 36px;
+}
+[data-form='sheet'] .lp-search input {
+  font-size: 16px;
+}
+[data-form='sheet'] .lp-chip {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+[data-form='sheet'] .lp-icon-btn {
+  width: 36px;
+  height: 36px;
+}
+[data-form='sheet'] .lp-actions {
+  gap: 6px;
+  margin-left: auto;
+}
+[data-form='sheet'] .lp-btn {
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+[data-form='sheet'] .lp-btn-label {
+  display: none;
 }
 </style>

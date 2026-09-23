@@ -238,4 +238,60 @@ const bufferText = computed(() =>
   border-radius: 2px;
   transition: width 0.2s;
 }
+
+/* 触屏：加大目标尺寸与行距 */
+[data-touch='true'] .lp-side {
+  width: 170px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+[data-touch='true'] .lp-tag-row {
+  padding: 5px 6px;
+  font-size: 12px;
+}
+[data-touch='true'] .lp-level-row {
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+/* 抽屉形态（写在触控规则之后：同特异性下由顺序决定，抽屉优先）：
+   退化为列表上方的横向筛选条，标签横向排布并整体横向滚动 */
+[data-form='sheet'] .lp-side {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-right: none;
+  border-bottom: 1px solid var(--lp-border-c);
+  touch-action: pan-x;
+}
+[data-form='sheet'] .lp-section {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+[data-form='sheet'] .lp-label {
+  display: none;
+}
+[data-form='sheet'] .lp-tag-toggle {
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+[data-form='sheet'] .lp-tags {
+  flex-shrink: 0;
+  flex-direction: row;
+  gap: 4px;
+  max-height: none;
+  overflow: visible;
+}
+[data-form='sheet'] .lp-tag-row {
+  flex-shrink: 0;
+  padding: 6px 8px;
+}
+[data-form='sheet'] .lp-spacer {
+  min-height: 0;
+}
 </style>

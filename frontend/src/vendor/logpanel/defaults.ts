@@ -33,6 +33,23 @@ export const MIN_WINDOW_W = 320;
 export const MIN_WINDOW_H = 200;
 export const VIEWPORT_MARGIN = 8;
 
+/** 抽屉形态判据：窄屏，或横屏手机（宽而矮）。宽而矮的桌面窗口仍用悬浮窗——那种视口下悬浮窗能挪、够宽 */
+export const SHEET_MEDIA_QUERY = '(max-width: 640px), (max-width: 900px) and (max-height: 480px)';
+/** 触控判据：主指针是手指。与形态正交——形态看空间，触控看指针类型（触屏笔记本仍用鼠标） */
+export const TOUCH_MEDIA_QUERY = '(pointer: coarse)';
+
+/** 抽屉档位：半屏占可视视口高度比例、最小高度、拖拽定档阈值（占档位行程比例）与快速滑动判定 */
+export const SHEET_HALF_RATIO = 0.55;
+export const MIN_SHEET_H = 240;
+export const SHEET_DETENT_RATIO = 0.2;
+export const SHEET_FLING_V = 0.8;
+/** 快速滑动判定所需的最小位移（px）：更小的抖动按位移定档，不认速度 */
+export const SHEET_FLING_MIN_DY = 40;
+
+/** 标题栏手势：长按阈值与拖拽死区（px） */
+export const LONG_PRESS_MS = 500;
+export const DRAG_SLOP = 8;
+
 export const DEFAULT_FEATURES: LogPanelFeatures = {
   drag: true,
   resize: true,
@@ -60,6 +77,9 @@ export const STORAGE_KEYS = {
   levels: 'level_filter',
   hiddenTags: 'tag_filter',
   follow: 'autoscroll',
+  /** 抽屉档位与筛选条开合：与悬浮几何分键，互不污染（窄屏的尺寸不写进桌面几何） */
+  detent: 'sheet_detent',
+  sideOpen: 'side_open',
 } as const;
 
 /** 内置中文文案；宿主传 t 时整体替换（键名沿用旧版，便于复用既有翻译表） */
@@ -82,6 +102,8 @@ export const DEFAULT_TEXT: Record<string, string> = {
   'logpanel.moduleFilter': '模块筛选',
   'logpanel.selectAll': '全选',
   'logpanel.selectNone': '取消全选',
+  'logpanel.expandSheet': '展开到全屏',
+  'logpanel.collapseSheet': '收起到半屏',
   'logpanel.stats': '统计',
   'logpanel.logCleared': '日志已清空',
   'logpanel.copied': '已复制 {n} 条',

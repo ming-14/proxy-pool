@@ -8,7 +8,11 @@
  */
 import { ref } from 'vue';
 import { LogPanel } from '@/vendor/logpanel';
-import type { LogPanelEntry, LogPanelRules, LogPanelSource } from '@/vendor/logpanel';
+import { LONG_PRESS_MS, STORAGE_KEYS } from '@/vendor/logpanel/defaults';
+import type { LogPanelEntry, LogPanelForm, LogPanelRules, LogPanelSource } from '@/vendor/logpanel';
+
+/** 持久化前缀：与模板传给组件的保持一致，几何持久化断言按它读 */
+const STORAGE_PREFIX = 'probe-logpanel_';
 
 /** 探针条目：默认访问器要求的形状 + 单调 seq（用作 rules.key） */
 interface ProbeEntry extends LogPanelEntry {
@@ -99,6 +103,7 @@ const source: LogPanelSource<ProbeEntry> = {
 
 const probeRules: Partial<LogPanelRules<ProbeEntry>> = { key: (entry) => entry.seq };
 const shown = ref(true);
+const formMode = ref<LogPanelForm>('auto');
 
 // ---- 驱动器：只经 DOM 读状态、经真实交互改状态 ----
 const rootEl = () => document.querySelector<HTMLElement>('[data-testid="logpanel"]');
@@ -204,6 +209,99 @@ function clickMenuClose(): void {
   rootEl()?.querySelector<HTMLElement>('[data-testid="lp-menu-close"]')?.click();
 }
 
+// ---- 形态与抽屉驱动 ----
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 合成 pointer 事件：走组件真实手势路径（move/up 监听在 window 上） */
+function pointerEvent(type: string, x: number, y: number, pointerType: string): PointerEvent {
+  return new PointerEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    pointerId: 1,
+    pointerType,
+    isPrimary: true,
+    button: 0,
+    buttons: type === 'pointerup' ? 0 : 1,
+    clientX: x,
+    clientY: y,
+  });
+}
+
+function titleBar(): HTMLElement | null {
+  return rootEl()?.querySelector<HTMLElement>('.lp-titlebar') ?? null;
+}
+
+/** 标题栏上的落点：空白处（避开按钮） */
+function titlePoint(): { x: number; y: number } | null {
+  const rect = titleBar()?.getBoundingClientRect();
+  return rect ? { x: rect.left + 40, y: rect.top + rect.height / 2 } : null;
+}
+
+/** 标题栏拖拽：durationMs 决定速度（快滑按速度翻档，慢拖按位移定档） */
+async function dragTitle(dy: number, durationMs = 400, pointerType = 'mouse'): Promise<void> {
+  const bar = titleBar();
+  const at = titlePoint();
+  if (!bar || !at) return;
+  bar.dispatchEvent(pointerEvent('pointerdown', at.x, at.y, pointerType));
+  const steps = 8;
+  for (let step = 1; step <= steps; step++) {
+    await sleep(durationMs / steps);
+    window.dispatchEvent(pointerEvent('pointermove', at.x, at.y + (dy * step) / steps, pointerType));
+  }
+  window.dispatchEvent(pointerEvent('pointerup', at.x, at.y + dy, pointerType));
+}
+
+/** 标题栏点按（抽屉态切换档位） */
+async function tapTitle(): Promise<void> {
+  await dragTitle(0, 0, 'touch');
+}
+
+/** 长按标题栏：等过长按阈值再抬手（触屏打开菜单的路径） */
+async function longPressTitle(): Promise<void> {
+  const bar = titleBar();
+  const at = titlePoint();
+  if (!bar || !at) return;
+  bar.dispatchEvent(pointerEvent('pointerdown', at.x, at.y, 'touch'));
+  await sleep(LONG_PRESS_MS + 150);
+  window.dispatchEvent(pointerEvent('pointerup', at.x, at.y, 'touch'));
+}
+
+function formOf(): string | null {
+  return rootEl()?.getAttribute('data-form') ?? null;
+}
+
+function detentOf(): string | null {
+  return rootEl()?.getAttribute('data-detent') ?? null;
+}
+
+/** 根节点盒模型（视口坐标）：抽屉满宽贴底断言用 */
+function rootBox(): { x: number; y: number; w: number; h: number; bottom: number } | null {
+  const rect = rootEl()?.getBoundingClientRect();
+  return rect ? { x: rect.x, y: rect.y, w: rect.width, h: rect.height, bottom: rect.bottom } : null;
+}
+
+function listClientHeight(): number {
+  return listEl()?.clientHeight ?? 0;
+}
+
+/** 模块筛选条是否展开（读开关按钮的 aria-expanded） */
+function sideOpen(): boolean {
+  return rootEl()?.querySelector('[data-testid="lp-side-toggle"]')?.getAttribute('aria-expanded') === 'true';
+}
+
+/** 根节点内联样式里出现的属性名：形态切换后不得残留上一形态的键 */
+function inlineStyleKeys(): string[] {
+  return (rootEl()?.getAttribute('style') ?? '')
+    .split(';')
+    .map((declaration) => declaration.split(':')[0]?.trim() ?? '')
+    .filter(Boolean);
+}
+
+function geomPersisted(): unknown {
+  return JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}${STORAGE_KEYS.geometry}`) ?? 'null');
+}
+
 Object.assign(window, {
   __ready: true,
   __probe: {
@@ -227,6 +325,19 @@ Object.assign(window, {
     toggleRegex: () => click('lp-regex'),
     toggleLevel: (level: number) => click(`lp-level-${level}`),
     toggleTag: (tag: string) => rootEl()?.querySelector<HTMLElement>(`[data-tag="${tag}"]`)?.click(),
+    setForm: (mode: LogPanelForm) => (formMode.value = mode),
+    formOf,
+    detentOf,
+    rootBox,
+    listClientHeight,
+    sideOpen,
+    toggleSide: () => click('lp-side-toggle'),
+    clickDetent: () => click('lp-detent'),
+    tapTitle,
+    dragTitle,
+    longPressTitle,
+    inlineStyleKeys,
+    geomPersisted,
   },
 });
 </script>
@@ -236,9 +347,10 @@ Object.assign(window, {
     v-model:visible="shown"
     :source="source"
     :rules="probeRules"
+    :form="formMode"
     theme="dark"
     title="日志面板探针"
-    storage-key-prefix="probe-logpanel_"
+    :storage-key-prefix="STORAGE_PREFIX"
     :initial-geometry="GEOMETRY"
   />
 </template>

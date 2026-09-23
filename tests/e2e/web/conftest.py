@@ -32,6 +32,7 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from tests.e2e.mock_upstream import start_mock_upstream  # noqa: E402
+from tests.e2e.web.logpanel_probe import build_and_serve_probe  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_SRC = PROJECT_ROOT / "config"
@@ -223,3 +224,9 @@ def page(panel):
 
 def api_status() -> dict:
     return requests.get(f"{BASE_URL}/api/status", timeout=5).json()
+
+
+@pytest.fixture(scope="module")
+def probe_server():
+    """组件探针页：构建产物 + 静态托管（模块内只构建托管一次）"""
+    yield from build_and_serve_probe()

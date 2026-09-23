@@ -41,9 +41,11 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→优雅退出）
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
-│       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆（默认空闲端口，PP_E2E_* 可固定）
-│       ├── test_panel_e2e.py          # 四页导航/主题/框选（含边缘自动滚动）/右键（含二次定位夹取与移出）/行下质量带常显与低质量标记/固定置顶/锁定（含锁定态 Ctrl+A 不得选中）/调度参数/源控制/日志面板（含搜索过滤与复制）/代理组虚拟滚动改尺寸后仍对齐 34 项
-│       └── test_logpanel_virtual.py   # LogPanel 虚拟列表 12 项（驱动前端 probe/ 构建出的探针页）：全程滚动无空白/滚动中总高恒定/淘汰补偿钉位/跟随贴底且虚拟化生效/手动关跟随不被顶回/暂停继续后补上日志/过滤与高亮/正则非法标红与清空归零/展开态跨行回收保持/隐藏显示跟随与位置/右键菜单开合/缩放后重测行高
+│       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆（默认空闲端口，PP_E2E_* 可固定）+ 组件探针页 fixture
+│       ├── logpanel_probe.py          # LogPanel 探针页共享设施（构建/托管探针页 + Probe 驱动器 + 空白断言）
+│       ├── test_panel_e2e.py          # 四页导航/主题/框选（含边缘自动滚动）/右键（含二次定位夹取与移出）/行下质量带常显与低质量标记/固定置顶/锁定（含锁定态 Ctrl+A 不得选中）/调度参数/源控制/日志面板（含搜索过滤、复制与窄屏抽屉形态）/代理组虚拟滚动改尺寸后仍对齐 35 项
+│       ├── test_logpanel_virtual.py   # LogPanel 悬浮形态 13 项（驱动前端 probe/ 构建出的探针页）：全程滚动无空白/滚动中总高恒定/淘汰补偿钉位/跟随贴底且虚拟化生效/手动关跟随不被顶回/暂停继续后补上日志/过滤与高亮/正则非法标红与清空归零/展开态跨行回收保持/隐藏显示跟随与位置/右键菜单开合/缩放后重测行高/拖高后仍贴底
+│       └── test_logpanel_sheet.py     # LogPanel 抽屉形态 11 项（移动端模拟上下文 390×844 触屏）：形态随宽度切换且内联样式无残留/满宽贴底不溢出/按钮与标题栏点按切档后仍贴底/拖拽与快滑切档/长按开菜单不改档位/安全区垫底/搜索框 16px 防 iOS 缩放/形态切换后按新宽度重测/视口变矮高度跟随/筛选条开合与横排/抽屉不写悬浮几何
 └── vendor/                            # vendor 库回归测试
     ├── test_pproxy_vendor.py          # pproxy 内化修复（SOCKS5 应答/modstat roption/sslcontexts 弱引用等）
     └── test_pspeed_vendor.py          # pspeed 测速口径（curl 传输窗口/真实 hard_limit）/multi 取峰/节点名校验/面板失败渲染

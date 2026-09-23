@@ -10,8 +10,10 @@ export { DEFAULT_RULES, DEFAULT_TAG_COLORS } from './defaults';
 export type {
   HighlightSegment,
   LogPanelClear,
+  LogPanelDetent,
   LogPanelEntry,
   LogPanelFeatures,
+  LogPanelForm,
   LogPanelGeometry,
   LogPanelHooks,
   LogPanelKey,

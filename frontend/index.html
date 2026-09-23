@@ -2,7 +2,8 @@
 <html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- viewport-fit=cover 才能让 iOS 的 env(safe-area-inset-*) 拿到真实安全区（抽屉贴底要让开） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Proxy Pool 控制面板</title>
   <script>
     // 首帧前应用保存的主题，避免暗色用户看到浅色闪屏

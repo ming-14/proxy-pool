@@ -3,11 +3,12 @@
  * → 本地缓冲（与后端容量一致）→ LogPanel 的 source / rules。
  *
  * 性能约定（核心）：
- * - 轮询只发生在面板可见期间：隐藏即停表（零请求），打开时启动并立即拉一次。
+ * - 轮询只发生在面板可见且页面在前台时：面板隐藏或标签页切到后台即停表（零请求），
+ *   恢复时立即拉一次（移动端后台标签页的定时器会耗电耗流量）。
  * - 增量拉取：只取自上轮游标起的新条目，响应体小；本地缓冲有界，防内存膨胀。
  * - 拉取失败静默重试，不打断整体 UI（后端不可达时面板显示历史数据，下轮重试）。
  */
-import { ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import type { LogPanelRules, LogPanelSource } from '@/vendor/logpanel';
 import type { LogEntry, LogsResponse } from '@/types/api';
@@ -107,8 +108,17 @@ const rules: Partial<LogPanelRules<LogEntry>> = {
 
 /** 面板接入点：可见性（v-model）+ 数据源 + 取值规则 */
 export function useLogPanel() {
-  // 面板隐藏即停轮询（零 /api/logs 请求），打开即恢复
-  watch(visible, (shown) => (shown ? startPoller() : stopPoller()), { immediate: true });
+  const pageHidden = ref(document.visibilityState === 'hidden');
+  const onVisibilityChange = (): void => {
+    pageHidden.value = document.visibilityState === 'hidden';
+  };
+  onMounted(() => document.addEventListener('visibilitychange', onVisibilityChange));
+  onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+
+  // 面板隐藏或页面切后台都停轮询（零 /api/logs 请求），恢复时启动并立即拉一次
+  const shouldPoll = computed(() => visible.value && !pageHidden.value);
+  watch(shouldPoll, (on) => (on ? startPoller() : stopPoller()), { immediate: true });
+
   return {
     visible,
     source,

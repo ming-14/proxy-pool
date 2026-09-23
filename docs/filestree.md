@@ -72,7 +72,7 @@ proxy-pool/
 │   ├── probe/                     # LogPanel 探针应用（固定种子合成日志源 + window.__probe 驱动器，只读组件 DOM）
 │   ├── index.html                 # 入口模板（主题防闪屏内联脚本）
 │   ├── public/world.json          # 地图数据源文件
-│   ├── tests/unit/                # Vitest 单测（format/merge/csv/series/status-store/standby-series/useLogPanel/logpanel-filter/logpanel-format/logpanel-defaults/chart-options）
+│   ├── tests/unit/                # Vitest 单测（format/merge/csv/series/status-store/standby-series/useLogPanel/logpanel-filter/logpanel-format/logpanel-defaults/logpanel-sheet/chart-options）
 │   └── src/
 │       ├── main.ts                # 应用装配（pinia/router/轮询启动）
 │       ├── App.vue                # 壳：侧边栏（含底部控制台日志按钮）+ 顶栏（暂停/连接态/主题）+ 路由视图 + Toast
@@ -81,12 +81,12 @@ proxy-pool/
 │       ├── api/client.ts          # 类型化 API 客户端（fetch 封装 + ApiError）
 │       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）/ series（降采样·速率差分·共享时间窗口·sparkline 坐标）
-│       ├── composables/           # useRowSelection（框选）/ usePurity（纯洁度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+可见性节流+主题联动）
-│       ├── vendor/logpanel/       # 日志视窗组件（vendored Vue 3 + TS，可整体复用到其它 Vue 3 项目）：默认值/契约类型 + LogPanel 外壳 + parts（TitleBar/ToolBar/SidePanel/LogLine/VirtualList/ToastStack/IconSvg）+ composables（useLogView 视图状态机、useWindowGeometry 悬浮窗几何、useToasts）+ utils（filter/format/tagColor/storage/clipboard/icons）；样式 scoped + --lp-* 变量，虚拟列表用 @tanstack/vue-virtual
+│       ├── composables/           # useRowSelection（框选）/ usePurity（纯洁度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+面板可见与页面前台双节流+主题联动）
+│       ├── vendor/logpanel/       # 日志视窗组件（vendored Vue 3 + TS，可整体复用到其它 Vue 3 项目）：默认值/契约类型 + LogPanel 外壳（悬浮窗/底部抽屉双形态）+ parts（TitleBar/ToolBar/SidePanel/LogLine/VirtualList/ToastStack/IconSvg）+ composables（useLogView 视图状态机、useWindowGeometry 悬浮窗几何、useSheetDetent 抽屉档位、useViewport 布局/可视视口度量、useMediaQuery、useToasts）+ utils（filter/format/tagColor/storage/clipboard/icons/sheet）；样式 scoped + --lp-* 变量，虚拟列表用 @tanstack/vue-virtual
 │       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
-├── tests/                         # 测试目录（复刻 src 结构；tests/e2e/web/ 为面板 Playwright e2e）
+├── tests/                         # 测试目录（复刻 src 结构；tests/e2e/web/ 为面板 Playwright e2e，logpanel_probe.py 为组件探针页共享设施）
 ├── vendor/
 │   ├── pproxy/                    # pproxy 代理库（fork 自 pproxy 2.7.9，本地维护: sslwrap 静默 / sslcontexts 弱引用 / modstat 传 roption / SOCKS5 认证应答与 UDP ASSOCIATE / HTTP 404 / WebSocket 握手修复 / 通道空闲回收改会话双向静默（修复流式长连接被单向 60s 读超时误杀） 等内化进源码；proxy_server.py 通过 sys.path 导入）
 │   └── pspeed/                    # 代理测速工具（TCP/IP/下载/上传带宽，JSON 输出；api.py 通过 sys.path 导入 probe_one）

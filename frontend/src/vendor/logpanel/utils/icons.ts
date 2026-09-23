@@ -13,6 +13,9 @@ export const ICONS = {
   clear: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="1"/><path d="M5 15V5a1 1 0 011-1h10"/>',
   export: '<path d="M12 3v12M7 10l5 5 5-5M4 19h16"/>',
+  'chevron-up': '<polyline points="6 15 12 9 18 15"/>',
+  'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
+  filter: '<path d="M4 5h16l-6 7v6l-4 2v-8z"/>',
 } as const;
 
 export type PanelIconName = keyof typeof ICONS;

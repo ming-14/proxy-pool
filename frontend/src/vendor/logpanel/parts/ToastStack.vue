@@ -26,6 +26,11 @@ defineProps<{ toasts: ToastItem[] }>();
   pointer-events: none;
 }
 
+/* 抽屉：absolute 的偏移基准是 padding box，根节点的安全区内边距顶不起它，得自己让开 */
+[data-form='sheet'] .lp-toasts {
+  bottom: calc(8px + var(--lp-safe-bottom-c, 0px));
+}
+
 .lp-toast {
   padding: 6px 14px;
   font-size: 12px;
