@@ -167,6 +167,30 @@ def test_drag_switches_detent(probe_mobile):
     assert not errors
 
 
+def test_detent_settle_starts_from_finger_position(probe_mobile):
+    """松手后必须接着手指所在的位置滑向目标档位：不得先瞬移回原档位再播放动画"""
+    p, errors = probe_mobile
+    p.fill(100)
+    assert p.detent() == "half", "初始应为半屏档"
+    origin_top = p.root_box()["y"]
+
+    p.drag_title_hold(-300)
+    p.wait(50)
+    held = p.root_box()
+    assert abs(held["y"] - (origin_top - 300)) <= 2, f"拖拽中未跟随手指：{origin_top} → {held['y']}"
+
+    p.release_title()
+    settled = p.root_box()
+    assert abs(settled["y"] - held["y"]) <= 120, (
+        f"松手瞬间瞬移回原档位（拖到 {held['y']}，松手后 {settled['y']}）"
+    )
+
+    p.wait(DETENT_SETTLE_MS)
+    assert p.detent() == "full", "松手后应定在全屏档"
+    assert abs(p.root_box()["y"]) <= 1, "松手后未滑到全屏档位置"
+    assert not errors
+
+
 def test_long_press_opens_menu_without_changing_detent(probe_mobile):
     """触屏长按标题栏打开菜单，且不改动档位（长按抬手不得触发点按切档）"""
     p, errors = probe_mobile

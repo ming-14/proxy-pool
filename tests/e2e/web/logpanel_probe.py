@@ -183,6 +183,14 @@ class Probe:
         """标题栏拖拽：duration_ms 决定速度（快滑按速度翻档，慢拖按位移定档）"""
         self.run("([dy, ms]) => window.__probe.dragTitle(dy, ms)", [dy, duration_ms])
 
+    def drag_title_hold(self, dy: int, duration_ms: int = 400) -> None:
+        """拖到 dy 处但不松手：用于读取「松手前」的视窗位置"""
+        self.run("([dy, ms]) => window.__probe.dragTitleHold(dy, ms)", [dy, duration_ms])
+
+    def release_title(self) -> None:
+        """松手（配合 drag_title_hold）"""
+        self.run("() => window.__probe.releaseTitle()")
+
     def long_press_title(self) -> None:
         """长按标题栏（触屏打开菜单的路径）"""
         self.run("() => window.__probe.longPressTitle()")

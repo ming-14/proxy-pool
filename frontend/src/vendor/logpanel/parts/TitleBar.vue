@@ -119,7 +119,8 @@ function onPointerMove(event: PointerEvent): void {
       emit('drag-start', current.down);
       return;
     }
-    emit('drag-begin', event);
+    // 锚点取起手点而非越过死区的位置：否则整段拖拽都会与手指差一个死区的距离
+    emit('drag-begin', current.down);
   }
   if (canDetent.value) emit('drag-move', event);
 }

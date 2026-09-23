@@ -477,7 +477,10 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   padding: 0 var(--lp-safe-right-c) var(--lp-safe-bottom-c) var(--lp-safe-left-c);
   border-bottom: none;
   border-radius: 12px 12px 0 0;
-  transition: height 0.18s ease;
+  /* height 与 transform 必须同曲线同时长：松手时前者从当前档位高度走向目标档位、后者从手指位移回到 0，
+     两者叠加后顶边从手指位置单调滑到目标位置。只过渡 height 的话 transform 会瞬间归零，
+     表现为先瞬移回原档位、再播放动画滑过去。 */
+  transition: height 0.18s ease, transform 0.18s ease;
 }
 .lp-root[data-form='sheet'].lp-detent-dragging {
   transition: none;

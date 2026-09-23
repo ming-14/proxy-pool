@@ -238,33 +238,60 @@ function titlePoint(): { x: number; y: number } | null {
   return rect ? { x: rect.left + 40, y: rect.top + rect.height / 2 } : null;
 }
 
-/** 标题栏拖拽：durationMs 决定速度（快滑按速度翻档，慢拖按位移定档） */
-async function dragTitle(dy: number, durationMs = 400, pointerType = 'mouse'): Promise<void> {
+// 手势按起手点算：拖拽中面板自身会移动，不能每步重新量标题栏
+let gestureAt: { x: number; y: number } | null = null;
+let gestureDy = 0;
+
+function titleDown(pointerType = 'mouse'): void {
   const bar = titleBar();
   const at = titlePoint();
   if (!bar || !at) return;
+  gestureAt = at;
+  gestureDy = 0;
   bar.dispatchEvent(pointerEvent('pointerdown', at.x, at.y, pointerType));
+}
+
+/** 拖到相对起手点 dy 处；durationMs 决定速度（快滑按速度翻档，慢拖按位移定档） */
+async function titleDragTo(dy: number, durationMs: number, pointerType = 'mouse'): Promise<void> {
+  if (!gestureAt) return;
+  const at = gestureAt;
+  gestureDy = dy;
   const steps = 8;
   for (let step = 1; step <= steps; step++) {
     await sleep(durationMs / steps);
     window.dispatchEvent(pointerEvent('pointermove', at.x, at.y + (dy * step) / steps, pointerType));
   }
-  window.dispatchEvent(pointerEvent('pointerup', at.x, at.y + dy, pointerType));
+}
+
+function titleUp(): void {
+  if (!gestureAt) return;
+  window.dispatchEvent(pointerEvent('pointerup', gestureAt.x, gestureAt.y + gestureDy, 'mouse'));
+  gestureAt = null;
+}
+
+async function dragTitle(dy: number, durationMs = 400, pointerType = 'mouse'): Promise<void> {
+  titleDown(pointerType);
+  await titleDragTo(dy, durationMs, pointerType);
+  titleUp();
+}
+
+/** 拖到 dy 处但不松手：用于读取"松手前"的视窗位置 */
+async function dragTitleHold(dy: number, durationMs = 400): Promise<void> {
+  titleDown();
+  await titleDragTo(dy, durationMs);
 }
 
 /** 标题栏点按（抽屉态切换档位） */
 async function tapTitle(): Promise<void> {
-  await dragTitle(0, 0, 'touch');
+  titleDown('touch');
+  titleUp();
 }
 
 /** 长按标题栏：等过长按阈值再抬手（触屏打开菜单的路径） */
 async function longPressTitle(): Promise<void> {
-  const bar = titleBar();
-  const at = titlePoint();
-  if (!bar || !at) return;
-  bar.dispatchEvent(pointerEvent('pointerdown', at.x, at.y, 'touch'));
+  titleDown('touch');
   await sleep(LONG_PRESS_MS + 150);
-  window.dispatchEvent(pointerEvent('pointerup', at.x, at.y, 'touch'));
+  titleUp();
 }
 
 function formOf(): string | null {
@@ -335,6 +362,8 @@ Object.assign(window, {
     clickDetent: () => click('lp-detent'),
     tapTitle,
     dragTitle,
+    dragTitleHold,
+    releaseTitle: titleUp,
     longPressTitle,
     inlineStyleKeys,
     geomPersisted,
