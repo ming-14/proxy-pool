@@ -132,7 +132,6 @@ const { geometry, style: geometryStyle, interacting, startDrag, startResize, app
 const {
   detent,
   height: detentHeight,
-  offset: detentOffset,
   dragging: detentDragging,
   toggle: toggleDetent,
   begin: beginDetent,
@@ -148,12 +147,11 @@ const rootStyle = computed(() => ({
   ...(sheet.value
     ? {
         bottom: `${keyboardInset(viewport.layoutHeight, viewport.visualHeight, viewport.visualTop)}px`,
+        // 拖拽中 detentHeight 已是"档位高度 - 位移"，底边始终钉在屏幕边缘
         height: `${detentHeight.value}px`,
       }
     : geometryStyle.value),
   opacity: props.windowOpacity === null ? undefined : props.windowOpacity / 100,
-  // 拖拽中的实时位移走 transform（不触发布局）：抬手定档后由 height 过渡接管
-  ...(detentDragging.value ? { transform: `translateY(${detentOffset.value}px)` } : {}),
 }));
 
 /**
@@ -295,12 +293,6 @@ function closePanel(): void {
   visible.value = false;
 }
 
-/** 抽屉拖拽起手：拖拽期根节点带 transform，fixed 菜单的包含块会被改写，先收掉 */
-function onDetentBegin(event: PointerEvent): void {
-  closeMenu();
-  beginDetent(event.clientY);
-}
-
 onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPointerDown, true));
 </script>
 
@@ -330,7 +322,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
       :show-follow="features.autoScroll"
       :show-menu="features.contextMenu"
       @drag-start="startDrag"
-      @drag-begin="onDetentBegin"
+      @drag-begin="(event) => beginDetent(event.clientY)"
       @drag-move="(event) => moveDetent(event.clientY)"
       @drag-end="(event) => commitDetent(event.clientY)"
       @drag-cancel="cancelDetent"
@@ -485,10 +477,8 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   padding: 0 var(--lp-safe-right-c) var(--lp-safe-bottom-c) var(--lp-safe-left-c);
   border-bottom: none;
   border-radius: 12px 12px 0 0;
-  /* height 与 transform 必须同曲线同时长：松手时前者从当前档位高度走向目标档位、后者从手指位移回到 0，
-     两者叠加后顶边从手指位置单调滑到目标位置。只过渡 height 的话 transform 会瞬间归零，
-     表现为先瞬移回原档位、再播放动画滑过去。 */
-  transition: height 0.18s ease, transform 0.18s ease;
+  /* 高度过渡：档位切换与松手定档都由它接管；拖拽中（.lp-detent-dragging）关掉，跟手即时变化 */
+  transition: height 0.18s ease;
 }
 .lp-root[data-form='sheet'].lp-detent-dragging {
   transition: none;

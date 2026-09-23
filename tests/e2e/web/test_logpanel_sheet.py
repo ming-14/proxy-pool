@@ -172,6 +172,26 @@ def test_drag_switches_detent(probe_mobile):
     assert not errors
 
 
+def test_drag_keeps_bottom_pinned(probe_mobile):
+    """向上拖抽屉时底边必须钉在屏幕边缘：面板整体位移会在下方露出空隙"""
+    p, errors = probe_mobile
+    p.fill(100)
+    assert p.detent() == "half", "初始应为半屏档"
+
+    p.drag_title_hold(-300)
+    p.wait(50)
+    held = p.root_box()
+    gap = MOBILE_VIEWPORT["height"] - held["bottom"]
+    assert abs(gap) <= 1, f"拖动中下方悬空 {gap:.0f}px"
+    assert abs(held["h"] - (MOBILE_HALF_HEIGHT + 300)) <= 2, f"拖动中高度未跟随手指：{held['h']}"
+
+    p.release_title()
+    p.wait(DETENT_SETTLE_MS)
+    assert p.detent() == "full", "松手后应定在全屏档"
+    assert abs(p.root_box()["bottom"] - MOBILE_VIEWPORT["height"]) <= 1, "定档后未贴底"
+    assert not errors
+
+
 def test_detent_settle_starts_from_finger_position(probe_mobile):
     """松手后必须接着手指所在的位置滑向目标档位：不得先瞬移回原档位再播放动画"""
     p, errors = probe_mobile

@@ -1,8 +1,11 @@
 /**
- * 抽屉档位：半屏/全屏切换、拖拽中的实时位移、抬手定档与持久化。
+ * 抽屉档位：半屏/全屏切换、拖拽中的高度跟随、抬手定档与持久化。
  *
  * 与 useWindowGeometry 分工：本 composable 只维护档位（独立持久化键），
  * 从不读写悬浮几何——窄屏尺寸因此不会污染桌面窗口的几何。
+ *
+ * 拖拽改的是**高度**而不是位移：抽屉底边钉在屏幕边缘，整体位移会让面板抬离底边、
+ * 下方露出空隙（高度变化不影响换行，无需重测行高）。
  */
 import { computed, ref } from 'vue';
 import { STORAGE_KEYS } from '../defaults';
@@ -19,10 +22,10 @@ export interface SheetDetentOptions {
 export function useSheetDetent(options: SheetDetentOptions) {
   const { storage, visualHeight } = options;
   const detent = ref<LogPanelDetent>(storage.readJSON<string>(STORAGE_KEYS.detent, 'half') === 'full' ? 'full' : 'half');
-  /** 拖拽中的实时位移（px，向上为负）；非拖拽恒为 0 */
+  /** 拖拽中的高度增量（px，向上为负）：高度 = 档位高度 - 该值 */
   const offset = ref(0);
   const dragging = ref(false);
-  const height = computed(() => sheetHeight(detent.value, visualHeight()));
+  const height = computed(() => sheetHeight(detent.value, visualHeight()) - offset.value);
 
   let start: { y: number; time: number } | null = null;
 
