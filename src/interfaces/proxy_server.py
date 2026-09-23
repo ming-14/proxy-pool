@@ -125,8 +125,8 @@ class PproxyServer:
             return
         self._no_upstream = no_upstream
         if no_upstream:
-            logger.warning("无可用上游（%d 个上游全部不可用）：请求将被拒绝（不回退直连，避免泄漏本机 IP）",
-                           len(self._rserver))
+            detail = f"{len(self._rserver)} 个上游全部不可用" if self._rserver else "上游列表为空"
+            logger.warning("无可用上游（%s）：请求将被拒绝（不回退直连，避免泄漏本机 IP）", detail)
         else:
             logger.info("上游可用: %d/%d 个代理", alive, len(self._rserver))
 
