@@ -323,7 +323,7 @@ defineExpose({
   overflow-x: hidden;
   overflow-y: auto;
   font-family: var(--lp-font-mono-c);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.5;
   /* 纵向滚动留给列表，横向手势不在此起手；滚动到端部不把滚动链传给背后的页面 */
   touch-action: pan-y;

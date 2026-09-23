@@ -83,6 +83,7 @@ def test_form_follows_viewport_width(probe_desktop):
 
     floating_keys = p.inline_style_keys()
     assert {"left", "top", "width", "height"} <= set(floating_keys), f"悬浮形态缺几何键：{floating_keys}"
+    floating_font = p.run("() => getComputedStyle(document.querySelector('.lp-row .lp-log-line')).fontSize")
 
     p.page.set_viewport_size(MOBILE_VIEWPORT)
     p.wait(400)
@@ -90,6 +91,10 @@ def test_form_follows_viewport_width(probe_desktop):
     sheet_keys = p.inline_style_keys()
     assert "bottom" in sheet_keys, f"抽屉形态缺 bottom 键：{sheet_keys}"
     assert not {"left", "top", "width"} & set(sheet_keys), f"抽屉形态残留悬浮几何键：{sheet_keys}"
+    sheet_font = p.run("() => getComputedStyle(document.querySelector('.lp-row .lp-log-line')).fontSize")
+
+    # 日志正文两形态同字号：窄屏把内容放大（或桌面被缩小）都会让两边观感差一截
+    assert floating_font == sheet_font == "12px", f"两形态日志字号不一致：{floating_font} / {sheet_font}"
 
     p.page.set_viewport_size(DESKTOP_VIEWPORT)
     p.wait(400)
@@ -207,6 +212,25 @@ def test_long_press_opens_menu_without_changing_detent(probe_mobile):
     p.wait(200)
     assert p.menu_visible() is False, "点菜单项后菜单未关闭"
     assert p.run("() => window.__probe.state()['domLines']") == 0, "关闭面板后仍渲染日志行"
+    assert not errors
+
+
+def test_sheet_chrome_leaves_room_for_logs(probe_mobile):
+    """抽屉里的 chrome 不得吃掉太多高度：工具栏一旦折成三行，日志区就被压到一半以下"""
+    p, errors = probe_mobile
+    p.fill(200)
+    box = p.root_box()
+    heights = p.run(
+        """() => {
+          const root = document.querySelector('[data-testid="logpanel"]');
+          const h = (sel) => Math.round(root.querySelector(sel).getBoundingClientRect().height);
+          return { titlebar: h('.lp-titlebar'), toolbar: h('.lp-toolbar'), list: h('.lp-list') };
+        }"""
+    )
+    chrome = heights["titlebar"] + heights["toolbar"]
+    assert heights["toolbar"] <= 100, f"工具栏折行过多：{heights['toolbar']}px"
+    assert chrome <= box["h"] * 0.4, f"chrome 占抽屉 {chrome / box['h']:.0%}，日志区被压得太小"
+    assert heights["list"] >= box["h"] * 0.65, f"日志区仅占抽屉 {heights['list'] / box['h']:.0%}"
     assert not errors
 
 

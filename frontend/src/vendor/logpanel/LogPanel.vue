@@ -446,6 +446,14 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
   box-shadow: 0 12px 40px rgb(0 0 0 / 25%);
 }
 
+/**
+ * 组件内统一 border-box：box-sizing 不继承，只在根节点设会让各 part 声明的尺寸被 padding/border 撑大
+ * （抽屉标题栏声明 46px、实际渲染 55px）。:deep 才能覆盖各 part 自己模板里的元素。
+ */
+.lp-root :deep(*) {
+  box-sizing: border-box;
+}
+
 .lp-root[data-theme='dark'] {
   --lp-bg-c: var(--lp-bg, #252525);
   --lp-fg-c: var(--lp-fg, #e0e0e0);
