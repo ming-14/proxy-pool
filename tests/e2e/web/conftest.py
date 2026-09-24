@@ -1,7 +1,8 @@
 """Web 面板 e2e 共享设施
 
 隔离策略：
-- PROXY_POOL_CONFIG 指向临时配置目录（复制自 config/，补丁 cache_db / 日志目录 / 本地 mock 探测 URL）
+- PROXY_POOL_CONFIG 指向临时配置目录（复制自 config/，补丁 cache_db / 日志目录 / 本地 mock 探测 URL；
+  补丁失配即失败，不静默照旧——否则会写到真实 cache_db/日志目录、探到真实外网目标）
 - 端口默认运行时挑**空闲端口**（本机 8082/8083 常被手动运行的 serve 占用，写死就得先停面板），
   需要固定端口时用环境变量 PP_E2E_SERVER_PORT / PP_E2E_WEB_PORT 指定
 - 队列数据来自本地 mock 上游代理（复用 tests/e2e/mock_upstream），不依赖外网
@@ -96,37 +97,46 @@ class _MockProxyLoop:
         self.thread.join(timeout=5)
 
 
+def _rewrite(path: Path, pattern: str, repl: str, *, what: str) -> None:
+    """按正则改写配置文件里的唯一一处；失配即失败
+
+    真实 config/ 是 e2e 的基线，补丁靠文本定位。静默失配的后果不是变红而是"照旧"——
+    e2e 会写进真实的 cache_db 与日志目录、把心跳/链路门控打到真实外网目标（污染仓库且无报错），
+    故把"没改到"当硬错误，逼配置默认值变更时同步这里。
+    """
+    text = path.read_text(encoding="utf-8")
+    new_text, hits = re.subn(pattern, lambda _m: repl, text, flags=re.M)
+    if hits != 1:
+        pytest.fail(
+            f"e2e 配置补丁失配：{path.name} 的 {what} 命中 {hits} 次（应为 1 次）；"
+            f"config/ 的默认值可能已改，请同步 tests/e2e/web/conftest.py 的 _make_config_dir"
+        )
+    path.write_text(new_text, encoding="utf-8")
+
+
 def _make_config_dir(tmpdir: Path, probe_port: int) -> Path:
     """复制真实配置目录并定向补丁：config.toml 改独立 cache_db/日志路径，
     serve.toml 改本地 mock 探测 URL；其余（组/源/geoip/ippure）与真实语义一致。
 
     纯净度检查在 e2e 中恒为禁用态：ippure.toml 的 source 置空（不依赖环境变量状态——
     父进程导入 config 时会把 .env 注入 os.environ 并被子进程继承）；同时删除 .env，
-    避免把真实密钥带进测试进程。
+    避免把真实密钥带进测试进程。补丁一律走 _rewrite（失配即失败，不静默照旧）。
     """
     dst = tmpdir / "config"
     shutil.copytree(CONFIG_SRC, dst)
     (dst / ".env").unlink(missing_ok=True)
-    ippure = dst / "ippure.toml"
-    ippure.write_text(
-        re.sub(r'^source = "[^"]*"', 'source = ""', ippure.read_text(encoding="utf-8"),
-               count=1, flags=re.M),
-        encoding="utf-8",
-    )
-    cfg = dst / "config.toml"
-    text = cfg.read_text(encoding="utf-8")
-    text = text.replace('cache_db = ".cache.db"', f'cache_db = "{(tmpdir / "e2e.cache.db").as_posix()}"')
-    text = text.replace('log_dir = "logs"', f'log_dir = "{(tmpdir / "logs").as_posix()}"')
-    cfg.write_text(text, encoding="utf-8")
-    serve = dst / "serve.toml"
-    text = serve.read_text(encoding="utf-8")
-    text = re.sub(r'heartbeat_probe_url = "[^"]+"', f'heartbeat_probe_url = "http://127.0.0.1:{probe_port}/"', text)
-    text = re.sub(
-        r'network_probe_urls = \[[^\]]*\]',
-        f'network_probe_urls = [\n    "http://127.0.0.1:{probe_port}/",\n]',
-        text,
-    )
-    serve.write_text(text, encoding="utf-8")
+    _rewrite(dst / "ippure.toml", r'^source = "[^"]*"', 'source = ""',
+             what="[ippure].source")
+    _rewrite(dst / "config.toml", r'^cache_db = "[^"]*"',
+             f'cache_db = "{(tmpdir / "e2e.cache.db").as_posix()}"', what="[paths].cache_db")
+    _rewrite(dst / "config.toml", r'^log_dir = "[^"]*"',
+             f'log_dir = "{(tmpdir / "logs").as_posix()}"', what="[paths].log_dir")
+    _rewrite(dst / "serve.toml", r'^heartbeat_probe_url = "[^"]*"',
+             f'heartbeat_probe_url = "http://127.0.0.1:{probe_port}/"',
+             what="[server].heartbeat_probe_url")
+    _rewrite(dst / "serve.toml", r'^network_probe_urls = \[[^\]]*\]',
+             f'network_probe_urls = [\n    "http://127.0.0.1:{probe_port}/",\n]',
+             what="[server].network_probe_urls")
     return dst
 
 
