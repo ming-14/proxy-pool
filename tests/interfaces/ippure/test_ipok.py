@@ -63,6 +63,24 @@ class CheckTest(unittest.TestCase):
         assert get.call_args.kwargs["params"] == {"ip": "1.2.3.4"}
 
     def test_usage_type_vocabulary(self):
+        """ipok 契约定义的 usageType 全部取值（外加 residential 别名）都应命中枚举"""
+        cases = {
+            "isp": UsageType.RESIDENTIAL,
+            "dual_isp": UsageType.RESIDENTIAL,
+            "residential": UsageType.RESIDENTIAL,
+            "mobile": UsageType.MOBILE,
+            "hosting": UsageType.HOSTING,
+            "business": UsageType.BUSINESS,
+            "education": UsageType.EDUCATION,
+            "government": UsageType.GOVERNMENT,
+        }
+        for raw, expected in cases.items():
+            with patch("requests.get", return_value=_fake_response({"usageType": raw})):
+                out = ipok.create_checker(_config()).check("1.2.3.4")
+            assert out["usage_type"] is expected, raw
+
+    def test_ip_type_fallback(self):
+        """usageType 为 unknown/缺失时退回 ipType 粗分类（契约定义的 4 个取值）"""
         cases = {
             "residential": UsageType.RESIDENTIAL,
             "mobile": UsageType.MOBILE,
@@ -70,14 +88,22 @@ class CheckTest(unittest.TestCase):
             "business": UsageType.BUSINESS,
         }
         for raw, expected in cases.items():
-            with patch("requests.get", return_value=_fake_response({"usageType": raw})):
+            payload = {"usageType": "unknown", "ipType": raw}
+            with patch("requests.get", return_value=_fake_response(payload)):
                 out = ipok.create_checker(_config()).check("1.2.3.4")
             assert out["usage_type"] is expected, raw
+        # usageType 缺失（非 unknown）同样走兜底
+        with patch("requests.get", return_value=_fake_response({"ipType": "hosting"})):
+            out = ipok.create_checker(_config()).check("1.2.3.4")
+        assert out["usage_type"] is UsageType.HOSTING
 
     def test_unmapped_usage_type_falls_back_to_unknown(self):
-        with patch("requests.get", return_value=_fake_response({"usageType": "satellite"})):
-            out = ipok.create_checker(_config()).check("1.2.3.4")
-        assert out["usage_type"] is UsageType.UNKNOWN
+        """两个字段都超出契约取值 → unknown"""
+        for payload in ({"usageType": "satellite"}, {"usageType": "satellite", "ipType": "satellite"},
+                        {"usageType": "unknown", "ipType": "unknown"}):
+            with patch("requests.get", return_value=_fake_response(payload)):
+                out = ipok.create_checker(_config()).check("1.2.3.4")
+            assert out["usage_type"] is UsageType.UNKNOWN, payload
 
     def test_missing_geo_is_tolerated(self):
         with patch("requests.get", return_value=_fake_response({"risk": 0, "geo": None})):

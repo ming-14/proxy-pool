@@ -23,11 +23,29 @@ SOURCE = IppureSourceSpec(
 _API_URL = "https://ipok.io/api/ip"
 _ALLOWED_KEYS: frozenset[str] = frozenset()
 
-# 源 usageType 原值 → 通用枚举（未收录的原值由 normalize 归为 unknown）
+# usageType 词表：收录 ipok 响应契约里的全部取值
+# （https://ipok.io/developers → isp | dual_isp | business | hosting | mobile |
+#   education | government | unknown），另收 residential——该词按契约只出现在 ipType 里，
+# 两个字段语义同源，同一个词落在哪个字段都按住宅处理。
+# isp 是固网运营商、dual_isp 是双线运营商（同一地址被两家本土运营商判定为住宅归属），
+# 二者在 ipok 的 ipType 里都归 residential，故同映射到住宅。
 _USAGE_TYPES = {
-    "hosting": UsageType.HOSTING,
+    "isp": UsageType.RESIDENTIAL,
+    "dual_isp": UsageType.RESIDENTIAL,
     "residential": UsageType.RESIDENTIAL,
     "mobile": UsageType.MOBILE,
+    "hosting": UsageType.HOSTING,
+    "business": UsageType.BUSINESS,
+    "education": UsageType.EDUCATION,
+    "government": UsageType.GOVERNMENT,
+}
+
+# ipType 词表：ipok 的粗分类，作为 usageType 为 unknown/缺失时的兜底
+# （契约取值 residential | hosting | mobile | business | unknown）
+_IP_TYPES = {
+    "residential": UsageType.RESIDENTIAL,
+    "mobile": UsageType.MOBILE,
+    "hosting": UsageType.HOSTING,
     "business": UsageType.BUSINESS,
 }
 
@@ -47,9 +65,15 @@ class IpokChecker(HttpPurityChecker):
         logger.info("ipok.io 查询: ip=%s proxy=%s", ip, self._proxies is not None)
         data = self._get_json(_API_URL, params={"ip": ip})
         geo = data.get("geo") or {}
+        # 契约值是未知/缺失时退回 ipType 粗分类，两条都拿不到才归 unknown
+        usage = (
+            _USAGE_TYPES.get(data.get("usageType"))
+            or _IP_TYPES.get(data.get("ipType"))
+            or UsageType.UNKNOWN
+        )
         return {
             "score": data.get("risk"),
-            "usage_type": _USAGE_TYPES.get(data.get("usageType"), UsageType.UNKNOWN),
+            "usage_type": usage,
             "extra": compact({
                 "country_code": geo.get("countryCode"),
                 "country_name": geo.get("country"),
