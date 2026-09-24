@@ -210,7 +210,7 @@ tr.row-paused {
   background-color: var(--color-warning-bg);
 }
 /* 锁定单一上游的行态：锁定行高亮（左缘橙条）且可操作，其余队列行灰显且不接收事件
-   —— 等价旧版"锁定期间整卡禁用"，仅把禁用范围收到非上游行（锁定行仍需纯洁/解锁/浮窗） */
+   —— 等价旧版"锁定期间整卡禁用"，仅把禁用范围收到非上游行（锁定行仍需纯净度/解锁/浮窗） */
 tbody tr.row-locked,
 tbody tr.row-locked:hover {
   background-color: var(--color-warning-bg);

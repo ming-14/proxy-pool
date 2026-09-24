@@ -1,13 +1,13 @@
-"""面板任务状态注册表：测速 / 纯洁度检查的进行中与终态
+"""面板任务状态注册表：测速 / 纯净度检查的进行中与终态
 
 Web 面板会话状态（内存），serve 重启清空：
 - 测速：瞬时重操作结果，重启丢可接受（前端刷新后自然回落"未测速"）；
-- 纯洁度：结果由 SQLite 缓存承载（30 天 TTL），本表只记 checking/error 中间态。
+- 纯净度：结果由 SQLite 缓存承载（ippure.toml cache_ttl），本表只记 checking/error 中间态。
 
 键设计：
 - speedtests 按 bind（地址，不含 scheme）：测速针对具体代理；
 - purity 按 proxy_to_ip 提取的 IP：同 IP 多端口/多协议行共享幂等，
-  避免同一 IP 两行同时检查重复调 AbuseIPDB（有日限额）。
+  避免同一 IP 两行同时检查重复调检查源 API（部分源有日限额）。
 
 FIFO 容量上限：代理离队/拉黑后条目成孤儿（行不在快照即不展示），
 但内存需有上限——超出优先淘汰最旧的非中间态条目，全中间态时淘汰最旧。
@@ -21,7 +21,7 @@ from typing import Any
 
 
 class PanelTasks:
-    """测速与纯洁度检查的任务状态（进行中/终态）"""
+    """测速与纯净度检查的任务状态（进行中/终态）"""
 
     def __init__(self, capacity: int = 200) -> None:
         self._capacity = capacity
@@ -61,7 +61,7 @@ class PanelTasks:
     def speedtest_of(self, bind: str) -> dict | None:
         return self._speedtests.get(bind)
 
-    # ---------------------------------------------------------------- 纯洁度
+    # ---------------------------------------------------------------- 纯净度
     def purity_start(self, ip: str) -> bool:
         """标记检查开始；已在 checking 返回 False（幂等，防重复调 API 日限额）"""
         if self._purity.get(ip, {}).get("status") == "checking":

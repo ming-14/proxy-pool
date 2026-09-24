@@ -17,8 +17,9 @@ import time
 logger = logging.getLogger(__name__)
 
 
-# 四表 schema：proxies 复合主键支持跨组副本；group_meta 存组 ttl；source_paused 存源暂停；
-# ip_purity_cache 存 AbuseIPDB 检查结果（30 天 TTL，用例层判断过期）
+# schema：proxies 复合主键支持跨组副本；group_meta 存组 ttl；source_paused 存源暂停；
+# ippure_cache 存 IP 纯净度检查结果（按 (源名, IP) 分区，TTL 由用例层判断）。
+# ip_purity_cache 为旧纯净度缓存表（键位与字段已变），启动即删，不做迁移。
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS proxies (
     proxy             TEXT NOT NULL,
@@ -40,10 +41,13 @@ CREATE TABLE IF NOT EXISTS group_meta (
     group_name TEXT PRIMARY KEY,
     ttl        INTEGER
 );
-CREATE TABLE IF NOT EXISTS ip_purity_cache (
-    ip        TEXT PRIMARY KEY,
+DROP TABLE IF EXISTS ip_purity_cache;
+CREATE TABLE IF NOT EXISTS ippure_cache (
+    source    TEXT NOT NULL,
+    ip        TEXT NOT NULL,
     result    TEXT NOT NULL,
-    cached_at REAL NOT NULL
+    cached_at REAL NOT NULL,
+    PRIMARY KEY (source, ip)
 );
 CREATE TABLE IF NOT EXISTS ip_geo_cache (
     ip           TEXT PRIMARY KEY,
@@ -228,21 +232,21 @@ class SqliteProxyStore:
             p.get("source_group"),
         )
 
-    # ------------------------------------------------------------------ IP 纯洁度缓存
-    def get_purity(self, ip: str) -> dict | None:
-        """读取 IP 纯洁度缓存；返回 {"result": {...}, "cached_at": float}，None 表示无缓存"""
+    # ------------------------------------------------------------------ IP 纯净度缓存
+    def get_purity(self, source: str, ip: str) -> dict | None:
+        """读取缓存；返回 {"result": {...}, "cached_at": float}，None 表示该源下无缓存"""
         row = self._conn.execute(
-            "SELECT result, cached_at FROM ip_purity_cache WHERE ip=?", (ip,)
+            "SELECT result, cached_at FROM ippure_cache WHERE source=? AND ip=?", (source, ip)
         ).fetchone()
         if row is None:
             return None
         return {"result": json.loads(row["result"]), "cached_at": row["cached_at"]}
 
-    def save_purity(self, ip: str, result: dict) -> None:
-        """写入/更新 IP 纯洁度缓存（upsert by ip）"""
+    def save_purity(self, source: str, ip: str, result: dict) -> None:
+        """写入/更新缓存（upsert by (source, ip)）"""
         self._conn.execute(
-            "INSERT OR REPLACE INTO ip_purity_cache (ip, result, cached_at) VALUES (?, ?, ?)",
-            (ip, json.dumps(result, ensure_ascii=False), time.time()),
+            "INSERT OR REPLACE INTO ippure_cache (source, ip, result, cached_at) VALUES (?, ?, ?, ?)",
+            (source, ip, json.dumps(result, ensure_ascii=False), time.time()),
         )
 
     def close(self) -> None:

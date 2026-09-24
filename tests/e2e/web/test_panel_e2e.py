@@ -416,6 +416,15 @@ class TestStandby:
         page.wait_for_timeout(200)
         assert page.locator('[data-testid="strip-latency"]').count() == rows.count()
 
+    def test_purity_disabled_state(self, page):
+        """e2e 配置无密钥 → 纯净度未启用：质量带占位常显、操作列不出现检查按钮（避免点了 404）"""
+        rows = standby_rows(page)
+        assert rows.count() > 0
+        assert page.locator('[data-action="purity"]').count() == 0
+        purity_badges = page.locator('[data-testid="strip-purity"]')
+        assert purity_badges.count() == rows.count()
+        assert purity_badges.first.inner_text().strip() == "纯净度未启用"
+
     def test_context_menu_move_out(self, page):
         """右键「移出」把该行代理移到目标组，列表随即刷新掉这一行
 
@@ -594,7 +603,7 @@ class TestStandby:
         assert page.input_value('[data-testid="set-interval"]') == "2"
 
     def test_standby_dark_screenshot(self, page, shot):
-        """暗色截图：质量带全指标常显（含纯洁度/测速占位）供人工比对"""
+        """暗色截图：质量带全指标常显（含纯净度/测速占位）供人工比对"""
         page.click('[data-testid="btn-theme"]')
         # 等序列首拉完成再截图，否则参考图里是"暂无采样"空图
         page.wait_for_selector('[data-testid="strip-latency"] .sparkline', timeout=15000)

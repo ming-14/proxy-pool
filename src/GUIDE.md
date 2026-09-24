@@ -5,11 +5,12 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 ├── __init__.py
 ├── domain/                            # 领域规则测试
 │   ├── __init__.py
-│   └── test_domain_proxy_pool.py      # ProxyPool（分组/TTL/晋级/淘汰/pin/锁定/序列化）
+│   ├── test_domain_proxy_pool.py      # ProxyPool（分组/TTL/晋级/淘汰/pin/锁定/序列化）
+│   └── test_purity.py                 # 纯净度契约（代理规则 glob 匹配 / 结果归一化）
 ├── use_cases/                         # 用例测试
 │   ├── __init__.py
 │   ├── test_autoload.py               # autoload 清单入队
-│   ├── test_check_purity.py           # 纯洁度多源合并与缓存
+│   ├── test_check_purity.py           # 纯净度用例（IP 提取/缓存分区与过期/归一化/三步编排边界）
 │   ├── test_ip_geo.py                 # IP 归属三步编排与聚合
 │   ├── test_network_gate.py           # 本地链路门控（状态码/多目标/失败结论缓存/成功不缓存/并发共享）
 │   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化
@@ -20,8 +21,13 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_http_client.py            # http_client 的 socks 路由（socks4/socks5 走 ProxyConnector 且 rdns=True，http/https 复用共享 session）
 │   ├── test_proxy_scheduler.py        # 异步调度器
 │   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False/上游存活标记）
-│   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/purity 缓存）
+│   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/ippure 缓存按源分区/旧表丢弃）
 │   ├── test_ua_generator.py           # 确定性 UA 生成
+│   ├── ippure/                        # 纯净度插件测试（mock requests，不打真实网络）
+│   │   ├── __init__.py
+│   │   ├── test_base.py               # 公共骨架（compact 过滤 / 插件导入不拉起重依赖）
+│   │   ├── test_abuseipdb.py          # AbuseIPDB（元数据/字段映射/usage 词表/参数校验/代理注入）
+│   │   └── test_ipok.py               # ipok.io（同契约，无密钥）
 │   └── sources/                       # 代理源测试
 │       ├── __init__.py
 │       ├── test_freeproxy_world.py    # FPW 多阶段爬取（mock 页面/轮转/限流）
@@ -29,12 +35,13 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 ├── framework/                         # 框架层测试
 │   ├── __init__.py
 │   ├── test_cli.py                    # argparse 全命令 + setup_logging(debug) 透传
-│   ├── test_container.py              # 组合根降级（缺 key/缺 mmdb/web 门控）+ 链路门控配置校验（子进程）+ 惰性导入守卫（子进程）
+│   ├── test_config.py                 # 配置加载（.env 注入与优先级/节归属与跨文件重名/ippure.toml 校验，子进程）
+│   ├── test_container.py              # 组合根降级（缺环境变量/未知源名/插件参数非法/缺 mmdb/web 门控）+ 链路门控配置校验（子进程）+ 惰性导入守卫（子进程）
 │   ├── test_logging.py                # logging.toml 双通道分档/逐 logger 覆盖
 │   ├── test_logbuffer.py              # 面板日志缓冲（环形裁剪/seq 游标/stack 采集/buffer_start）
 │   ├── test_loop.py                   # run_coro 跨循环桥接
 │   ├── test_view.py                   # view.py 数据层（缓存读取/行构建）
-│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯洁度/geo/日志增量与清空）
+│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/日志增量与清空）
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
 │   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手，响应体可自定义以区分多上游）

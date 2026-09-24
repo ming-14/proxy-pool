@@ -3,7 +3,7 @@
 依赖方向：framework 层 import 所有内层（interfaces/use_cases/domain），
 内层不 import 本模块。
 
-重依赖惰性导入：纯洁度客户端（requests 链）与 GeoLite2 定位器（geoip2 链）
+重依赖惰性导入：纯净度检查插件（requests 链）与 GeoLite2 定位器（geoip2 链）
 仅在对应功能启用的分支内 import——serve 稳态（心跳/门控走 aiohttp）与
 geoip.enabled=false 场景不加载这些依赖树（边际 ~5.6MB，调研见会话记录）。
 """
@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 from src.domain.models import SourceSpec, FpwConfig
-from src.domain.ports import ProxySource, IpPurityChecker
+from src.domain.ports import ProxySource
+from src.domain.purity import IppurePluginConfig, IppureSourceSpec, resolve_proxy
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
 from src.interfaces.sqlite_store import SqliteProxyStore
@@ -50,7 +52,7 @@ class Container:
     proxy_server: PproxyServer
     standby: StandbyQueueUseCase
     async_getter: AsyncHttpGetter
-    purity: CheckPurityUseCase | None   # IP 纯洁度检查；缺 API key 时为 None（功能禁用）
+    purity: CheckPurityUseCase | None   # IP 纯净度检查；web 关闭/未启用源/缺密钥时为 None（功能禁用）
     geo: IpGeoUseCase | None          # IP 归属地图（GeoLite2 定位 + 缓存 + 聚合）；geoip.enabled=false 时为 None
 
     def save(self) -> None:
@@ -87,6 +89,66 @@ def _source_loader(name: str) -> ProxySource:
         task_interval=config.FPW_TASK_INTERVAL,
     )
     return importlib.import_module(name).create_source(config=fpw_config)
+
+
+def _load_ippure(store: SqliteProxyStore) -> CheckPurityUseCase | None:
+    """加载纯净度检查插件并组装用例（仅面板消费）
+
+    配置错误（插件模块导入失败/缺 SOURCE/插件名重复/节未被声明/未知源名/插件参数非法）
+    直接抛错——启动即暴露，不做运行期兜底；选中源缺必需环境变量时只警告并禁用，
+    不阻断启动。插件模块仅在本函数内 import，保持依赖链惰性。
+    """
+    from src.framework import config
+
+    if not config.WEB_ENABLED or not config.IPPURE_SOURCE:
+        return None
+    registry: dict[str, tuple[object, IppureSourceSpec]] = {}
+    for module_path in config.IPPURE_PLUGIN_MODULES:
+        try:
+            module = importlib.import_module(module_path)
+        except ImportError as exc:
+            raise ValueError(f"ippure 插件模块导入失败: {module_path}（{exc}）") from exc
+        spec = getattr(module, "SOURCE", None)
+        if not isinstance(spec, IppureSourceSpec):
+            raise ValueError(f"{module_path} 未暴露 IppureSourceSpec 类型的模块级 SOURCE")
+        factory = getattr(module, "create_checker", None)
+        if not callable(factory):
+            raise ValueError(f"{module_path} 未暴露 create_checker 工厂函数")
+        if spec.name in registry:
+            raise ValueError(f"ippure 插件名重复: {spec.name!r}（{module_path}）")
+        registry[spec.name] = (factory, spec)
+    undeclared = set(config.IPPURE_SECTIONS) - set(registry)
+    if undeclared:
+        raise ValueError(
+            f"ippure.toml 含未被任何插件声明的节 {sorted(undeclared)}"
+            f"（已声明的插件名 {sorted(registry)}）"
+        )
+    entry = registry.get(config.IPPURE_SOURCE)
+    if entry is None:
+        raise ValueError(
+            f"未知 ippure.source={config.IPPURE_SOURCE!r}（可选 {sorted(registry)}）"
+        )
+    factory, spec = entry
+    missing = [key for key in spec.env_keys if not os.environ.get(key)]
+    if missing:
+        logger.warning("纯净度检查已禁用：缺少环境变量 %s（见 config/.env）", ", ".join(missing))
+        return None
+    proxy = resolve_proxy(config.IPPURE_PROXY_RULES, spec.name)
+    label = spec.label or spec.name  # 插件未声明展示名时退回插件名，避免面板出现空来源
+    logger.info("纯净度检查源 %s(%s) 经 %s", spec.name, label, proxy or "直连")
+    checker = factory(IppurePluginConfig(
+        timeout=config.IPPURE_TIMEOUT,
+        proxy=proxy,
+        section=config.IPPURE_SECTIONS.get(spec.name, {}),
+        env={key: os.environ[key] for key in spec.env_keys},
+    ))
+    return CheckPurityUseCase(
+        checker,
+        source=spec.name,
+        label=label,
+        cache_ttl=config.IPPURE_CACHE_TTL,
+        cache=store,
+    )
 
 
 def _load_autoload(pool: ProxyPool, standby_group: str, file_path: str) -> None:
@@ -164,29 +226,9 @@ def build_container(cache_db: str | None = None) -> Container:
         metrics_window=config.METRICS_WINDOW,
         chart_window=config.STANDBY_CHART_WINDOW,
     )
-    # IP 纯洁度 / IP 归属：仅 Web 面板消费（api.py）——web 关闭时不构造也不
-    # import 依赖链（requests/geoip2 客户端模块均分支内惰性导入）
-    if config.PURITY_SOURCE not in ("ipok", "abuseipdb"):
-        raise ValueError(f"未知 purity.source: {config.PURITY_SOURCE!r}（应为 ipok 或 abuseipdb）")
-    purity_checker: IpPurityChecker | None = None
-    if config.WEB_ENABLED:
-        if config.PURITY_SOURCE == "ipok":
-            from src.interfaces.ipok_client import IpokClient
-            purity_checker = IpokClient(proxy=config.IPOK_PROXY)
-        elif config.ABUSEIPDB_API_KEY:
-            from src.interfaces.abuseipdb_client import AbuseIpDbClient
-            purity_checker = AbuseIpDbClient(api_key=config.ABUSEIPDB_API_KEY, proxy=config.ABUSEIPDB_PROXY)
-        else:
-            # 缺 key 只禁用纯洁度检查，不阻断启动（缺失原因见 config 的 WARNING）
-            logger.warning("纯洁度检查已禁用：缺少 ABUSEIPDB_API_KEY（config/apikey.env）")
-    purity: CheckPurityUseCase | None = None
-    if purity_checker is not None:
-        purity = CheckPurityUseCase(
-            checker=purity_checker,
-            cache=store,
-            max_age_in_days=config.ABUSEIPDB_MAX_AGE_DAYS,
-            cache_ttl=config.ABUSEIPDB_CACHE_TTL,
-        )
+    # IP 纯净度 / IP 归属：仅 Web 面板消费（api.py）——web 关闭时不构造也不
+    # import 依赖链（纯净度插件模块/geoip2 均分支内惰性导入）
+    purity = _load_ippure(store)
     # IP 归属地图：GeoLite2 离线定位 + SQLite 缓存（Web 面板地图页面按需懒查）
     # geoip.enabled=false 或 web 关闭时不构造（不 import geoip2 链、不加载 mmdb）
     # 定位库切换（City/Country 或版本升级）时指纹变化，清空旧缓存防止粒度不一致数据复用

@@ -35,10 +35,10 @@ export interface StandbyEntry {
   consecutive_fails: number;
   pinned: boolean;
   locked: boolean;             // 锁定为 pproxy 唯一上游（列表置顶显示，其余行灰显）
-  purity: PurityInfo | null;   // 缓存的纯洁度（无缓存为 null）
+  purity: PurityInfo | null;   // 缓存的纯净度（无缓存为 null）
   joined_at: number | null;    // 进入队列组的时间（秒）；锁定行的值即锁定时刻
   speedtest?: SpeedTestStatus | null;  // 后端测速任务状态（刷新后恢复；无记录为 undefined/null）
-  purity_state?: PurityState | null;   // 后端纯洁度检查中间态（checking/error；无记录为 undefined/null）
+  purity_state?: PurityState | null;   // 后端纯净度检查中间态（checking/error；无记录为 undefined/null）
 }
 
 /** 单代理序列点：[时间戳（秒）, 值]；延时序列的值为 null 表示该轮探测失败 */
@@ -62,11 +62,32 @@ export interface StandbyGeoMap {
   geo: Record<string, GeoInfo | null>;
 }
 
+/** IP 用途分类（核心侧通用枚举；各检查源的原值由插件映射到这些值） */
+export type UsageType =
+  | 'residential'
+  | 'mobile'
+  | 'hosting'
+  | 'business'
+  | 'education'
+  | 'government'
+  | 'military'
+  | 'library'
+  | 'cdn'
+  | 'search_engine'
+  | 'reserved'
+  | 'unknown';
+
 export interface PurityInfo {
-  abuse_confidence_score?: number | null;
-  usage_type?: string | null;
-  // /api/proxy/purity 完整响应另含 ip/last_seen_days 等，tag 仅用以上两字段
+  score?: number | null;               // 0-100，越高越脏（None = 源未给出）
+  usage_type?: UsageType | string | null;
+  // /api/proxy/purity 完整响应另含 ip/extra 等，tag 仅用以上两字段
   [key: string]: unknown;
+}
+
+/** 纯净度检查源元数据（null = 功能未启用：web 关闭 / 未选源 / 缺密钥） */
+export interface PuritySource {
+  name: string;
+  label: string;
 }
 
 export interface SourceStat {
@@ -98,6 +119,7 @@ export interface StatusSnapshot {
   groups: Record<string, GroupStat>;
   available_count: number;
   geo_enabled: boolean;
+  purity_source: PuritySource | null;  // 纯净度检查源（前端据此隐藏检查按钮并标注来源）
   standby: StandbyEntry[];
   standby_count: number;
   locked_proxy: string | null;
@@ -191,7 +213,7 @@ export interface SpeedTestStatus {
   ts?: number | null;   // 完成时间戳（秒，前端格式化显示"什么时候测的"）
 }
 
-/** 后端任务状态：纯洁度检查中间态（/api/status standby 行；结果由 SQLite 缓存承载） */
+/** 后端任务状态：纯净度检查中间态（/api/status standby 行；结果由 SQLite 缓存承载） */
 export interface PurityState {
   status: 'checking' | 'error';
   error?: string | null;

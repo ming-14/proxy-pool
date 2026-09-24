@@ -12,9 +12,10 @@ proxy-pool/
 │   ├── pool.toml                  # [pool] 阈值/语义组/可请求组 + [groups] 分组定义
 │   ├── sources.toml               # [fetch] 拉取调度（含 freeproxy_world）+ [[sources]] 源列表
 │   ├── serve.toml                 # [server] serve 端口/队列/心跳/链路门控/metrics
-│   ├── panel.toml                 # [purity] 纯洁度 + [geoip] IP 归属地图
+│   ├── panel.toml                 # [geoip] IP 归属地图
+│   ├── ippure.toml                # IP 纯净度检查：[ippure] 开关/超时/缓存 + [[plugins]] 检查源插件 + [[proxy_rules]] 声明式代理
 │   ├── logging.toml               # [logging] 控制台/文件级别分档 + 逐 logger 覆盖
-│   └── apikey.env                 # 密钥（ABUSEIPDB_API_KEY 等，git 忽略）
+│   └── .env                       # 密钥（KEY=VALUE，git 忽略；加载时注入进程环境变量）
 ├── src/                           # 主包（干净架构四层）
 │   ├── __init__.py
 │   ├── GUIDE.md                   # 测试目录结构树（tests/ 全量说明，测试增删时同步）
@@ -22,7 +23,8 @@ proxy-pool/
 │   │   ├── __init__.py
 │   │   ├── proxy_pool.py          # ProxyPool（分组/TTL/晋级/淘汰/源暂停/序列化）
 │   │   ├── models.py              # 值对象：SourceSpec/FpwConfig、normalize_proxy/to_proxy_dict
-│   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/TaskScheduler
+│   │   ├── purity.py              # 纯净度契约：UsageType 枚举、插件元数据/注入配置、ProxyRule + resolve_proxy、normalize_result
+│   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/TaskScheduler/IpPurityChecker/PurityCacheStore
 │   ├── use_cases/                 # 用例层：应用业务逻辑，构造注入
 │   │   ├── __init__.py
 │   │   ├── fetch_proxies.py       # 拉取用例（三阶段：拉取/去重入组/去重率暂停）
@@ -39,6 +41,11 @@ proxy-pool/
 │   │   ├── scheduler.py           # ProxyScheduler 异步调度器（asyncio）
 │   │   ├── proxy_server.py        # PproxyServer（rserver 动态同步 + rc 调度 + 上游存活标记（心跳判定→pproxy alive）+ 绝不直连（direct_fallback=False，无上游回错误）+ 全局/per-proxy 流量计数 + per-proxy 流量历史）
 │   │   ├── ua_generator.py         # 确定性 UA 生成器（基于 fake-useragent）
+│   │   ├── ippure/                # IP 纯净度检查插件（各源地位平等；新增源 = 加一个模块 + ippure.toml 两行）
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py            # HttpPurityChecker 公共骨架（超时/代理/证书策略 + JSON 请求，requests 方法级导入）
+│   │   │   ├── abuseipdb.py       # AbuseIPDB 源（SOURCE 元数据 + create_checker + 字段/usage 词表）
+│   │   │   └── ipok.py            # ipok.io 源（同契约，无需密钥）
 │   │   └── sources/               # 代理源适配器
 │   │       ├── __init__.py
 │   │       ├── base.py            # HttpSourceFetcher 基类（URL 构建 + 重试骨架）
@@ -50,7 +57,7 @@ proxy-pool/
 │   └── framework/                 # 框架与驱动层：具体技术实现
 │       ├── __init__.py
 │       ├── config.py              # 配置加载（config/ 领域拆分多文件，固定节归属）
-│       ├── container.py           # 组合根（依赖组装；purity/geo 按 WEB_ENABLED 门控构造、重依赖分支内惰性导入）
+│       ├── container.py           # 组合根（依赖组装；纯净度插件/geo 按 WEB_ENABLED 门控构造、插件模块与 geoip2 分支内惰性导入）
 │       ├── cli.py                 # argparse 命令处理
 │       ├── serve.py               # serve 主循环（调度 fill/heartbeat/补测 + 独立流量采样循环 + 上游同步）
 │       ├── logging.py             # 日志模块（双通道分档 + 逐 logger 覆盖）
@@ -59,7 +66,7 @@ proxy-pool/
 │           ├── __init__.py
 │           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加 + /api/logs 面板日志增量拉取/清空）+ Vite 产物静态服务
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
-│           ├── panel_state.py     # PanelTasks（面板任务状态：测速/纯洁度检查的进行中与终态，/api/status 下发供前端刷新后恢复）
+│           ├── panel_state.py     # PanelTasks（面板任务状态：测速/纯净度检查的进行中与终态，/api/status 下发供前端刷新后恢复）
 │           ├── server.py          # aiohttp 服务器启动
 │           └── static/            # 前端构建产物（frontend/ npm run build 输出，不入库，见 .gitignore，勿手改）
 │               ├── index.html     # Vite 入口（hash 路由单页）
@@ -81,7 +88,7 @@ proxy-pool/
 │       ├── api/client.ts          # 类型化 API 客户端（fetch 封装 + ApiError）
 │       ├── stores/                # Pinia：status（轮询+历史合并）/ theme / toast
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）/ series（降采样·速率差分·共享时间窗口·sparkline 坐标）
-│       ├── composables/           # useRowSelection（框选）/ usePurity（纯洁度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+面板可见与页面前台双节流+主题联动）
+│       ├── composables/           # useRowSelection（框选）/ usePurity（纯净度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+面板可见与页面前台双节流+主题联动）
 │       ├── vendor/logpanel/       # 日志视窗组件（vendored Vue 3 + TS，可整体复用到其它 Vue 3 项目）：默认值/契约类型 + LogPanel 外壳（悬浮窗/底部抽屉双形态）+ parts（TitleBar/ToolBar/SidePanel/LogLine/VirtualList/ToastStack/IconSvg）+ composables（useLogView 视图状态机、useWindowGeometry 悬浮窗几何、useSheetDetent 抽屉档位、useViewport 布局/可视视口度量、useMediaQuery、useToasts）+ utils（filter/format/tagColor/storage/clipboard/icons/sheet）；样式 scoped + --lp-* 变量，虚拟列表用 @tanstack/vue-virtual
 │       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage

@@ -4,11 +4,12 @@
 #   pool.toml     池策略：[pool] 晋级/淘汰阈值 + [groups] 分组定义
 #   sources.toml  代理源：[fetch] 拉取调度 + [[sources]] 源列表
 #   serve.toml    serve 调度：[server] 端口/队列/心跳/链路门控/metrics
-#   panel.toml    面板功能：[purity] 纯洁度 + [geoip] IP 归属地图
+#   panel.toml    面板功能：[geoip] IP 归属地图
+#   ippure.toml   IP 纯净度检查：[ippure] 开关与通用参数 + [[plugins]] 检查源插件 + [[proxy_rules]] 代理规则
 # 说明：
 # - [paths] 下路径相对项目根（config/ 所在目录的上一级）解析
 # - 组全部在 pool.toml [groups] 定义（组语义由配置决定，代码不硬编码组名）
-# - 密钥不入 TOML：config/apikey.env
+# - 密钥不入 TOML：config/.env（加载时注入环境变量，git 忽略）
 
 # ---------------------------------------------------------------- 缓存与日志路径
 [paths]

@@ -81,27 +81,29 @@ class TaskScheduler(Protocol):
 
 
 class IpPurityChecker(Protocol):
-    """IP 纯洁度检查端口：查询 IP 的滥用举报信息（AbuseIPDB 等）
+    """IP 纯净度检查端口（插件实现，见 interfaces/ippure/）
 
-    返回 dict 含 abuse_confidence_score(0-100) / usage_type / country_code /
-    isp / total_reports 等字段。实现方直连外部 API，不走代理。
+    返回 {score, usage_type, extra}：score 为 0-100 整数（越高越脏，None = 源未给出），
+    usage_type 为 domain.purity.UsageType 成员（源原值由插件映射），extra 为源特有字段。
+    实现方直连外部 API；代理与超时由组合根按 ippure.toml 注入，实现方不读配置。
     """
 
-    def check(self, ip: str, *, max_age_in_days: int = 90) -> dict: ...
+    def check(self, ip: str) -> dict: ...
 
 
 class PurityCacheStore(Protocol):
-    """IP 纯洁度缓存存储端口：持久化检查结果避免重复调 API（AbuseIPDB 有日限额）
+    """IP 纯净度缓存存储端口：持久化检查结果避免重复调 API（部分源有日限额）
 
+    按 (源名, IP) 分区：同一 IP 在不同源下的分数不同，换源不得复用旧源结果。
     TTL 判断在用例层（缓存策略非领域规则）；store 只做纯读写。
     """
 
-    def get_purity(self, ip: str) -> dict | None:
+    def get_purity(self, source: str, ip: str) -> dict | None:
         """读取缓存记录；返回 {"result": {...}, "cached_at": float}，None 表示无缓存"""
         ...
 
-    def save_purity(self, ip: str, result: dict) -> None:
-        """写入/更新缓存（upsert by ip）"""
+    def save_purity(self, source: str, ip: str, result: dict) -> None:
+        """写入/更新缓存（upsert by (source, ip)）"""
         ...
 
 

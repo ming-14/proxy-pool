@@ -98,9 +98,21 @@ class _MockProxyLoop:
 
 def _make_config_dir(tmpdir: Path, probe_port: int) -> Path:
     """复制真实配置目录并定向补丁：config.toml 改独立 cache_db/日志路径，
-    serve.toml 改本地 mock 探测 URL；其余（组/源/geoip/apikey）与真实语义一致"""
+    serve.toml 改本地 mock 探测 URL；其余（组/源/geoip/ippure）与真实语义一致。
+
+    纯净度检查在 e2e 中恒为禁用态：ippure.toml 的 source 置空（不依赖环境变量状态——
+    父进程导入 config 时会把 .env 注入 os.environ 并被子进程继承）；同时删除 .env，
+    避免把真实密钥带进测试进程。
+    """
     dst = tmpdir / "config"
     shutil.copytree(CONFIG_SRC, dst)
+    (dst / ".env").unlink(missing_ok=True)
+    ippure = dst / "ippure.toml"
+    ippure.write_text(
+        re.sub(r'^source = "[^"]*"', 'source = ""', ippure.read_text(encoding="utf-8"),
+               count=1, flags=re.M),
+        encoding="utf-8",
+    )
     cfg = dst / "config.toml"
     text = cfg.read_text(encoding="utf-8")
     text = text.replace('cache_db = ".cache.db"', f'cache_db = "{(tmpdir / "e2e.cache.db").as_posix()}"')

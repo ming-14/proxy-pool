@@ -1,14 +1,15 @@
 """应用配置：config/ 目录下按领域拆分的多个 TOML（固定文件名，无 include/合并机制）
 
-    config.toml   [paths] [web]        路径与面板开关
-    pool.toml     [pool] [groups]      池策略与分组定义
-    sources.toml  [fetch] [[sources]]  代理源与拉取调度
-    serve.toml    [server]             serve 端口/队列/心跳/链路门控/metrics
-    panel.toml    [purity] [geoip]     面板功能（纯洁度/归属地图）
-    logging.toml  [logging]            日志双通道级别分档 + 逐 logger 覆盖
-    apikey.env    密钥（KEY=VALUE，git 忽略）
+    config.toml   [paths] [web]               路径与面板开关
+    pool.toml     [pool] [groups]             池策略与分组定义
+    sources.toml  [fetch] [[sources]]         代理源与拉取调度
+    serve.toml    [server]                    serve 端口/队列/心跳/链路门控/metrics
+    panel.toml    [geoip]                     面板功能（IP 归属地图）
+    ippure.toml   [ippure] [[plugins]] ...    IP 纯净度检查（插件节名由插件自声明）
+    logging.toml  [logging]                   日志双通道级别分档 + 逐 logger 覆盖
+    .env          密钥（KEY=VALUE，git 忽略）——加载时注入进程环境变量
 
-每个顶层节固定归属一个文件：节放错文件直接报错（防静默失效），缺文件报错。
+每个顶层节固定归属一个文件：节放错文件/跨文件重复直接报错（防静默失效），缺文件报错。
 本模块在导入时加载并导出模块级常量（PROXY_GROUPS/TRUSTED_GROUP/SOURCES/
 SERVER_* 等），组合根与各框架层模块只从这里导入，不直接接触 TOML。
 组全部由 pool.toml [groups] 定义（仅 ttl），可请求组由 [pool].requestable_groups
@@ -32,38 +33,83 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # Python 3.8 兼容
 
+from src.domain.purity import ProxyRule  # noqa: E402  (tomllib 分支之后，保持导入分组清晰)
+
 # config.py 位于 src/framework/，上溯 3 级到项目根
 _PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # PROXY_POOL_CONFIG 环境变量指向替代配置目录（e2e 测试隔离用：临时 cache_db、
 # 本地 mock 探测 URL、独立端口）；缺省为项目 config/。目录内文件须齐全（固定清单，无回退）
 CONFIG_DIR = Path(os.environ.get("PROXY_POOL_CONFIG") or (_PROJECT_ROOT / "config"))
 
-# 文件名 -> 该文件允许的顶层节。节跨文件放置视为配置错误（避免"放错文件静默失效"）。
-_SECTION_OWNERSHIP: dict[str, set[str]] = {
+# ---------------------------------------------------------------- 环境变量注入（config/.env）
+# 密钥统一走环境变量：加载配置前把 .env 注入进程环境（KEY=VALUE，值可带引号），
+# 已存在的真实环境变量优先、不被覆盖；缺失 .env 静默（密钥可由真实环境变量提供）。
+_ENV_FILE = CONFIG_DIR / ".env"
+
+
+def _inject_env_file(path: Path) -> int:
+    """把 .env 注入 os.environ，返回注入条数；非法行直接报错（含行号，防静默失效）"""
+    if not path.exists():
+        return 0
+    injected = 0
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise ValueError(f"{path} 第 {lineno} 行不是 KEY=VALUE 格式: {raw!r}")
+        if not os.environ.get(key):
+            os.environ[key] = value.strip().strip("'\"")
+            injected += 1
+    return injected
+
+
+_injected_env_count = _inject_env_file(_ENV_FILE)
+if _ENV_FILE.exists():
+    _logger.info("已从 %s 注入 %d 个环境变量（已存在的变量不覆盖）", _ENV_FILE, _injected_env_count)
+
+# 文件名 -> 该文件允许的顶层节。节跨文件放置/跨文件重名视为配置错误（避免"放错文件静默失效"）。
+# ippure.toml 的插件节名由插件自声明（任意名），用 _PLUGIN_SECTIONS 哨兵豁免本层校验，
+# 容器层再按插件元数据核对（见 container._load_ippure）。
+_PLUGIN_SECTIONS = object()
+_SECTION_OWNERSHIP: dict[str, set] = {
     "config.toml": {"paths", "web"},
     "pool.toml": {"pool", "groups"},
     "sources.toml": {"fetch", "sources"},
     "serve.toml": {"server"},
-    "panel.toml": {"purity", "geoip"},
+    "panel.toml": {"geoip"},
+    "ippure.toml": {"ippure", "plugins", "proxy_rules", _PLUGIN_SECTIONS},
     "logging.toml": {"logging"},
 }
 
 
-def _load_all() -> dict:
-    """加载全部领域配置文件，合并为单一节字典；缺失/解析失败/节越界直接报错"""
+def _load_all() -> tuple[dict, dict[str, dict]]:
+    """加载全部领域配置文件
+
+    返回 (合并节字典, 各文件原始节字典)；缺失/解析失败/节越界/跨文件重名直接报错。
+    合并前先查跨文件重名：两文件同名顶层节会互相覆盖，必须显式暴露而不是静默丢一份。
+    """
     merged: dict = {}
+    per_file: dict[str, dict] = {}
     for filename, allowed in _SECTION_OWNERSHIP.items():
         path = CONFIG_DIR / filename
         with open(path, "rb") as f:  # 缺文件 FileNotFoundError 即快速失败
             data = tomllib.load(f)
-        misplaced = set(data) - allowed
-        if misplaced:
-            raise ValueError(
-                f"{filename} 含不属于本文件的节 {sorted(misplaced)}；"
-                f"各节归属：{_SECTION_OWNERSHIP}"
-            )
+        duplicated = set(data) & set(merged)
+        if duplicated:
+            raise ValueError(f"{filename} 与其它配置文件重复定义节 {sorted(duplicated)}")
+        if _PLUGIN_SECTIONS not in allowed:
+            misplaced = set(data) - allowed
+            if misplaced:
+                raise ValueError(
+                    f"{filename} 含不属于本文件的节 {sorted(misplaced)}；"
+                    f"本文件允许的节 {sorted(allowed)}"
+                )
         merged.update(data)
-    return merged
+        per_file[filename] = data
+    return merged, per_file
 
 
 def _parse_ttl(value) -> int | None:
@@ -75,7 +121,7 @@ def _parse_ttl(value) -> int | None:
     return int(value)
 
 
-_toml = _load_all()
+_toml, _toml_files = _load_all()
 
 # ---------------------------------------------------------------- 代理分组
 # 组全部由 [groups] 定义（组名 -> {ttl}），仅声明 ttl：
@@ -211,36 +257,69 @@ LOG_LOGGERS: dict[str, int] = {
     for name, level in _logging_cfg.get("loggers", {}).items()
 }
 
-# ---------------------------------------------------------------- AbuseIPDB（IP 纯洁度检查）
-# API key 从配置目录的 apikey.env 加载（敏感信息不入 TOML，避免 git 追踪）。
-# 文件格式：KEY=VALUE 每行一个，# 开头为注释。key 缺失时纯洁度检查功能禁用。
-_APIKEY_FILE = CONFIG_DIR / "apikey.env"
-ABUSEIPDB_API_KEY: str | None = None
-if _APIKEY_FILE.exists():
-    with open(_APIKEY_FILE, "r", encoding="utf-8") as _f:
-        for _line in _f:
-            _line = _line.strip()
-            if not _line or _line.startswith("#") or "=" not in _line:
-                continue
-            _k, _v = _line.split("=", 1)
-            if _k.strip() == "ABUSEIPDB_API_KEY":
-                ABUSEIPDB_API_KEY = _v.strip()
-                break
-# 查询窗口（天）：只统计该天数内的举报，AbuseIPDB 允许 1-365
-ABUSEIPDB_MAX_AGE_DAYS = 90
-# 缓存有效期（秒）：30 天内同 IP 直接返回缓存，避免重复调 API 消耗日限额
-ABUSEIPDB_CACHE_TTL = 30 * 86400
-# 各源代理（被墙时用），空字符串表示直连
-_purity_cfg = _toml.get("purity", {})
-PURITY_SOURCE = _purity_cfg.get("source", "ipok")   # 检查源：ipok / abuseipdb
-IPOK_PROXY = _purity_cfg.get("ipok_proxy", "")
-ABUSEIPDB_PROXY = _purity_cfg.get("abuseipdb_proxy", "")
-# key 缺失只警告：由组合根禁用纯洁度检查，不阻断启动（非 abuseipdb 源无需该文件，保持静默）
-if PURITY_SOURCE == "abuseipdb" and not ABUSEIPDB_API_KEY:
-    _logger.warning(
-        "未读取到 ABUSEIPDB_API_KEY（%s 缺失或未配置该键），纯洁度检查将禁用",
-        _APIKEY_FILE,
-    )
+# ---------------------------------------------------------------- IP 纯净度检查（ippure.toml）
+# 检查源为插件（src/interfaces/ippure/）：插件自声明配置节名（= SOURCE.name）与所需
+# 环境变量，本层只做静态校验与透传，不认识任何具体源；[[plugins]] 列模块导入路径，
+# 仅 [ippure].source 选中的插件会被组合根构造（见 container._load_ippure）。
+_IPPURE_KEYS = {"source", "timeout", "cache_ttl"}
+_ippure = _toml["ippure"]
+_ippure_unknown = set(_ippure) - _IPPURE_KEYS
+if _ippure_unknown:
+    raise ValueError(f"ippure.toml [ippure] 含未知键 {sorted(_ippure_unknown)}（可选 {sorted(_IPPURE_KEYS)}）")
+_ippure_missing = _IPPURE_KEYS - set(_ippure)
+if _ippure_missing:
+    raise ValueError(f"ippure.toml [ippure] 缺少必需键 {sorted(_ippure_missing)}")
+
+# 启用插件名（= 插件 SOURCE.name = 该插件配置节名）；空字符串表示禁用纯净度检查
+IPPURE_SOURCE = str(_ippure["source"]).strip()
+IPPURE_TIMEOUT = float(_ippure["timeout"])   # 单次查询超时秒
+IPPURE_CACHE_TTL = float(_ippure["cache_ttl"])  # 结果缓存有效期秒；0 = 不缓存
+if IPPURE_TIMEOUT <= 0:
+    raise ValueError(f"ippure.toml [ippure].timeout 须为正数: {IPPURE_TIMEOUT}")
+if IPPURE_CACHE_TTL < 0:
+    raise ValueError(f"ippure.toml [ippure].cache_ttl 不可为负: {IPPURE_CACHE_TTL}")
+
+_plugins = _toml.get("plugins") or []
+if not _plugins:
+    raise ValueError("ippure.toml [[plugins]] 不可为空（至少列出可用的检查源模块路径）")
+IPPURE_PLUGIN_MODULES: tuple[str, ...] = tuple(str(p.get("name", "")).strip() for p in _plugins)
+if any(not name for name in IPPURE_PLUGIN_MODULES):
+    raise ValueError('ippure.toml [[plugins]] 每项须为 name = "<模块导入路径>"')
+if len(set(IPPURE_PLUGIN_MODULES)) != len(IPPURE_PLUGIN_MODULES):
+    raise ValueError(f"ippure.toml [[plugins]] 模块路径重复: {sorted(IPPURE_PLUGIN_MODULES)}")
+
+# 插件自声明配置节（ippure.toml 除固定节外的全部节），原样交给插件解析；
+# 节名须与某个插件 SOURCE.name 一致，否则组合根报错（防拼错节名静默失效）
+IPPURE_SECTIONS: dict[str, dict] = {
+    name: section
+    for name, section in _toml_files["ippure.toml"].items()
+    if name not in {"ippure", "plugins", "proxy_rules"}
+}
+
+# 声明式代理规则：match 为插件名 glob，use 为代理 URL（空 = 直连）；按声明顺序取首个命中
+_PROXY_SCHEMES = ("http://", "https://", "socks4://", "socks5://")
+
+
+def _parse_proxy_rule(rule: dict) -> ProxyRule:
+    """校验单条代理规则（键/取值非法直接报错，避免错误规则静默失效）"""
+    unknown = set(rule) - {"match", "use"}
+    if unknown:
+        raise ValueError(f"ippure.toml [[proxy_rules]] 含未知键 {sorted(unknown)}（可选 match/use）")
+    match = str(rule.get("match", "")).strip()
+    use = str(rule.get("use", "")).strip()
+    if not match:
+        raise ValueError("ippure.toml [[proxy_rules]] 缺少 match（插件名 glob）")
+    if use and not use.startswith(_PROXY_SCHEMES):
+        raise ValueError(
+            f"ippure.toml [[proxy_rules]] use 非法 {use!r}"
+            f"（须为 http/https/socks4/socks5 URL 或空字符串）"
+        )
+    return ProxyRule(match=match, use=use)
+
+
+IPPURE_PROXY_RULES: tuple[ProxyRule, ...] = tuple(
+    _parse_proxy_rule(rule) for rule in (_toml.get("proxy_rules") or [])
+)
 
 # ---------------------------------------------------------------- IP 归属地（Web 地图）
 _geoip_cfg = _toml.get("geoip", {})

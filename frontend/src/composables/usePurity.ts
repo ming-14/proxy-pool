@@ -1,11 +1,14 @@
 /**
- * AbuseIPDB/ipok 纯洁度检查：模块级缓存（bind → 结果），2s 轮询重绘后 tag 保留，
- * 应用内跨页面切换保留（与旧版模块级 Map 语义一致）。
+ * IP 纯净度检查：模块级缓存（bind → 结果），2s 轮询重绘后 tag 保留，
+ * 应用内跨页面切换保留。
+ *
+ * 检查源为后端插件（ippure.toml 选定，核心与前端不感知具体源）；
+ * 结果字段为通用契约 score（0-100，越高越脏）+ 归一化 usage_type。
  *
  * 状态对齐：后端（PanelTasks）记录检查中间态（checking/error，键为 IP），结果由
- * SQLite 缓存承载（30 天 TTL），/api/status 每行下发 purity（缓存结果）+ purity_state
- * （中间态）。渲染用 purityEntryOf：后端终态优先（结果/失败），中间态其次（刷新后
- * 恢复"检查中"），本地 Map 兜底——防本地 checking 遮蔽后端已完成的终态。
+ * SQLite 缓存承载（ippure.toml cache_ttl），/api/status 每行下发 purity（缓存结果）+
+ * purity_state（中间态）。渲染用 purityEntryOf：后端终态优先（结果/失败），中间态其次
+ * （刷新后恢复"检查中"），本地 Map 兜底——防本地 checking 遮蔽后端已完成的终态。
  */
 import { reactive } from 'vue';
 import { api } from '@/api/client';
@@ -21,24 +24,19 @@ export interface PurityEntry extends PurityInfo {
 // bind → 检查状态/结果
 export const purityCache = reactive(new Map<string, PurityEntry>());
 
-// usageType 英文 → 中文短标签（tag 空间有限；AbuseIPDB + ipok.io 两套词表）
+// 归一化 usage_type（核心枚举）→ 中文短标签（tag 空间有限，各源共用一套文案）
 const USAGE_TYPE_SHORT: Record<string, string> = {
-  Commercial: '商业',
-  Organization: '组织',
-  Government: '政府',
-  Military: '军事',
-  'University/College/School': '学校',
-  Library: '图书馆',
-  'Content Delivery Network': 'CDN',
-  'Fixed Line ISP': '固定ISP',
-  'Mobile ISP': '移动ISP',
-  'Data Center/Web Hosting/Transit': '数据中心',
-  'Search Engine Spider': '爬虫',
-  Reserved: '保留',
-  hosting: '托管',
   residential: '住宅',
   mobile: '移动',
+  hosting: '托管',
   business: '企业',
+  education: '学校',
+  government: '政府',
+  military: '军事',
+  library: '图书馆',
+  cdn: 'CDN',
+  search_engine: '爬虫',
+  reserved: '保留',
   unknown: '未知',
 };
 
@@ -55,7 +53,7 @@ export function purityScoreClass(score: number): string {
 }
 
 /**
- * 行内纯洁度状态解析（纯函数，可单测）：后端终态优先，本地 Map 兜底。
+ * 行内纯净度状态解析（纯函数，可单测）：后端终态优先，本地 Map 兜底。
  * - serverState error → 检查失败（刷新后恢复）
  * - serverState checking → 检查中（刷新后恢复；有旧缓存也显示检查中，用户刚触发）
  * - cached（row.purity，SQLite 缓存结果）→ 已完成结果
@@ -91,6 +89,6 @@ export async function checkPurity(proxy: string): Promise<void> {
     purityCache.set(bind, { status: 'done', ...r });
   } catch (e) {
     purityCache.set(bind, { status: 'error', error: e instanceof Error ? e.message : String(e) });
-    toast.error('纯洁度检查失败', e instanceof Error ? e.message : String(e));
+    toast.error('纯净度检查失败', e instanceof Error ? e.message : String(e));
   }
 }

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -248,37 +249,63 @@ class TestSqliteProxyStoreWithPool(unittest.TestCase):
         pool2.restore_state(self.store.load())
         self.assertNotIn("src.interfaces.sources.ip89", pool2.source_paused)
 
-    # ---------------- IP 纯洁度缓存 ----------------
+    # ---------------- IP 纯净度缓存（按 (源名, IP) 分区）----------------
     def test_purity_cache_save_and_get(self):
         """写入后读取返回相同结果 + cached_at 时间戳"""
-        result = {"abuse_confidence_score": 3, "usage_type": "Data Center/Web Hosting/Transit"}
-        self.store.save_purity("1.2.3.4", result)
-        cached = self.store.get_purity("1.2.3.4")
+        result = {"score": 3, "usage_type": "hosting", "extra": {"isp": "X"}}
+        self.store.save_purity("abuseipdb", "1.2.3.4", result)
+        cached = self.store.get_purity("abuseipdb", "1.2.3.4")
         assert cached is not None
-        assert cached["result"]["abuse_confidence_score"] == 3
-        assert cached["result"]["usage_type"] == "Data Center/Web Hosting/Transit"
+        assert cached["result"] == result
         assert cached["cached_at"] > 0
 
     def test_purity_cache_miss_returns_none(self):
         """未缓存的 IP 返回 None"""
-        assert self.store.get_purity("9.9.9.9") is None
+        assert self.store.get_purity("abuseipdb", "9.9.9.9") is None
+
+    def test_purity_cache_partitioned_by_source(self):
+        """同一 IP 在不同源下互不可见（换源不得复用旧源结果）"""
+        self.store.save_purity("abuseipdb", "1.2.3.4", {"score": 80})
+        assert self.store.get_purity("ipok", "1.2.3.4") is None
+        self.store.save_purity("ipok", "1.2.3.4", {"score": 5})
+        assert self.store.get_purity("abuseipdb", "1.2.3.4")["result"]["score"] == 80
+        assert self.store.get_purity("ipok", "1.2.3.4")["result"]["score"] == 5
 
     def test_purity_cache_upsert(self):
-        """同 IP 二次写入覆盖旧值"""
-        self.store.save_purity("1.2.3.4", {"abuse_confidence_score": 0})
-        self.store.save_purity("1.2.3.4", {"abuse_confidence_score": 100})
-        cached = self.store.get_purity("1.2.3.4")
-        assert cached["result"]["abuse_confidence_score"] == 100
+        """同 (源, IP) 二次写入覆盖旧值"""
+        self.store.save_purity("abuseipdb", "1.2.3.4", {"score": 0})
+        self.store.save_purity("abuseipdb", "1.2.3.4", {"score": 100})
+        cached = self.store.get_purity("abuseipdb", "1.2.3.4")
+        assert cached["result"]["score"] == 100
 
     def test_purity_cache_survives_reopen(self):
         """缓存持久化：关闭并重开数据库后缓存仍在"""
-        result = {"abuse_confidence_score": 5, "usage_type": "Fixed Line ISP"}
-        self.store.save_purity("5.6.7.8", result)
+        self.store.save_purity("ipok", "5.6.7.8", {"score": 5})
         self.store.close()
         self.store = SqliteProxyStore(self.db_path)
-        cached = self.store.get_purity("5.6.7.8")
+        cached = self.store.get_purity("ipok", "5.6.7.8")
         assert cached is not None
-        assert cached["result"]["abuse_confidence_score"] == 5
+        assert cached["result"]["score"] == 5
+
+    def test_legacy_purity_table_dropped(self):
+        """旧表 ip_purity_cache 在打开库时丢弃（字段语义已变，不迁移）"""
+        self.store.close()
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "CREATE TABLE ip_purity_cache (ip TEXT PRIMARY KEY, result TEXT NOT NULL, cached_at REAL NOT NULL)"
+        )
+        conn.execute("INSERT INTO ip_purity_cache VALUES ('1.2.3.4', '{}', 0)")
+        conn.commit()
+        conn.close()
+
+        self.store = SqliteProxyStore(self.db_path)
+
+        tables = {
+            row[0] for row in
+            self.store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "ip_purity_cache" not in tables
+        assert "ippure_cache" in tables
 
 
 class TestGeoCache(unittest.TestCase):

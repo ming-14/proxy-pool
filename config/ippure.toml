@@ -1,0 +1,28 @@
+# IP 纯净度检查（加载器 src/framework/config.py；插件实现 src/interfaces/ippure/）
+# 节归属：本文件固定拥有 [ippure] / [[plugins]] / [[proxy_rules]]，其余顶层节名由插件自声明
+# 密钥经环境变量注入（config/.env，KEY=VALUE，git 忽略）——本文件不得出现密钥
+
+[ippure]
+source = "abuseipdb"   # 启用的插件名（= 插件 SOURCE.name = 该插件的配置节名）；空字符串 = 禁用纯净度检查
+timeout = 10           # 单次查询超时秒
+cache_ttl = 2592000    # 结果缓存有效期秒（30 天）；0 表示不缓存（每次实查）
+
+# 可用检查插件：name 为模块导入路径（模块须暴露 SOURCE 元数据与 create_checker 工厂）。
+# 仅 [ippure].source 选中的插件会被构造；其声明的环境变量缺失时警告并禁用（不阻断启动）。
+[[plugins]]
+name = "src.interfaces.ippure.abuseipdb"
+
+[[plugins]]
+name = "src.interfaces.ippure.ipok"
+
+# 声明式代理规则（仅作用于纯净度检查）：按书写顺序取首个命中，无命中即直连。
+# match 为插件名 glob（* 通配），use 为代理 URL（空字符串 = 直连）；兜底规则（match = "*"）写最后。
+# [[proxy_rules]]
+# match = "abuse*"
+# use = "http://127.0.0.1:7890"
+
+# ---------------------------------------------------------------- 插件自声明配置节
+[abuseipdb]
+max_age_in_days = 90   # 举报统计窗口天数（1-365）
+
+[ipok]                 # 本源无参数；出现未知键即启动报错

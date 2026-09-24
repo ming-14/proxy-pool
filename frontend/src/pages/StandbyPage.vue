@@ -2,9 +2,9 @@
 /**
  * 代理服务队列页：每个代理一块 = 摘要行 + 行下质量带。
  *
- * 摘要行：序号 / 代理（地址 + 协议·归属地·入队时长 + 纯洁度 tag）/ 延迟 / 连续失败 /
- *         操作（纯洁 · 测速 · 固定 · 锁定）。
- * 质量带：行下常显的行内趋势图（延时趋势 / 流量速率）与质量指标（纯洁度 / 测速结果）——
+ * 摘要行：序号 / 代理（地址 + 协议·归属地·入队时长 + 纯净度 tag）/ 延迟 / 连续失败 /
+ *         操作（纯净度 · 测速 · 固定 · 锁定）。
+ * 质量带：行下常显的行内趋势图（延时趋势 / 流量速率）与质量指标（纯净度 / 测速结果）——
  *         不做逐项显示开关（进页面即全部可见），只有「收起/展开图表」一个密度开关：
  *         收起后回到单行密度便于纵览全队列，展开与否跨会话记住。
  *         没有采样的区块显示"暂无采样/未检查/未测速"占位。
@@ -13,12 +13,12 @@
  * - 状态（延迟/失败/固定/锁定）走 store 的 /api/status 2s 轮询；
  * - 逐代理序列走 /api/standby/series 增量（同一 2s 节拍驱动，见 useStandbySeries）；
  * - 归属地 5 分钟节流拉取（useStandbyGeo）；
- * - 纯洁度与测速是手动触发的重操作，结果就地展示（不做后台轮询）。
+ * - 纯净度与测速是手动触发的重操作，结果就地展示（不做后台轮询）。
  *
  * 顺序冻结：选中/拖拽/悬浮期间按旧顺序渲染——值随轮询更新、行不跑位（否则 2s 一轮的
  * 延迟排序会把正在读的行从光标下挪走）；固定/锁定等写动作随后 refreshNow 穿透冻结回正。
  *
- * 锁定单一上游时锁定代理作为列表首行（行内「已锁定」标记，操作列只剩纯洁/测速/解锁），
+ * 锁定单一上游时锁定代理作为列表首行（行内「已锁定」标记，操作列只剩纯净度/测速/解锁），
  * 其余行灰显且不可交互——不单独开锁定卡片。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -65,6 +65,8 @@ const hasLock = computed(() => store.lockedProxy !== null);
 const groups = computed(() => status.value?.groups ?? {});
 const pending = computed(() => status.value?.pending_retries ?? []);
 const geoEnabled = computed(() => status.value?.geo_enabled === true);
+/** 纯净度检查源（null = 未启用：隐藏检查按钮、质量带显示"未启用"） */
+const puritySource = computed(() => status.value?.purity_source ?? null);
 
 const tableWrapRef = ref<HTMLElement | null>(null);
 /** 质量带展开态：收起后每代理只占一行，便于纵览全队列（跨会话记住选择） */
@@ -259,7 +261,7 @@ function joinedTextOf(row: StandbyEntry): string | null {
   return `入队 ${fmtAge(Date.now() / 1000 - row.joined_at)}`;
 }
 
-/** 行内纯洁度/测速状态（薄包装：本地 Map → 后端状态 → 缓存结果，模板调用简洁） */
+/** 行内纯净度/测速状态（薄包装：本地 Map → 后端状态 → 缓存结果，模板调用简洁） */
 function rowPurity(row: StandbyEntry): ReturnType<typeof purityEntryOf> {
   return purityEntryOf(bindOf(row.proxy), row.purity_state, row.purity);
 }
@@ -536,10 +538,11 @@ onBeforeUnmount(() => {
                   <div>{{ p.consecutive_fails ?? 0 }}</div>
                   <div class="prow-actions">
                     <button
+                      v-if="puritySource"
                       class="btn btn-ghost btn-sm"
                       data-action="purity"
                       :disabled="rowPurity(p)?.status === 'checking'"
-                      title="查询 IP 滥用置信度与类型（结果写入 30 天缓存）"
+                      :title="`查询 IP 纯净度分数与用途类型（来源 ${puritySource.label}，结果写入缓存）`"
                       @click="checkPurity(p.proxy)"
                     >{{ rowPurity(p)?.status === 'checking' ? '检查中' : '检查纯净度' }}</button>
                     <button
@@ -596,22 +599,23 @@ onBeforeUnmount(() => {
                     />
                   </div>
                   <div class="pstrip-side" data-testid="strip-side">
-                    <template v-if="rowPurity(p)?.status === 'checking'">
-                      <span class="badge badge-muted" data-testid="strip-purity">纯洁度检查中…</span>
+                    <span v-if="!puritySource" class="badge badge-muted" data-testid="strip-purity">纯净度未启用</span>
+                    <template v-else-if="rowPurity(p)?.status === 'checking'">
+                      <span class="badge badge-muted" data-testid="strip-purity">纯净度检查中…</span>
                     </template>
-                    <span v-else-if="rowPurity(p)?.error" class="badge badge-danger" data-testid="strip-purity">纯洁度检查失败</span>
-                    <template v-else-if="rowPurity(p)?.abuse_confidence_score != null">
+                    <span v-else-if="rowPurity(p)?.error" class="badge badge-danger" data-testid="strip-purity">纯净度检查失败</span>
+                    <template v-else-if="rowPurity(p)?.score != null">
                       <span
                         class="badge"
-                        :class="purityScoreClass(rowPurity(p)!.abuse_confidence_score!)"
+                        :class="purityScoreClass(rowPurity(p)!.score!)"
                         data-testid="strip-purity"
-                        title="滥用置信度（0-100，越低越干净）"
-                      >滥用 {{ rowPurity(p)!.abuse_confidence_score }}</span>
+                        :title="`纯净度分数（0-100，越高越脏；来源 ${puritySource.label}）`"
+                      >纯净度 {{ rowPurity(p)!.score }}</span>
                       <span class="badge badge-info" :title="rowPurity(p)!.usage_type || ''">
                         {{ usageTypeShort(rowPurity(p)!.usage_type || '') }}
                       </span>
                     </template>
-                    <span v-else class="badge badge-muted" data-testid="strip-purity">纯洁度未检查</span>
+                    <span v-else class="badge badge-muted" data-testid="strip-purity">纯净度未检查</span>
                     <span v-if="rowSpeedTest(p)?.status === 'running'" class="badge badge-muted" data-testid="strip-speedtest">测速中…</span>
                     <span v-else-if="rowSpeedTest(p)?.error" class="badge badge-danger" data-testid="strip-speedtest">
                       测速失败：{{ rowSpeedTest(p)!.error }}

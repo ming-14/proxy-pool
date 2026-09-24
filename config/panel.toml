@@ -1,12 +1,5 @@
-# 面板功能：IP 纯洁度检查与 IP 归属地图（加载器见 src/framework/config.py）
-
-# ---------------------------------------------------------------- IP 纯洁度检查
-[purity]
-source = "abuseipdb"                            # 检查源：ipok / abuseipdb
-# 各源代理（被墙时用），空字符串表示直连
-ipok_proxy = ""  # ipok.io 代理
-abuseipdb_proxy = ""                        # AbuseIPDB 代理（空=直连）
-# AbuseIPDB API key 在 config/apikey.env（不入 TOML）
+# 面板功能：IP 归属地图（加载器见 src/framework/config.py）
+# IP 纯净度检查配置见 ippure.toml
 
 # ---------------------------------------------------------------- IP 归属地（Web 地图）
 [geoip]

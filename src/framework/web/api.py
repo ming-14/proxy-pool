@@ -57,17 +57,17 @@ class PanelContext:
     server: PproxyServer
     save: Callable[[], None]   # 落盘回调（c.save）
     capacity: int              # 代理服务队列容量
-    purity: CheckPurityUseCase | None    # IP 纯洁度检查；禁用时为 None
+    purity: CheckPurityUseCase | None    # IP 纯净度检查；禁用时为 None
     geo: object | None                   # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）；geoip.enabled=false 时为 None
-    tasks: PanelTasks                    # 面板任务状态（测速/纯洁度检查进行中与终态，前端刷新后恢复）
+    tasks: PanelTasks                    # 面板任务状态（测速/纯净度检查进行中与终态，前端刷新后恢复）
 
 
 # ------------------------------------------------------------------ 读取
 def _purity_cached(ctx: PanelContext, proxy: str) -> dict | None:
-    """查纯洁度缓存（30 天内有数据则返回 score+usage_type，否则 None）
+    """查纯净度缓存（TTL 内有数据则返回 score+usage_type，否则 None）
 
     在 _status_snapshot 中调用（主线程，SQLite 安全）。只取 tag 需要的字段，
-    避免快照 payload 膨胀。纯洁度禁用或 query_cache 异常时不影响整体快照。
+    避免快照 payload 膨胀。纯净度禁用或 query_cache 异常时不影响整体快照。
     """
     if ctx.purity is None:
         return None
@@ -78,7 +78,7 @@ def _purity_cached(ctx: PanelContext, proxy: str) -> dict | None:
     if cached is None:
         return None
     return {
-        "abuse_confidence_score": cached.get("abuse_confidence_score"),
+        "score": cached.get("score"),
         "usage_type": cached.get("usage_type"),
     }
 
@@ -172,6 +172,10 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "groups": groups,
         "available_count": len(available),
         "geo_enabled": ctx.geo is not None,  # 前端据此隐藏/显示 IP 分布地图区块
+        # 纯净度检查源元数据（None = 未启用）；前端据此隐藏检查按钮并标注数据来源
+        "purity_source": (
+            {"name": ctx.purity.source, "label": ctx.purity.label} if ctx.purity else None
+        ),
         "standby": standby,
         "standby_count": len(standby),
         "locked_proxy": locked_proxy,
@@ -519,10 +523,9 @@ async def _do_speedtest(request: web.Request) -> web.Response:
 
 
 async def _do_purity(request: web.Request) -> web.Response:
-    """检查代理纯洁度：调多源 API（AbuseIPDB + ipok.io）查询 IP 滥用置信度与 usageType
+    """检查代理纯净度：按 ippure.toml 选中的检查源查询该 IP 的分数与用途类型
 
     请求体 {"bind": "1.2.3.4:8080"}，后端反查完整 proxy URL 后调 CheckPurityUseCase。
-    多源分数取最高，usage_type 用最高分源的。
 
     线程安全：SQLite 连接线程绑定，故分三步编排——
       1. query_cache 在事件循环线程（主线程 SQLite 读）
@@ -531,7 +534,7 @@ async def _do_purity(request: web.Request) -> web.Response:
     """
     ctx = request.app[_PANEL_KEY]
     if ctx.purity is None:
-        return web.json_response({"error": "纯洁度检查未启用"}, status=404)
+        return web.json_response({"error": "纯净度检查未启用"}, status=404)
     body = await _json_body(request)
     bind = body.get("bind")
     if not bind:
@@ -549,17 +552,17 @@ async def _do_purity(request: web.Request) -> web.Response:
     if not ctx.tasks.purity_start(ip):
         return web.json_response({"status": "checking"})
     try:
-        # 2. 调多源 API（executor 线程，纯网络）
+        # 2. 调检查源 API（executor 线程，纯网络）
         try:
             result = await asyncio.get_running_loop().run_in_executor(None, ctx.purity.check_remote, proxy)
         except Exception as e:
-            logger.exception("纯洁度检查失败 proxy=%s", proxy)
+            logger.exception("纯净度检查失败 proxy=%s", proxy)
             ctx.tasks.purity_error(ip, str(e))
             return web.json_response({"error": f"检查失败: {e}"}, status=500)
         # 3. 写缓存（主线程 SQLite 写）
         final = ctx.purity.save_cache(proxy, result)
     except Exception as e:
-        logger.exception("纯洁度结果写缓存失败 proxy=%s", proxy)
+        logger.exception("纯净度结果写缓存失败 proxy=%s", proxy)
         ctx.tasks.purity_error(ip, str(e))
         return web.json_response({"error": f"写缓存失败: {e}"}, status=500)
     # 清除中间态（结果由 SQLite 缓存承载，快照读 row.purity）

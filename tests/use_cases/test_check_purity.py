@@ -1,4 +1,8 @@
-"""CheckPurityUseCase 单测：mock IpPurityChecker + PurityCacheStore，验证 IP 提取、缓存命中/未命中"""
+"""CheckPurityUseCase 单测：mock IpPurityChecker + PurityCacheStore
+
+覆盖 IP 提取、缓存命中/过期/按源分区、结果归一化，以及三步编排的线程边界
+（check_remote 为纯网络，不碰缓存）。
+"""
 
 import logging
 import os
@@ -10,36 +14,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 logging.disable(logging.WARNING)
 
 from src.domain.models import proxy_to_ip
+from src.domain.purity import UsageType
 from src.use_cases.check_purity import CheckPurityUseCase
 
 
 class FakeChecker:
-    """IpPurityChecker 假实现：记录调用参数，返回固定结果"""
+    """IpPurityChecker 假实现：记录被查 IP，返回固定结果"""
 
     def __init__(self, result=None):
         self.calls = []
-        self._result = result or {
-            "abuse_confidence_score": 0,
-            "usage_type": "Fixed Line ISP",
-            "country_code": "DE",
+        self._result = result if result is not None else {
+            "score": 0,
+            "usage_type": UsageType.RESIDENTIAL,
+            "extra": {"isp": "TestISP"},
         }
 
-    def check(self, ip, *, max_age_in_days=90):
-        self.calls.append((ip, max_age_in_days))
+    def check(self, ip):
+        self.calls.append(ip)
         return dict(self._result)
 
 
 class FakeCache:
-    """PurityCacheStore 假实现：内存 dict 模拟"""
+    """PurityCacheStore 假实现：内存 dict 模拟，键为 (source, ip)"""
 
     def __init__(self):
-        self.store = {}   # ip → {"result": {...}, "cached_at": float}
+        self.store = {}
+        self.gets = 0
+        self.saves = 0
 
-    def get_purity(self, ip):
-        return self.store.get(ip)
+    def get_purity(self, source, ip):
+        self.gets += 1
+        return self.store.get((source, ip))
 
-    def save_purity(self, ip, result):
-        self.store[ip] = {"result": dict(result), "cached_at": time.time()}
+    def save_purity(self, source, ip, result):
+        self.saves += 1
+        self.store[(source, ip)] = {"result": dict(result), "cached_at": time.time()}
+
+
+def make_uc(checker, cache=None, *, source="abuseipdb", cache_ttl=30 * 86400):
+    return CheckPurityUseCase(checker, source=source, label="AbuseIPDB",
+                              cache_ttl=cache_ttl, cache=cache)
 
 
 class ExtractIpTest(unittest.TestCase):
@@ -53,96 +67,102 @@ class ExtractIpTest(unittest.TestCase):
         assert proxy_to_ip("1.2.3.4") == "1.2.3.4"
 
 
-class CheckPurityUseCaseTest(unittest.TestCase):
-    def test_execute_extracts_ip_from_full_url(self):
-        """完整 proxy URL → 提取 IP → 调 checker"""
+class CheckRemoteTest(unittest.TestCase):
+    """check_remote 为纯网络步骤：不提 IP 提取的错，且不碰缓存"""
+
+    def test_extracts_ip_from_full_url(self):
         checker = FakeChecker()
-        uc = CheckPurityUseCase(checker, max_age_in_days=90)
-        result = uc.execute("http://1.2.3.4:8080")
-        assert checker.calls == [("1.2.3.4", 90)]
+        result = make_uc(checker).check_remote("http://1.2.3.4:8080")
+        assert checker.calls == ["1.2.3.4"]
         assert result["ip"] == "1.2.3.4"
-        assert result["abuse_confidence_score"] == 0
-        assert result["usage_type"] == "Fixed Line ISP"
+        assert result["score"] == 0
+        assert result["usage_type"] == "residential"
+        assert result["extra"] == {"isp": "TestISP"}
 
-    def test_execute_extracts_ip_from_bind(self):
-        """裸 bind（无 scheme）也能提取 IP"""
+    def test_extracts_ip_from_bind(self):
         checker = FakeChecker()
-        uc = CheckPurityUseCase(checker)
-        uc.execute("5.6.7.8:3128")
-        assert checker.calls == [("5.6.7.8", 90)]
+        make_uc(checker).check_remote("5.6.7.8:3128")
+        assert checker.calls == ["5.6.7.8"]
 
-    def test_execute_passes_max_age(self):
-        """max_age_in_days 透传到 checker"""
-        checker = FakeChecker()
-        uc = CheckPurityUseCase(checker, max_age_in_days=30)
-        uc.execute("http://1.1.1.1:80")
-        assert checker.calls[0][1] == 30
+    def test_does_not_touch_cache(self):
+        cache = FakeCache()
+        make_uc(FakeChecker(), cache).check_remote("http://1.2.3.4:80")
+        assert (cache.gets, cache.saves) == (0, 0)
 
-    def test_execute_returns_full_result(self):
-        """checker 返回的所有字段都透传到结果"""
-        checker = FakeChecker(result={
-            "abuse_confidence_score": 100,
-            "usage_type": "Data Center/Web Hosting/Transit",
-            "country_code": "US",
-            "isp": "TestISP",
-            "total_reports": 42,
-        })
-        uc = CheckPurityUseCase(checker)
-        result = uc.execute("http://9.9.9.9:80")
-        assert result["abuse_confidence_score"] == 100
-        assert result["usage_type"] == "Data Center/Web Hosting/Transit"
-        assert result["isp"] == "TestISP"
-        assert result["total_reports"] == 42
-        assert result["ip"] == "9.9.9.9"
+    def test_result_is_normalized(self):
+        """插件返回脏值 → 收敛为通用契约后才出用例层"""
+        checker = FakeChecker({"score": 999, "usage_type": "satellite", "extra": None})
+        result = make_uc(checker).check_remote("http://1.2.3.4:80")
+        assert result["score"] is None
+        assert result["usage_type"] == "unknown"
+        assert result["extra"] == {}
 
 
-class CheckPurityCacheTest(unittest.TestCase):
-    """缓存逻辑测试：命中/未命中/过期"""
+class CacheTest(unittest.TestCase):
+    """缓存：命中/未命中/过期/按源分区"""
 
-    def test_cache_miss_calls_checker_and_writes_cache(self):
-        """未命中：调 checker + 写缓存"""
+    def test_no_cache_configured(self):
+        assert make_uc(FakeChecker()).query_cache("http://1.2.3.4:80") is None
+
+    def test_miss_then_check_then_save(self):
+        """未命中：check_remote 调源、save_cache 写入（键含源名）"""
         checker = FakeChecker()
         cache = FakeCache()
-        uc = CheckPurityUseCase(checker, cache, cache_ttl=30 * 86400)
-        result = uc.execute("http://1.2.3.4:80")
-        assert checker.calls == [("1.2.3.4", 90)]
-        assert "1.2.3.4" in cache.store
-        assert result.get("from_cache") is None
+        uc = make_uc(checker, cache)
+        result = uc.check_remote("http://1.2.3.4:80")
+        uc.save_cache("http://1.2.3.4:80", result)
+        assert checker.calls == ["1.2.3.4"]
+        assert cache.saves == 1
+        assert ("abuseipdb", "1.2.3.4") in cache.store
 
-    def test_cache_hit_skips_checker(self):
-        """命中：不调 checker，返回 from_cache=True"""
+    def test_hit_returns_from_cache(self):
+        """命中：返回缓存结果（from_cache=True）且带 ip"""
         checker = FakeChecker()
         cache = FakeCache()
-        cache.store["1.2.3.4"] = {
-            "result": {"abuse_confidence_score": 5, "usage_type": "Mobile ISP"},
+        cache.store[("abuseipdb", "1.2.3.4")] = {
+            "result": {"score": 5, "usage_type": "mobile", "extra": {}},
             "cached_at": time.time(),
         }
-        uc = CheckPurityUseCase(checker, cache, cache_ttl=30 * 86400)
-        result = uc.execute("http://1.2.3.4:80")
+        result = make_uc(checker, cache).query_cache("http://1.2.3.4:80")
         assert checker.calls == []
         assert result["from_cache"] is True
-        assert result["abuse_confidence_score"] == 5
+        assert result["score"] == 5
+        assert result["ip"] == "1.2.3.4"
 
-    def test_cache_expired_calls_checker(self):
-        """缓存过期：重新调 checker"""
-        checker = FakeChecker()
+    def test_expired_cache_misses(self):
+        """过期：不返回缓存（由调用方重新实查）"""
         cache = FakeCache()
-        cache.store["1.2.3.4"] = {
-            "result": {"abuse_confidence_score": 5},
+        cache.store[("abuseipdb", "1.2.3.4")] = {
+            "result": {"score": 5},
             "cached_at": time.time() - 31 * 86400,
         }
-        uc = CheckPurityUseCase(checker, cache, cache_ttl=30 * 86400)
-        result = uc.execute("http://1.2.3.4:80")
-        assert checker.calls == [("1.2.3.4", 90)]
-        assert result.get("from_cache") is None
+        assert make_uc(FakeChecker(), cache, cache_ttl=30 * 86400).query_cache(
+            "http://1.2.3.4:80") is None
 
-    def test_no_cache_always_calls_checker(self):
-        """cache=None：每次都调 checker"""
-        checker = FakeChecker()
-        uc = CheckPurityUseCase(checker, cache=None)
-        uc.execute("http://1.2.3.4:80")
-        uc.execute("http://1.2.3.4:80")
-        assert len(checker.calls) == 2
+    def test_cache_partitioned_by_source(self):
+        """换源后不复用旧源结果"""
+        cache = FakeCache()
+        cache.store[("abuseipdb", "1.2.3.4")] = {
+            "result": {"score": 90}, "cached_at": time.time(),
+        }
+        assert make_uc(FakeChecker(), cache, source="ipok").query_cache(
+            "http://1.2.3.4:80") is None
+
+    def test_zero_ttl_never_hits(self):
+        """cache_ttl=0 表示不缓存：写入后立刻读也为未命中"""
+        cache = FakeCache()
+        uc = make_uc(FakeChecker(), cache, cache_ttl=0)
+        uc.save_cache("http://1.2.3.4:80", {"score": 1})
+        assert uc.query_cache("http://1.2.3.4:80") is None
+
+
+class MetadataTest(unittest.TestCase):
+    """源元数据：供缓存分区与面板标注数据来源"""
+
+    def test_source_and_label(self):
+        uc = make_uc(FakeChecker(), source="ipok")
+        assert uc.source == "ipok"
+        assert uc.label == "AbuseIPDB"
 
 
 if __name__ == "__main__":
