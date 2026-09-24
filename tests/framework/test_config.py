@@ -2,6 +2,9 @@
 
 config 在 import 期加载，故所有用例都在子进程里跑：复制真实 config/ 到临时目录、
 按需覆写文件、用 PROXY_POOL_CONFIG 指向它，再 import src.framework.config。
+
+真实 config/ 只当脚手架（给未被覆写的文件提供合法结构），**断言的值必须来自用例自己写入的
+覆写内容**——断言真实配置的内容会让测试随开发机的本地实验一起红，那是测试在依赖环境状态。
 """
 
 from __future__ import annotations
@@ -112,8 +115,12 @@ def test_env_file_invalid_line_fails_fast(tmp_path) -> None:
 
 # ---------------------------------------------------------------- ippure.toml
 def test_ippure_default_config_parsed(tmp_path) -> None:
-    """仓库自带配置：选中 abuseipdb + 插件节透传 + 无代理规则（无命中即直连）"""
-    r = _run_config(tmp_path)
+    """ippure.toml 按声明的缺省值解析：选中 abuseipdb + 插件节透传 + 无代理规则
+
+    断言用例自带的配置内容，不读工作区真实的 ippure.toml——真实配置随本地实验变动，
+    断言它会让测试依赖开发机状态。
+    """
+    r = _run_config(tmp_path, ippure=_ippure_toml())
     assert r.returncode == 0, r.stderr
     assert "SOURCE abuseipdb" in r.stdout
     assert "RULES []" in r.stdout
