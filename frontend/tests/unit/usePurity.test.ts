@@ -42,15 +42,15 @@ describe('usageTypeShort', () => {
   it('归一化枚举全部有中文短标签', () => {
     const cases: Record<string, string> = {
       residential: '住宅',
-      mobile: '移动',
-      hosting: '托管',
+      mobile: '移动网络',
+      hosting: '机房',
       business: '企业',
       education: '学校',
       government: '政府',
       military: '军事',
       library: '图书馆',
       cdn: 'CDN',
-      search_engine: '爬虫',
+      search_engine: '搜索引擎',
       reserved: '保留',
       unknown: '未知',
     };

@@ -25,17 +25,19 @@ export interface PurityEntry extends PurityInfo {
 export const purityCache = reactive(new Map<string, PurityEntry>());
 
 // 归一化 usage_type（核心枚举）→ 中文短标签（tag 空间有限，各源共用一套文案）
+// 按"IP 归属者"命名，不用单字或歧义词：hosting 是数据中心（机房），mobile 是移动运营商出口，
+// residential 是固网家宽，search_engine 是搜索引擎自有出口
 const USAGE_TYPE_SHORT: Record<string, string> = {
   residential: '住宅',
-  mobile: '移动',
-  hosting: '托管',
+  mobile: '移动网络',
+  hosting: '机房',
   business: '企业',
   education: '学校',
   government: '政府',
   military: '军事',
   library: '图书馆',
   cdn: 'CDN',
-  search_engine: '爬虫',
+  search_engine: '搜索引擎',
   reserved: '保留',
   unknown: '未知',
 };

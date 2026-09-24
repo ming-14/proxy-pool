@@ -30,7 +30,6 @@ import {
   checkPurity,
   purityEntryOf,
   purityScoreClass,
-  usageTypeShort,
 } from '@/composables/usePurity';
 import { runSpeedTest, speedTestEntryOf } from '@/composables/useSpeedTest';
 import { GEO_REFRESH_MS, geoText, refreshStandbyGeo, standbyGeo } from '@/composables/useStandbyGeo';
@@ -611,9 +610,6 @@ onBeforeUnmount(() => {
                         data-testid="strip-purity"
                         :title="`纯净度分数（0-100，越高越脏；来源 ${puritySource.label}）`"
                       >纯净度 {{ rowPurity(p)!.score }}</span>
-                      <span class="badge badge-info" :title="rowPurity(p)!.usage_type || ''">
-                        {{ usageTypeShort(rowPurity(p)!.usage_type || '') }}
-                      </span>
                     </template>
                     <span v-else class="badge badge-muted" data-testid="strip-purity">纯净度未检查</span>
                     <span v-if="rowSpeedTest(p)?.status === 'running'" class="badge badge-muted" data-testid="strip-speedtest">测速中…</span>
