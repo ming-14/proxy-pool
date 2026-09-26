@@ -16,6 +16,7 @@
 - 隐藏 → 显示：跟随态贴回底部、非跟随态保留滚动位置
 - 标题栏右键菜单可开合，点菜单项关闭面板
 - 拖拽缩放后重测行高，滚动区不出现空白
+- 行宽不足时正文下沉到独立整行、宽度还原后回到同排（两向切换都要重测行高）
 
 抽屉形态的用例见 test_logpanel_sheet.py。
 """
@@ -342,6 +343,40 @@ def test_resize_remeasures_rows(probe):
     state = p.state()
     assert state["domLines"] > 0, "缩放后无渲染行"
     assert_no_gap(state, "缩放后")
+    assert not errors
+
+
+def test_narrow_row_gives_text_its_own_line(probe):
+    """行宽不足以同排容纳元信息与正文时，正文整块下沉到下一行取全宽；宽度还原后回到同排。
+
+    两个方向都要重测行高（模式翻转会改变每一行的高度），滚动区不得出现空白——
+    测高池若按旧模式认为「已量过」，错误行高会永久固化。
+    """
+    p, errors = probe
+    p.fill(600)
+    p.click_auto_scroll()  # 关跟随，避免贴底掩盖行高问题
+    p.wait(300)
+
+    wide = p.line_layout(0)
+    assert wide is not None, "无渲染行可断言"
+    assert wide["textBelow"] is False, "宽行下正文不应另起一行"
+
+    p.resize_by(-260, 0)
+    p.wait(1200)
+    narrow = p.line_layout(0)
+    assert narrow is not None
+    assert narrow["textBelow"] is True, "行宽不足时正文未下沉到独立一行"
+    assert narrow["textWidth"] > narrow["lineWidth"] * 0.8, (
+        f"正文仍被挤在窄列：{narrow['textWidth']} / {narrow['lineWidth']}px"
+    )
+    assert_no_gap(p.state(), "收窄后")
+
+    p.resize_by(260, 0)
+    p.wait(1200)
+    restored = p.line_layout(0)
+    assert restored is not None
+    assert restored["textBelow"] is False, "还原宽度后正文仍另起一行"
+    assert_no_gap(p.state(), "还原后")
     assert not errors
 
 

@@ -101,6 +101,10 @@ class Probe:
     def line_top(self, index: int) -> float | None:
         return self.run("(i) => window.__probe.lineTop(i)", index)
 
+    def line_layout(self, index: int) -> dict[str, Any] | None:
+        """行的分栏几何：正文是否下沉到元信息下方、正文占行宽多少"""
+        return self.run("(i) => window.__probe.lineLayout(i)", index)
+
     def first_expandable(self) -> int:
         return self.run("() => window.__probe.firstExpandable()")
 
@@ -162,6 +166,17 @@ class Probe:
 
     def root_box(self) -> dict:
         return self.run("() => window.__probe.rootBox()")
+
+    def resize_by(self, dx: float, dy: float) -> None:
+        """拖拽右下角缩放手柄：从手柄中心起手，相对位移 (dx, dy) 后松手"""
+        handle = self.page.locator('[data-testid="lp-resize"]').bounding_box()
+        assert handle, "未找到缩放手柄"
+        start_x = handle["x"] + handle["width"] / 2
+        start_y = handle["y"] + handle["height"] / 2
+        self.page.mouse.move(start_x, start_y)
+        self.page.mouse.down()
+        self.page.mouse.move(start_x + dx, start_y + dy, steps=5)
+        self.page.mouse.up()
 
     def list_client_height(self) -> int:
         return self.run("() => window.__probe.listClientHeight()")

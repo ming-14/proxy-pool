@@ -7,6 +7,7 @@
  * 滑块就与鼠标位置脱节（拖动滚动条"跟不上鼠标"）。测高池把每行量一遍，总高一次到位。
  *
  * - 端部锚定：anchorTo: 'end' —— 头部淘汰/末尾追加后按 key 锚定视口首行，滚动位置不漂移；
+ * - 紧凑布局：行宽放不下「元信息 + 正文」同排时改堆叠（判据与翻转处理见 syncCompact）；
  * - 贴底跟随：新条目到达与内容高度变化都经同一个 stickToEnd 收敛到底部（库内 followOnAppend
  *   不可用，原因见 stickToEnd 注释）；跟随意图由滚动手势维护，上滚即停、滚回底部即恢复。
  *   程序侧滚动只发生在跟随或锚定语义内，不会把用户手动关闭的跟随顶回去。
@@ -19,6 +20,13 @@ import LogLine from './LogLine.vue';
 
 /** 未量行的初始兜底行高（px）：量到行后改用已量行的累计均值 */
 const ROW_ESTIMATE = 22;
+/**
+ * 紧凑布局阈值（行宽 px）：低于它「元信息 + 正文」排不下，正文只剩几十像素宽，
+ * 改为元信息独占首行、正文整行全宽。
+ * 判据取行自己的宽度而非面板宽度——悬浮形态侧栏是 151px 左栏，面板宽 560 时行宽只剩 399，
+ * 按面板宽度判断会漏掉正文只有 11 字符的最坏情况。520 对应正文只剩约 194px（28 字符）。
+ */
+const COMPACT_MAX_WIDTH = 520;
 /** 视口外多渲染的行数 */
 const OVERSCAN = 4;
 /** 贴底判定阈值（px） */
@@ -53,6 +61,9 @@ const follow = defineModel<boolean>('follow', { required: true });
 
 const scrollEl = ref<HTMLElement | null>(null);
 const sizerEl = ref<HTMLElement | null>(null);
+
+/** 行宽不足以同排容纳元信息与正文：元信息独占首行，正文下沉到下一行取全宽 */
+const compact = ref(false);
 
 /** 条目与 key 一起取，保证 count / getItemKey / 渲染行读到同一份快照 */
 const source = computed(() => ({
@@ -252,10 +263,21 @@ onMounted(() => {
   if (!sizer) return;
   sizeObserver = new ResizeObserver((entries) => {
     void stickToEnd();
-    if (entries.some((entry) => entry.target === sizer)) scheduleMeasure(); // 由隐藏转为显示时补跑测高
+    for (const entry of entries) {
+      // 滚动容器的内容盒宽度就是行的渲染宽度（含滚动条占宽）：面板缩放、侧栏增减、
+      // 滚动条出现/消失都经这里，正好是紧凑判据的唯一真值
+      if (entry.target === scrollEl.value) syncCompact(entry.contentRect.width);
+      else if (entry.target === sizer) scheduleMeasure(); // 由隐藏转为显示时补跑测高
+    }
   });
   sizeObserver.observe(sizer);
-  if (scrollEl.value) sizeObserver.observe(scrollEl.value);
+  const scroll = scrollEl.value;
+  if (scroll) {
+    // 初值先定：首个测高帧早于本轮 RO 回调，不先定布局会按错的模式量一遍
+    //（.lp-list 无内边距，clientWidth 即内容盒宽）
+    syncCompact(scroll.clientWidth);
+    sizeObserver.observe(scroll);
+  }
   scheduleMeasure();
 });
 
@@ -266,20 +288,49 @@ onBeforeUnmount(() => {
   sizeObserver?.disconnect();
 });
 
+/**
+ * 全量重测：行宽变化（换行行数随之变）或布局模式翻转后，所有行高都不再可信。
+ * 累计均值一并归零——它是终身累计的，跨布局的旧样本会让兜底行高一直停在旧值上；
+ * 清零后首批实测即收敛到当前布局（兜底只作用于库内还没量过的行）。
+ */
+function remeasure(): void {
+  measuredIds.clear();
+  measureCursor = 0;
+  estSum = 0;
+  estCount = 0;
+  estHeight = ROW_ESTIMATE;
+  scheduleMeasure();
+}
+
+/**
+ * 行宽变化 → 同步紧凑标志。翻转会改变每一行的高度，必须整表作废重测，
+ * 否则测高池认为「已量过」而永不重测，错误行高会永久固化。
+ * 宽度为 0 时要跳过：面板隐藏（v-show）时容器塌成 0，那不是真实的可用宽度，
+ * 按它翻转会在重新显示时多走一轮模式切换，把滚动位置带偏。
+ */
+function syncCompact(width: number): void {
+  if (width <= 0) return;
+  const next = width < COMPACT_MAX_WIDTH;
+  if (next === compact.value) return;
+  compact.value = next;
+  remeasure();
+}
+
 defineExpose({
   /** 窗口尺寸变化后重测行高（宽度变了，换行行数随之变）：全部行高作废，重跑测高 */
-  remeasure: () => {
-    measuredIds.clear();
-    measureCursor = 0;
-    scheduleMeasure();
-  },
+  remeasure,
   /** 手动开启跟随时立即贴底（高度未变，不会触发内容高度监听） */
   toEnd: stickToEnd,
 });
 </script>
 
 <template>
-  <div ref="scrollEl" class="lp-list" @scroll.passive="onScroll">
+  <div
+    ref="scrollEl"
+    class="lp-list"
+    :data-compact="compact ? 'true' : undefined"
+    @scroll.passive="onScroll"
+  >
     <div ref="sizerEl" class="lp-list-inner" :style="{ height: `${virtualizer.getTotalSize()}px` }">
       <div
         v-for="row in rows"

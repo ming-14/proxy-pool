@@ -174,6 +174,21 @@ function lineTop(index: number): number | null {
   return Number((line.getBoundingClientRect().top - list.getBoundingClientRect().top).toFixed(1));
 }
 
+/** 行的分栏几何：正文是否已下沉到元信息下方、正文占行宽多少（px） */
+function lineLayout(index: number): { lineWidth: number; textWidth: number; textBelow: boolean } | null {
+  const line = lineEls()[index];
+  const text = line?.querySelector<HTMLElement>('.lp-text');
+  const meta = line?.querySelector<HTMLElement>('.lp-ts');
+  if (!line || !text || !meta) return null;
+  const textRect = text.getBoundingClientRect();
+  return {
+    lineWidth: Number(line.getBoundingClientRect().width.toFixed(1)),
+    textWidth: Number(textRect.width.toFixed(1)),
+    // 顶边明显低于时间戳即为「换到了下一行」：只看几何，不依赖类名或组件内部字段
+    textBelow: textRect.top - meta.getBoundingClientRect().top > 4,
+  };
+}
+
 /** 视口内第一个可展开行（带堆栈）的下标；没有则 -1 */
 function firstExpandable(): number {
   return lineEls().findIndex((el) => el.classList.contains('has-stack'));
@@ -337,6 +352,7 @@ Object.assign(window, {
     scrollTo,
     lineTextAt,
     lineTop,
+    lineLayout,
     firstExpandable,
     expandedTexts,
     hide: () => (shown.value = false),

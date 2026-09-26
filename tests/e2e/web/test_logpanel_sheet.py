@@ -262,6 +262,22 @@ def test_sheet_chrome_leaves_room_for_logs(probe_mobile):
     assert not errors
 
 
+def test_narrow_sheet_gives_text_full_width(probe_mobile):
+    """窄屏抽屉：正文必须整行全宽，不得只占元信息右侧那点窄列而频繁换行"""
+    p, errors = probe_mobile
+    p.fill(200)
+    for width in (MOBILE_VIEWPORT["width"], 360):
+        p.page.set_viewport_size({"width": width, "height": MOBILE_VIEWPORT["height"]})
+        p.wait(DETENT_SETTLE_MS)
+        layout = p.line_layout(0)
+        assert layout is not None, f"{width}px 宽下无渲染行可断言"
+        assert layout["textBelow"] is True, f"{width}px 宽下正文未与元信息分成两行"
+        assert layout["textWidth"] > layout["lineWidth"] * 0.8, (
+            f"{width}px 宽下正文被挤在窄列：{layout['textWidth']} / {layout['lineWidth']}px"
+        )
+    assert not errors
+
+
 def test_safe_area_keeps_content_off_bottom_edge(probe_mobile):
     """安全区垫底：列表底边与面板底边之间留出安全区高度"""
     p, errors = probe_mobile

@@ -164,4 +164,22 @@ function onActivate(event: MouseEvent): void {
 [data-touch='true'] .lp-line-detail {
   max-height: 400px;
 }
+
+/**
+ * 紧凑（判据见 VirtualList 的 syncCompact）：元信息留在首行，正文整块下沉到下一行取全宽。
+ * 靠祖先属性而非 prop 下发，可见行与测高池自动同布局；flex-wrap 已支持换行，
+ * 只需把正文的基准宽度顶到整行，它自然被挤出首行。
+ */
+[data-compact='true'] .lp-text {
+  flex-basis: 100%;
+}
+
+/* 模块名是最宽的一项：首行挤不下时先让它截断，别把时间戳和等级也顶到第二行 */
+[data-compact='true'] .lp-tag {
+  flex-shrink: 1;
+  min-width: 8ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 </style>
