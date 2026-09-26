@@ -75,7 +75,7 @@ TTL 规则：代理入组时记录 `joined_at`，`now - joined_at >= ttl` 即过
 
 三阶段：
 
-1. **逐源拉取**：遍历启用的源（跳过暂停中的源），`fetch_proxies(retries=FETCH_PROXY_RETRIES=3)`；源异常只记日志不中断整体；带 `pause_ttl` 的源拉完立即暂停。
+1. **逐源拉取**：遍历启用的源（跳过暂停中的源），`fetch_proxies(retries=FETCH_PROXY_RETRIES=3)`；源异常只记日志不中断整体；带 `pause_ttl` 的源拉完立即暂停。`execute(source_name)` 传源名时只拉该源（面板单源拉取按钮，未知/未启用源直接返回），三阶段与暂停规则不变。
 2. **跨源去重入组**：
    - 跳过：已在本次拉取中出现过的（跨源重复）、已存在于池中任一组的、黑名单中的；
    - 禁用代理（端口 80，FreeProxy.World 大量 Cloudflare 假代理）直接入黑名单，不进入可用池（`DISABLED_PORTS = {80}`）；

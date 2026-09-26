@@ -478,7 +478,13 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_fetch_control(self):
         resp = await self.client.post("/api/fetch", json={})
         assert resp.status == 200
-        self.fetch.execute.assert_called_once()
+        self.fetch.execute.assert_called_once_with(None)
+
+    async def test_fetch_single_source(self):
+        """单源拉取：body.source 透传给用例，只拉该源"""
+        resp = await self.client.post("/api/fetch", json={"source": "src.interfaces.sources.demo"})
+        assert resp.status == 200
+        self.fetch.execute.assert_called_once_with("src.interfaces.sources.demo")
 
     async def test_blacklist_removes_proxy(self):
         self.pool.add_to_group("default-http", "9.9.9.9:80", consecutive_fails=0)

@@ -2,7 +2,7 @@
 
 覆盖：壳层导航/主题/暂停轮询、仪表盘 KPI 与三趋势图与地图、代理组（过滤/排序/添加/
 右键拉黑还原/框选/导出）、队列（表格/行下质量带常显与低质量标记/固定置顶/锁定/右键菜单夹取）、
-设置页（调度参数保存）、代理源（暂停恢复）。截图输出到 build-artifacts/e2e-screenshots/
+设置页（调度参数保存）、代理源（暂停恢复 / 单源拉取）。截图输出到 build-artifacts/e2e-screenshots/
 供与参考图人工比对。
 """
 
@@ -655,6 +655,37 @@ class TestSources:
         assert resume.count() >= 1
         resume.first.click()
         page.wait_for_selector(".toast-success", timeout=8000)
+
+    def test_single_source_fetch_button(self, page):
+        """单源拉取按钮：位于「暂停」右侧、点了只拉该源；暂停后消失，恢复后回来
+
+        /api/fetch 用路由拦截顶掉真实拉取（源是真实外网地址，e2e 只验前端契约与
+        按钮可见性；端点与用例行为由 tests/framework + tests/use_cases 覆盖）。
+        """
+        sent: list[dict] = []
+
+        def _stub(route):
+            sent.append(route.request.post_data_json)
+            route.fulfill(json={"ok": True, "available": 0})
+
+        page.route("**/api/fetch", _stub)
+        row = page.locator('[data-testid="src-table"] tbody tr').first
+        pause = row.locator('button[data-action="pause"]')
+        fetched = row.locator('button[data-action="fetch"]')
+        fetched.wait_for(timeout=8000)
+        assert pause.bounding_box()["x"] < fetched.bounding_box()["x"]  # 拉取在暂停右侧
+        source = pause.get_attribute("data-source")
+        fetched.click()
+        page.wait_for_function("() => document.querySelector('.toast-success') !== null", timeout=8000)
+        assert sent == [{"source": source}]
+
+        pause.click()
+        resume = row.locator('button[data-action="resume"]')
+        resume.wait_for(timeout=8000)
+        assert fetched.count() == 0  # 暂停中不显示拉取
+        resume.click()
+        fetched.wait_for(timeout=8000)  # 恢复后重新出现
+        assert pause.count() == 1
 
 
 # ---------------------------------------------------------------- 控制台日志面板

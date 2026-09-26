@@ -1,9 +1,13 @@
 <script setup lang="ts">
-/** 代理源页：源列表、状态、暂停/恢复、手动拉取。数据来自 statusStore.sources。 */
+/**
+ * 代理源页：源列表、状态、暂停/恢复、全量与单源拉取。数据来自 statusStore.sources。
+ * 单源拉取按钮只对启用且未暂停的源显示（暂停态下该源本就拉不动）。
+ */
 import { computed, ref } from 'vue';
 import { api } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
+import type { SourceStat } from '@/types/api';
 import { fmtDuration } from '@/utils/format';
 
 const store = useStatusStore();
@@ -11,6 +15,8 @@ const toast = useToastStore();
 
 const sources = computed(() => store.status?.sources ?? []);
 const fetching = ref(false);
+/** 单源拉取进行中的源名集合（按钮转「处理中…」并禁用） */
+const pendingSources = ref(new Set<string>());
 
 async function doFetch() {
   fetching.value = true;
@@ -21,6 +27,21 @@ async function doFetch() {
     toast.error('拉取失败', e instanceof Error ? e.message : String(e));
   } finally {
     fetching.value = false;
+    await store.refreshNow();
+  }
+}
+
+/** 单源拉取：拉取可能触发去重率暂停，完成后立即刷新以同步暂停态与按钮可见性 */
+async function doFetchSource(s: SourceStat) {
+  pendingSources.value.add(s.name);
+  try {
+    const d = await api.fetch(s.name);
+    toast.success('拉取完成', `${s.short_name} · 可用代理 ${d.available}`);
+  } catch (e) {
+    toast.error('拉取失败', e instanceof Error ? e.message : String(e));
+  } finally {
+    pendingSources.value.delete(s.name);
+    await store.refreshNow();
   }
 }
 
@@ -30,6 +51,8 @@ async function doPause(source: string) {
     toast.success('已暂停', source);
   } catch (e) {
     toast.error('暂停失败', e instanceof Error ? e.message : String(e));
+  } finally {
+    await store.refreshNow();
   }
 }
 
@@ -39,6 +62,8 @@ async function doResume(source: string) {
     toast.success('已恢复', source);
   } catch (e) {
     toast.error('恢复失败', e instanceof Error ? e.message : String(e));
+  } finally {
+    await store.refreshNow();
   }
 }
 </script>
@@ -73,12 +98,25 @@ async function doResume(source: string) {
                 <span v-else class="badge badge-success">正常</span>
               </td>
               <td class="text-[var(--color-t-muted)]">{{ s.pause_remaining != null ? fmtDuration(s.pause_remaining) : '-' }}</td>
-              <td class="text-right">
-                <template v-if="s.enabled">
-                  <button v-if="s.paused" class="btn btn-ghost btn-sm" data-action="resume" :data-source="s.name" @click="doResume(s.name)">恢复</button>
-                  <button v-else class="btn btn-ghost btn-sm" data-action="pause" :data-source="s.name" @click="doPause(s.name)">暂停</button>
-                </template>
-                <template v-else>-</template>
+              <td>
+                <div class="flex items-center justify-end gap-2">
+                  <template v-if="s.enabled && s.paused">
+                    <button class="btn btn-ghost btn-sm" data-action="resume" :data-source="s.name" @click="doResume(s.name)">恢复</button>
+                  </template>
+                  <template v-else-if="s.enabled">
+                    <button class="btn btn-ghost btn-sm" data-action="pause" :data-source="s.name" @click="doPause(s.name)">暂停</button>
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      data-action="fetch"
+                      :data-source="s.name"
+                      :disabled="pendingSources.has(s.name)"
+                      @click="doFetchSource(s)"
+                    >
+                      {{ pendingSources.has(s.name) ? '处理中…' : '拉取' }}
+                    </button>
+                  </template>
+                  <template v-else>-</template>
+                </div>
               </td>
             </tr>
           </tbody>

@@ -614,8 +614,12 @@ async def _geo_map(request: web.Request) -> web.Response:
 
 
 async def _do_fetch(request: web.Request) -> web.Response:
+    """拉取代理；body.source 非空时只拉该源（面板单源拉取按钮）"""
     ctx = request.app[_PANEL_KEY]
-    await asyncio.get_running_loop().run_in_executor(None, ctx.fetch.execute)   # 大量网络请求，避免阻塞事件循环
+    body = await _json_body(request)
+    source = body.get("source")
+    # 大量网络请求，避免阻塞事件循环
+    await asyncio.get_running_loop().run_in_executor(None, ctx.fetch.execute, source)
     ctx.save()
     return web.json_response({"ok": True, "available": len(ctx.pool.get_available_proxies())})
 

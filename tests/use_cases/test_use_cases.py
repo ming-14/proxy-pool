@@ -250,6 +250,34 @@ class TestFetchProxiesUseCase(unittest.TestCase):
             make_fetch(self.pool).execute()
         self.assertIn("http://5.6.7.8:3128", self.pool.proxy_groups["default-http"]["proxies"])
 
+    def test_fetch_single_source_only_loads_that_source(self):
+        """单源拉取：只加载并调用指定源（面板单源拉取按钮）"""
+        loaded = []
+
+        def loader(name):
+            loaded.append(name)
+            src = MagicMock()
+            src.fetch_proxies.return_value = ["http://5.6.7.8:3128"] if name == SCDN_SOURCE else []
+            return src
+
+        make_fetch(self.pool, loader=loader).execute(SCDN_SOURCE)
+        self.assertEqual(loaded, [SCDN_SOURCE])
+        self.assertIn("http://5.6.7.8:3128", self.pool.proxy_groups["default-http"]["proxies"])
+
+    def test_fetch_single_source_unknown_is_noop(self):
+        """未知源：不加载任何源，池不变"""
+        loaded = []
+        make_fetch(self.pool, loader=lambda name: loaded.append(name)).execute("src.interfaces.sources.not_exist")
+        self.assertEqual(loaded, [])
+        self.assertEqual(len(self.pool.proxy_groups["default-http"]["proxies"]), 0)
+
+    def test_fetch_single_source_skips_paused(self):
+        """已暂停的源即使被指定也不拉取（暂停态下前端不显示该按钮）"""
+        self.pool.pause_source(SCDN_SOURCE, ttl=60)
+        loaded = []
+        make_fetch(self.pool, loader=lambda name: loaded.append(name)).execute(SCDN_SOURCE)
+        self.assertEqual(loaded, [])
+
     def test_fetch_proxies_no_duplicate(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=1)
         with patch("src.interfaces.http_client.get", return_value=mock_proxy_response(["http://1.2.3.4:8080", "http://5.6.7.8:3128"])):

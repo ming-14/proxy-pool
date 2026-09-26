@@ -43,8 +43,17 @@ class FetchProxiesUseCase:
         self._fetch_retries = fetch_retries
         self._dedup_threshold = dedup_threshold
 
-    def execute(self) -> None:
+    def execute(self, source_name: str | None = None) -> None:
+        """
+        Args:
+            source_name: 只拉取该源（面板单源拉取按钮）；None 表示拉取全部启用源
+        """
         active_sources = [s for s in self._sources if s.enabled]
+        if source_name is not None:
+            active_sources = [s for s in active_sources if s.name == source_name]
+            if not active_sources:
+                logger.warning("单源拉取: 代理源 %s 不存在或未启用", source_name)
+                return
         sources_to_call = []
         for src in active_sources:
             if self._pool.is_source_paused(src.name):
