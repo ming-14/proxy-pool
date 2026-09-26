@@ -685,7 +685,8 @@ tbody tr.row-dimmed {
   border-radius: var(--radius-md);
   box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.08);
   padding: 0.25rem;
-  animation: slideIn 0.1s ease;
+  /* 淡入不做位移：本组件靠量尺寸后再定位，若带 transform 平移会让量到的矩形和夹取结果错位 */
+  animation: menuIn 0.1s ease;
 }
 .context-menu-item {
   display: flex;
@@ -723,11 +724,21 @@ tbody tr.row-dimmed {
   box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.08);
   padding: 0.25rem;
   margin-left: 2px;
+  /* 比视口还高时内部滚动（等价 Win32 菜单首尾的滚动箭头）而不裁剪；限高由组件按 MENU_GAP 内联下发 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
-.context-menu-has-submenu:hover .context-submenu {
-  display: block;
+/* 右侧放不下：翻到父项左侧，箭头镜像（与资源管理器一致） */
+.context-menu-item.context-menu-flip .context-submenu {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
 }
-/* 触屏点击开合子菜单（无 hover） */
+.context-menu-item.context-menu-flip .context-menu-arrow {
+  transform: rotate(180deg);
+}
+/* 展开由 JS 驱动（需先量尺寸再定位），不能再用 :hover——那样量不到展开前的尺寸 */
 .context-submenu.open {
   display: block;
 }
@@ -795,6 +806,15 @@ tbody tr.row-dimmed {
 }
 
 /* ---------------- 动画 ---------------- */
+/* 右键菜单淡入：无位移，保证量尺寸/夹取时矩形与最终位置一致 */
+@keyframes menuIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 @keyframes slideIn {
   from {
     opacity: 0;

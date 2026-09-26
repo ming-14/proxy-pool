@@ -549,10 +549,36 @@ class TestStandby:
         assert cell_x < menu["x"], "候选点击点落在菜单内，第二次右键会命中菜单"
         assert cell_y + menu["height"] > vh, f"候选点击点 y={cell_y:.0f} 不会让菜单溢出视口（高 {vh}），用例失效"
         page.mouse.click(cell_x, cell_y, button="right")
-        wait_layout_stable(page, ".context-menu")  # slideIn 动画（0.1s）结束后再量
+        wait_layout_stable(page, ".context-menu")  # 淡入（0.1s）结束后再量
         box = page.locator(".context-menu").bounding_box()
         assert box["x"] >= 0 and box["x"] + box["width"] <= vw
         assert box["y"] >= 0 and box["y"] + box["height"] <= vh
+
+    def test_submenu_flipped_into_viewport(self, page):
+        """贴视口右缘展开二级子菜单：右侧没余量必须翻到父项左侧且整体不出屏
+
+        曾因 CSS 写死 `left:100%`，父菜单被夹到贴右边后子菜单整块跑到屏幕外
+        （只能靠猜位置把鼠标移出去才能操作）。
+        """
+        vw, vh = 1440, 300
+        page.set_viewport_size({"width": vw, "height": vh})
+        wait_layout_stable(page, '[data-testid="sb-table"] tbody tr[data-proxy] code')
+        row = standby_rows(page).first.bounding_box()
+        code = standby_rows(page).first.locator("code").first.bounding_box()
+        # 从行右缘右键：主菜单被夹到贴右边，子菜单右侧余量 < 自身宽度
+        click_x = row["x"] + row["width"] - 4
+        click_y = code["y"] + code["height"] / 2
+        assert 0 <= click_y <= vh, f"点击点 y={click_y:.0f} 不在视口内，用例失效"
+        page.mouse.click(click_x, click_y, button="right")
+        page.wait_for_selector(".context-menu", state="visible")
+        page.hover(".context-menu-item:has-text('移出')")
+        page.wait_for_selector(".context-submenu .context-menu-item", state="visible")
+        wait_layout_stable(page, ".context-submenu")
+        item = page.locator(".context-menu-item:has-text('移出')").bounding_box()
+        sub = page.locator(".context-submenu").bounding_box()
+        assert sub["x"] + sub["width"] <= item["x"], "子菜单未翻到父项左侧（贴在父项左缘外）"
+        assert sub["x"] >= 0 and sub["x"] + sub["width"] <= vw
+        assert sub["y"] >= 0 and sub["y"] + sub["height"] <= vh
 
     def test_marquee_autoscroll_follows_edge(self, page):
         """框选拖到边缘自动滚动：换边后方向立即跟随（曾因步长被 rAF 闭包捕获而只能按原方向滚）"""
