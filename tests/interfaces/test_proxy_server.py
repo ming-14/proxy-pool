@@ -3,7 +3,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.interfaces.proxy_server import PproxyServer, _pproxy_uri
+from src.interfaces.proxy_server import PproxyServer
 
 
 def _realistic_bind(uri: str) -> str:
@@ -13,18 +13,6 @@ def _realistic_bind(uri: str) -> str:
     不含 scheme 前缀。sync 须按完整 uri（_uri_index）匹配而非 bind。
     """
     return uri.split("://", 1)[1]
-
-
-class TestPproxyUri(unittest.TestCase):
-    def test_http_kept(self):
-        self.assertEqual(_pproxy_uri("http://1.1.1.1:8080"), "http://1.1.1.1:8080")
-
-    def test_socks5_kept(self):
-        self.assertEqual(_pproxy_uri("socks5://2.2.2.2:1080"), "socks5://2.2.2.2:1080")
-
-    def test_https_converted_to_http_ssl(self):
-        # https 代理在 pproxy 中用 http+ssl://（TLS 到代理）
-        self.assertEqual(_pproxy_uri("https://3.3.3.3:443"), "http+ssl://3.3.3.3:443")
 
 
 class TestPproxyServer(unittest.TestCase):

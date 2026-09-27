@@ -23,6 +23,7 @@ from src.domain.ports import ProxySource
 from src.domain.purity import IppurePluginConfig, IppureSourceSpec, resolve_proxy
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
+from src.interfaces.proxy_scheme import verify_target
 from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.scheduler import ProxyScheduler
 from src.use_cases.autoload import AutoloadUseCase
@@ -204,6 +205,7 @@ def build_container(cache_db: str | None = None) -> Container:
     check_proxies = CheckProxiesUseCase(
         scheduler_factory=lambda proxies, **kw: ProxyScheduler(proxies, **kw),
         async_getter=async_getter,
+        verify_policy=verify_target,
     )
     network_gate = LocalNetworkGate(
         async_getter=async_getter,

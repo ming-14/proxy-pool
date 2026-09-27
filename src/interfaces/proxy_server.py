@@ -32,6 +32,8 @@ if _VENDOR_DIR not in sys.path:
 
 import pproxy
 
+from src.interfaces.proxy_scheme import engine_uri
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,18 +42,6 @@ class TrafficSample(NamedTuple):
     ts: float
     total_upload: int       # 累计上行字节（客户端→远程）
     total_download: int     # 累计下行字节（远程→客户端）
-
-
-def _pproxy_uri(proxy: str) -> str:
-    """将池内代理字符串转换为 pproxy 上游 URI
-
-    http:// 与 socks4:// 与 socks5:// 直接可用；https:// 是 HTTPS 代理（代理本身走 TLS），
-    pproxy 用 http+ssl:// 前缀表示。
-    """
-    if proxy.startswith("https://"):
-        # pproxy 用 http+ssl:// 表示 HTTPS 代理上游（TLS 到代理）
-        return f"http+ssl://{proxy[len('https://'):]}"
-    return proxy
 
 
 class PproxyServer:
@@ -90,8 +80,8 @@ class PproxyServer:
 
     async def start(self, proxies: list[str]) -> None:
         """启动服务器，用给定代理初始化上游列表"""
-        self._rserver = [pproxy.Connection(_pproxy_uri(p)) for p in proxies]
-        self._uri_index = {_pproxy_uri(p): conn for p, conn in zip(proxies, self._rserver)}
+        self._rserver = [pproxy.Connection(engine_uri(p)) for p in proxies]
+        self._uri_index = {engine_uri(p): conn for p, conn in zip(proxies, self._rserver)}
         self._loop = asyncio.get_running_loop()
         self._handler = await self._server.start_server(self._handler_args())
         self._no_upstream = not self._rserver
@@ -148,7 +138,7 @@ class PproxyServer:
         """
         if self._handler is None:
             raise RuntimeError("服务器未启动")
-        target = {_pproxy_uri(p) for p in proxies}
+        target = {engine_uri(p) for p in proxies}
 
         # 移除已不在目标中的上游（按 uri 匹配，非 bind）
         for uri in list(self._uri_index):
@@ -170,7 +160,7 @@ class PproxyServer:
         未被标记的自动回到 alive（补测成功 / 新入队即恢复）；标记项不在上游列表中
         （已拉黑移出等）自然忽略。Connection 对象按 uri 复用，故标记在 sync 间保持。
         """
-        dead = {_pproxy_uri(p) for p in unhealthy}
+        dead = {engine_uri(p) for p in unhealthy}
         for uri, conn in self._uri_index.items():
             alive = uri not in dead
             if conn.alive != alive:

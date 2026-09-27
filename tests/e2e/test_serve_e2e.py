@@ -421,8 +421,8 @@ class TestServeE2E(ServeE2EBase):
             self.assertEqual(standby_list(self.pool), [proxy_uri])
 
             # 验证转换（单元层面已测，这里确认 serve 可启动）
-            from src.interfaces.proxy_server import _pproxy_uri
-            self.assertEqual(_pproxy_uri(proxy_uri), f"http+ssl://127.0.0.1:{mock_port}")
+            from src.interfaces.proxy_scheme import engine_uri
+            self.assertEqual(engine_uri(proxy_uri), f"http+ssl://127.0.0.1:{mock_port}")
 
             server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
             await server.start(standby_list(self.pool))

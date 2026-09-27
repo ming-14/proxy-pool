@@ -17,6 +17,7 @@ from src.domain.models import SourceSpec
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.scheduler import ProxyScheduler
+from src.interfaces.proxy_scheme import verify_target
 from src.use_cases.fetch_proxies import FetchProxiesUseCase
 from src.use_cases.get_proxies import GetProxiesUseCase
 from src.use_cases.record_proxy import RecordProxyUseCase
@@ -445,6 +446,7 @@ class TestCheckProxiesConcurrent(unittest.TestCase):
         return CheckProxiesUseCase(
             scheduler_factory=lambda proxies, **kw: ProxyScheduler(proxies, **kw),
             async_getter=async_getter,
+            verify_policy=verify_target,
         )
 
     def make_async_getter(self, *, status_code=200, exc=None):

@@ -25,6 +25,8 @@ import threading
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse, urlunparse
 
+from src.interfaces.proxy_scheme import needs_socks_connector
+
 if TYPE_CHECKING:  # 仅类型标注引用，运行时不导入
     import requests as _requests_mod
 
@@ -138,19 +140,6 @@ class _AsyncResponse:
 
     def __init__(self, status_code: int) -> None:
         self.status_code = status_code
-
-
-SOCKS_SCHEMES = ("socks4://", "socks5://")
-
-
-def needs_socks_connector(proxy: str | None) -> bool:
-    """该代理是否需要 aiohttp_socks 的 ProxyConnector（aiohttp 原生 proxy= 只认 http/https）
-
-    判据集中在此处：原先只判 socks5://，socks4 代理会落到 aiohttp 原生 proxy= 并直接抛
-    "Only http and https proxies are supported" → 探测恒失败（正常工作的 socks4 代理被
-    误判心跳失败、进而拉黑）。
-    """
-    return bool(proxy) and proxy.startswith(SOCKS_SCHEMES)
 
 
 class AsyncHttpGetter:

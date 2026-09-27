@@ -28,15 +28,19 @@ class CheckProxiesUseCase:
         *,
         scheduler_factory: Callable[..., TaskScheduler],
         async_getter,
+        verify_policy: Callable[[str], bool],
     ) -> None:
         """
         Args:
             scheduler_factory: 并发调度器工厂（组合根注入 ProxyScheduler）
             async_getter:      async HTTP 请求器（aiohttp）。探测全程走它——经
                                asyncio.to_thread 的同步 requests 会触发 ssl C 层内存泄漏
+            verify_policy:     按代理 scheme 决定是否校验目标证书（协议知识在
+                               interfaces/proxy_scheme，由组合根注入——用例不判断 scheme 前缀）
         """
         self._scheduler_factory = scheduler_factory
         self._async_getter = async_getter
+        self._verify_policy = verify_policy
 
     async def execute(
         self,
@@ -62,12 +66,11 @@ class CheckProxiesUseCase:
 
         async def do_test(proxy: str, _url: str) -> dict:
             t0 = time.time()
-            # verify 语义按代理类型区分：
-            #   http/socks4/socks5 代理 + https 目标走隧道端到端 TLS，verify 校验的是目标证书
-            #   （防伪造证书的中间人代理），保留 True；
-            #   https 代理的 TLS 直连代理本身，verify 校验的是代理自签证书，免费代理
-            #   全部失败，须 False（与项目"免费代理多自签证书，校验会误杀"原则一致）。
-            verify = not proxy.startswith("https://")
+            # verify 按代理 scheme 区分（策略见 proxy_scheme.verify_target，组合根注入）：
+            #   http/socks 代理 + https 目标走隧道端到端 TLS，校验的是**目标**证书
+            #   （防伪造证书的中间人代理）；
+            #   https 代理的 TLS 直连代理本身，校验的是代理自签证书，免费代理全部失败。
+            verify = self._verify_policy(proxy)
             try:
                 resp = await self._async_getter.get(
                     _url, timeout=timeout, headers=headers or {},

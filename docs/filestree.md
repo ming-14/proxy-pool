@@ -40,6 +40,7 @@ proxy-pool/
 │   │   ├── http_client.py         # HttpGetter（requests，函数级惰性导入，不校验证书 + 多 IP 重试）+ AsyncHttpGetter（aiohttp，心跳/门控高频路径；socks4/socks5 走 ProxyConnector）
 │   │   ├── scheduler.py           # ProxyScheduler 异步调度器（asyncio）
 │   │   ├── proxy_server.py        # PproxyServer（rserver 动态同步 + rc 调度 + 上游存活标记（心跳判定→pproxy alive）+ 绝不直连（direct_fallback=False，无上游回错误）+ 全局/per-proxy 流量计数 + per-proxy 流量历史）
+│   │   ├── proxy_scheme.py        # 出站协议机制描述表（engine_uri 上游 URI 映射 / needs_socks_connector 探测客户端选择 / verify_target 证书校验策略；协议知识的唯一归属）
 │   │   ├── ua_generator.py         # 确定性 UA 生成器（基于 fake-useragent）
 │   │   ├── ippure/                # IP 纯净度检查插件（各源地位平等；新增源 = 加一个模块 + ippure.toml 两行）
 │   │   │   ├── __init__.py

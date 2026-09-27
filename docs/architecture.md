@@ -7,7 +7,7 @@
 ```
 框架与驱动层 framework/        config / container / cli / serve / logging
    ↓
-接口适配器层 interfaces/        sqlite_store / http_client / scheduler / proxy_server / ua_generator / sources/
+接口适配器层 interfaces/        sqlite_store / http_client / scheduler / proxy_server / proxy_scheme / ua_generator / sources/
    ↓
 用例层 use_cases/              fetch / get / record / request_with_retry / check_proxies
    ↓
@@ -116,9 +116,9 @@ for attempt in range(max_retries):
 ### 9. 并发探测（CheckProxiesUseCase）
 
 - `execute` 为协程：并发测试多个代理访问目标 URL，返回 `{proxy: {success, status_code, elapsed, error}}`；
-- 网络请求经 `asyncio.to_thread` 投递（requests 同步调用），不阻塞事件循环；
+- 网络请求经注入的 async 请求器（`AsyncHttpGetter`，aiohttp）在事件循环内原生发出，不经 `asyncio.to_thread`（避免 ssl 模块 C 层内存泄漏）；
 - 未执行到的代理补 `{"success": False, "error": "未执行"}`；
-- 证书校验按代理类型区分：**http/socks4/socks5 代理严格校验（verify=True）**，隧道端到端校验目标证书、筛掉伪造证书的中间人代理；**https 代理不校验**（TLS 直连代理本身，校验的是代理自签证书，免费代理会全灭）。
+- 证书校验策略由 `interfaces/proxy_scheme.verify_target` 统一给出、经组合根注入（用例不判断 scheme 前缀）：**http/socks4/socks5 代理严格校验（verify=True）**，隧道端到端校验目标证书、筛掉伪造证书的中间人代理；**https 代理不校验**（TLS 直连代理本身，校验的是代理自签证书，免费代理会全灭）。
 
 ### 10. serve — 本地代理服务器机制
 
@@ -143,8 +143,8 @@ for attempt in range(max_retries):
 ### 本地代理服务器（PproxyServer）
 
 - 基于 **pproxy**，本地监听 `http+socks4+socks5://host:port`（一个端口同时提供三种协议）；
-- **协议能力边界**（TCP only）：SOCKS4/SOCKS4a 与 SOCKS5 CONNECT 完整支持；**UDP 不中继**——`UDP ASSOCIATE` 与未实现的 `BIND(0x02)`/未知 CMD 统一回 RFC 1928 REP `0x07`（command not supported），客户端据此退回 TCP，**绝不静默直连**（UDP 直连=真实 IP 泄漏，等同 no-direct 的红线）。不实现 UDP 的依据：上游是 HTTP/HTTPS/SOCKS5 免费代理——HTTP(S) 协议上无法承载 UDP，SOCKS5 上游还缺 UDP ASSOCIATE 客户端（vendor 只有服务端 `accept`，且 `ProxySimple` 未覆盖 `udp_open_connection`，数据报会被发到上游的 TCP 端口），实测命中率≈0；完整实现需新增 ASSOCIATE 客户端 + 中继端口生命周期 + 每上游 UDP 能力探测，收益与代价不成比例。回归：`tests/vendor/test_pproxy_vendor.py::TestUdpAssociateNotRelayed`、`TestSocks5UnsupportedCommand`。SOCKS4a 由 `Socks4.accept` 解析（IP 为 `0.0.0.x` 时域名在 userid 之后），域名作为目标交给上游远端解析；`socks4://` 作 pproxy 上游时按 4a 下发域名（不再本机 `getaddrinfo`，避免 DNS 泄漏）——**池策略已移除 socks4 上游**（`SUPPORTED_SCHEMES`，入池即被拒；免费源不产出它），该转发能力只在 pproxy 机制层保留，入站 `socks4://` 监听不受影响。探测仍按 scheme 判定（`AsyncHttpGetter` 对 socks4/socks5 走 `aiohttp_socks.ProxyConnector` 并显式传 `rdns=True`——python_socks 的 SOCKS4 连接器把 `rdns=None` 当 False 会在本机解析，与"域名交上游解析"矛盾；判据集中在 `needs_socks_connector`）。见 `TestSocks4a`、`tests/interfaces/test_http_client.py`。
-- 池内代理字符串 → pproxy 上游 URI：`https://` 前缀（HTTPS 代理，代理本身走 TLS）转换为 `http+ssl://`；http/socks5 原样传递；
+- **协议能力边界**（TCP only）：SOCKS4/SOCKS4a 与 SOCKS5 CONNECT 完整支持；**UDP 不中继**——`UDP ASSOCIATE` 与未实现的 `BIND(0x02)`/未知 CMD 统一回 RFC 1928 REP `0x07`（command not supported），客户端据此退回 TCP，**绝不静默直连**（UDP 直连=真实 IP 泄漏，等同 no-direct 的红线）。不实现 UDP 的依据：上游是 HTTP/HTTPS/SOCKS5 免费代理——HTTP(S) 协议上无法承载 UDP，SOCKS5 上游还缺 UDP ASSOCIATE 客户端（vendor 只有服务端 `accept`，且 `ProxySimple` 未覆盖 `udp_open_connection`，数据报会被发到上游的 TCP 端口），实测命中率≈0；完整实现需新增 ASSOCIATE 客户端 + 中继端口生命周期 + 每上游 UDP 能力探测，收益与代价不成比例。回归：`tests/vendor/test_pproxy_vendor.py::TestUdpAssociateNotRelayed`、`TestSocks5UnsupportedCommand`。SOCKS4a 由 `Socks4.accept` 解析（IP 为 `0.0.0.x` 时域名在 userid 之后），域名作为目标交给上游远端解析；`socks4://` 作 pproxy 上游时按 4a 下发域名（不再本机 `getaddrinfo`，避免 DNS 泄漏）——**池策略已移除 socks4 上游**（`SUPPORTED_SCHEMES`，入池即被拒；免费源不产出它），该转发能力只在 pproxy 机制层保留，入站 `socks4://` 监听不受影响。探测仍按 scheme 判定（`AsyncHttpGetter` 对 socks4/socks5 走 `aiohttp_socks.ProxyConnector` 并显式传 `rdns=True`——python_socks 的 SOCKS4 连接器把 `rdns=None` 当 False 会在本机解析，与"域名交上游解析"矛盾；判据集中在 `proxy_scheme.needs_socks_connector`）。见 `TestSocks4a`、`tests/interfaces/test_http_client.py`。
+- 池内代理字符串 → pproxy 上游 URI：`https://` 前缀（HTTPS 代理，代理本身走 TLS）转换为 `http+ssl://`；http/socks5 原样传递。映射规则集中在 `interfaces/proxy_scheme.engine_uri`（协议知识的唯一归属，调用方不判断 scheme 前缀）；
 - **rserver 动态同步**：`sync(proxies)` 对上游列表做集合差集增删，rserver 是同一列表引用，运行中增删对 pproxy schedule 实时生效；
 - 调度算法 `salgorithm="rc"`（随机）：每次请求随机选存活代理，坏代理有概率被跳过；不用 `fa`（first_available）是因为 fa 会固定命中第一个坏代理导致持续失败。
 - **绝不直连（no-direct）**：`PproxyServer` 恒以 `direct_fallback=False` 启动 handler——**无可用上游时按协议回错误**（HTTP `502` / SOCKS5 REP `0x01` general failure / SOCKS4 CD `0x5B`），**不回退以本机真实 IP 直连目标**。pproxy 原语义是 `schedule(...) or DIRECT`：上游列表空（队列未补入/全部淘汰）时请求会**直连出去并返回成功响应**，对"只为换出口 IP 而用代理"的场景是静默 IP 泄漏（客户端无从察觉）。需要直连的场景须显式把 `direct://` 放进上游列表（那时 `schedule` 返回 `ProxyDirect`，不算回退）。上游不可用（列表为空、或成员全部被标记失败）↔ 恢复的状态翻转写日志（`sync` 检测，WARNING/INFO），否则运维只见"客户端全部 502"不知原因。回归：`tests/vendor/test_pproxy_vendor.py::TestNoDirectFallback`、`tests/e2e/test_serve_e2e.py::TestServeE2E::test_no_direct_leak_when_upstream_empty`、`tests/interfaces/test_proxy_server.py::TestPproxyServer::test_no_direct_fallback`（pproxy 库缺省 `direct_fallback=True`，保留 CLI「`-r` 缺省即直连」语义，由本项目显式关闭）。附带修复：SOCKS4 的 `accept` 原**立即回 `00 5A`（granted）**，失败码永远发不出去（失败=授权后立刻断连），现与 SOCKS5 #169 同模式把应答推迟到隧道建立后，失败回 `00 5B`（见 `TestSocks4ReplyDeferred`）。

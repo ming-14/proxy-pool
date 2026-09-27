@@ -8,7 +8,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.interfaces.http_client import AsyncHttpGetter, needs_socks_connector
+from src.interfaces.http_client import AsyncHttpGetter
+from src.interfaces.proxy_scheme import needs_socks_connector
 
 
 def _async_cm(value):
