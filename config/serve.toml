@@ -34,10 +34,8 @@ metrics_window = 1800
 # 不参与数据留存（留存统一由 metrics_window 决定，也不影响仪表盘）。
 standby_chart_window = 60
 
-# serve 默认代理协议（CLI 未指定 --type 时的初始值；运行时面板可增删，不写回本配置）。
-# 注意：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），
-# 浏览器访问 https 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；
-# http/socks4/socks5 均为透传，无此问题。
+# serve 默认上游代理类型（CLI 未指定 --type 时的初始值；运行时面板可增删，不写回本配置）。
+# 只过滤进入代理服务队列的上游类型，不影响本地监听协议（恒为 http+socks4+socks5://host:port）。
 proxy_types = ["https"]
 
 network_probe_urls = [ # 本地链路门控探测目标（任一返回状态码 <400 即认为链路可用，容错单目标被墙/抽风）

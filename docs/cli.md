@@ -17,7 +17,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - `--queue-size`：代理服务队列容量（默认配置中的 STANDBY_QUEUE_CAPACITY）
 - `--interval`：心跳间隔秒（默认配置中的 HEARTBEAT_INTERVAL）
 - `--probe-url`：心跳探测目标 URL（默认配置中的 HEARTBEAT_PROBE_URL）
-- `--type`：serve 使用的代理类型，可多次指定（不填默认取配置 [server].proxy_types）
+- `--type`：允许进入代理服务队列的**上游代理类型**，可多次指定（不填默认取配置 `[server].proxy_types`）；不影响本地监听协议（恒为 http+socks4+socks5）
 - `--web-host`：Web 控制面板监听地址（默认 127.0.0.1）
 - `--web-port`：Web 控制面板监听端口（默认 8083）
 

@@ -212,9 +212,9 @@ METRICS_WINDOW = int(_toml["server"]["metrics_window"])
 # 代理服务队列页图表的显示窗口秒数：只影响队列页行内趋势图的裁剪/画图范围，
 # 不参与数据留存（留存统一由 METRICS_WINDOW 决定，也不影响仪表盘）。
 STANDBY_CHART_WINDOW = int(_toml["server"]["standby_chart_window"])
-# serve 默认代理协议（CLI 未指定 --type 时的初始值；运行时由 ServeControl 持有，面板可增删）。
-# 不含 https：https 代理在 pproxy 中是 TLS 终结（http+ssl:// 上游），浏览器访问 https
-# 目标会拿到上游证书导致 ERR_CERT_AUTHORITY_INVALID；http/socks4/socks5 均为透传，无此问题。
+# serve 默认上游代理类型（CLI 未指定 --type 时的初始值；运行时由 ServeControl 持有，面板可增删）。
+# 只过滤进入代理服务队列的上游类型（standby.fill 候选筛选），不参与本地监听协议构造
+# （监听恒为 http+socks4+socks5://host:port，见 PproxyServer）。
 SERVER_PROXY_TYPES: tuple[str, ...] = tuple(_toml["server"]["proxy_types"])
 # 本地链路门控（serve 心跳/补测/fill 探测前后各 check 一次本地链路，任何一次不可用即跳过本轮/不计分避免误拉黑）
 NETWORK_PROBE_URLS: tuple[str, ...] = tuple(_toml["server"]["network_probe_urls"])  # 探测目标（任一返回 <400 即正常）

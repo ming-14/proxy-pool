@@ -410,7 +410,7 @@ SQLite 连接 ~100KB 常驻。`load()` 一次性读全表构建 dict（与原 `j
 
 ### 8.5 性能验证
 
-`monitor_serve.py --type https` 120s + cProfile：
+`python cli.py serve --type https` 120s + cProfile：
 - save 耗时从 0.3s 降到 <5ms
 - save 退出 cProfile top 热点
 - 内存/CPU 稳定
@@ -430,5 +430,5 @@ SQLite 连接 ~100KB 常驻。`load()` 一次性读全表构建 dict（与原 `j
 11. 更新 e2e 测试
 12. 删除 `.cache`（旧 JSON 文件）
 13. 跑 `pytest` 全量通过
-14. 跑 `monitor_serve.py --type https` 验证性能
+14. 跑 `python cli.py serve --type https` 验证性能
 15. 同步更新 `README.md` / `docs/architecture.md` / `docs/filestree.md`
