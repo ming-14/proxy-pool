@@ -19,7 +19,7 @@ from src.framework import config
 from src.framework.loop import run_coro
 from src.framework.web.control import ServeControl
 from src.framework.web.panel_state import PanelTasks
-from src.interfaces.proxy_server import PproxyServer
+from src.interfaces.proxy_server import PproxyServer, listen_uri
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ async def _run(
     web_enabled: bool = True,
 ) -> None:
     """服务器主循环：启动 + 周期心跳 + 队列补充 + 退避补测 + Web 控制面板（web_enabled=false 时跳过面板）"""
-    server = PproxyServer(listen_uri=f"http+socks4+socks5://{host}:{port}",
+    server = PproxyServer(listen_uri=listen_uri(host, port, config.SERVER_LISTEN_PROTOCOLS),
                           metrics_window=config.METRICS_WINDOW)
     standby = c.standby
     standby.set_capacity(capacity)  # 队列容量：standby_proxies 截断超出容量的固定代理

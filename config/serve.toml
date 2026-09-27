@@ -2,6 +2,10 @@
 [server]
 host = "127.0.0.1"                # 监听地址
 port = 8082                       # 监听端口
+# 入站监听协议（客户端→本机，pproxy 监听 URI 的协议段）：一个端口同时提供所列协议。
+# 注意与 [server].proxy_types 是两套词汇——后者只过滤**出站（上游）类型**，不改变监听协议。
+# 取值限于 pproxy 的入站协议（http/socks4/socks5）；https（TLS 监听）需证书配置，未启用。
+listen_protocols = ["http", "socks4", "socks5"]
 standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
 standby_queue_capacity = 30       # 代理服务队列容量上限（serve 探测补入）
 

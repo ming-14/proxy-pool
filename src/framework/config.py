@@ -190,6 +190,16 @@ FPW_ACCEPT_LANGUAGE = _fpw["accept_language"]           # Accept-Language 头（
 # ---------------------------------------------------------------- 本地代理服务器（serve 命令）
 SERVER_HOST = _toml["server"]["host"]                            # 监听地址
 SERVER_PORT = int(_toml["server"]["port"])                       # 监听端口
+# 入站监听协议（客户端侧）：拼 pproxy 监听 URI 的协议段，与 proxy_types（出站过滤）无关。
+INBOUND_PROTOCOLS: tuple[str, ...] = ("http", "socks4", "socks5")  # pproxy 入站协议（https 需证书，未启用）
+SERVER_LISTEN_PROTOCOLS: tuple[str, ...] = tuple(_toml["server"]["listen_protocols"])
+if not SERVER_LISTEN_PROTOCOLS:
+    raise ValueError("serve.toml [server].listen_protocols 不可为空（入站无监听协议）")
+_unknown_listen = [p for p in SERVER_LISTEN_PROTOCOLS if p not in INBOUND_PROTOCOLS]
+if _unknown_listen:
+    raise ValueError(
+        f"serve.toml [server].listen_protocols 含未知协议 {_unknown_listen}（可选 {list(INBOUND_PROTOCOLS)}）"
+    )
 STANDBY_GROUP = _toml["server"]["standby_group"]                 # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
 if STANDBY_GROUP not in _GROUPS:
     raise ValueError(f"组 {STANDBY_GROUP!r} 未在 [groups] 定义")

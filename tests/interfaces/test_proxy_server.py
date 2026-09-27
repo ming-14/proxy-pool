@@ -3,7 +3,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.interfaces.proxy_server import PproxyServer
+from src.interfaces.proxy_server import PproxyServer, listen_uri
 
 
 def _realistic_bind(uri: str) -> str:
@@ -13,6 +13,17 @@ def _realistic_bind(uri: str) -> str:
     不含 scheme 前缀。sync 须按完整 uri（_uri_index）匹配而非 bind。
     """
     return uri.split("://", 1)[1]
+
+
+class TestListenUri(unittest.TestCase):
+    """pproxy 监听 URI 构造（协议段来自配置的入站协议集合）"""
+
+    def test_multi_protocol(self):
+        self.assertEqual(listen_uri("127.0.0.1", 8082, ("http", "socks4", "socks5")),
+                         "http+socks4+socks5://127.0.0.1:8082")
+
+    def test_single_protocol(self):
+        self.assertEqual(listen_uri("0.0.0.0", 1080, ("socks5",)), "socks5://0.0.0.0:1080")
 
 
 class TestPproxyServer(unittest.TestCase):

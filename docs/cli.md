@@ -14,6 +14,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 
 - `--port`：监听端口（默认 8082）
 - `--host`：监听地址（默认 127.0.0.1）
+- 监听**协议**不在此处指定：取配置 `[server].listen_protocols`（入站协议，默认 `http+socks4+socks5` 单端口）；与 `--type`（出站上游类型过滤）是两套词汇
 - `--queue-size`：代理服务队列容量（默认配置中的 STANDBY_QUEUE_CAPACITY）
 - `--interval`：心跳间隔秒（默认配置中的 HEARTBEAT_INTERVAL）
 - `--probe-url`：心跳探测目标 URL（默认配置中的 HEARTBEAT_PROBE_URL）

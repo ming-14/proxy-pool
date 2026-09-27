@@ -44,6 +44,15 @@ class TrafficSample(NamedTuple):
     total_download: int     # 累计下行字节（远程→客户端）
 
 
+def listen_uri(host: str, port: int, protocols: tuple[str, ...]) -> str:
+    """构造 pproxy 监听 URI：协议段以 '+' 连接（如 http+socks4+socks5://host:port）
+
+    协议集合来自配置（[server].listen_protocols），是**入站**（客户端侧）能力，
+    与出站上游类型过滤无关；空集合在配置层已被拒绝。
+    """
+    return f"{'+'.join(protocols)}://{host}:{port}"
+
+
 class PproxyServer:
     """pproxy 本地代理服务器封装：管理上游 rserver 的动态同步"""
 

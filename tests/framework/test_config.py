@@ -10,6 +10,7 @@ config 在 import 期加载，故所有用例都在子进程里跑：复制真�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,7 @@ def _ippure_toml(
 
 def _run_config(tmp_path: Path, *, env_file: str | None = None,
                 ippure: str | None = None, panel: str | None = None,
+                listen_protocols: tuple[str, ...] | None = None,
                 extra_env: dict | None = None,
                 drop_ippure: bool = False) -> subprocess.CompletedProcess:
     """复制真实配置目录 → 覆写指定文件 → 子进程 import config"""
@@ -60,12 +62,22 @@ def _run_config(tmp_path: Path, *, env_file: str | None = None,
         (cfg_dir / "ippure.toml").write_text(ippure, encoding="utf-8")
     if panel is not None:
         (cfg_dir / "panel.toml").write_text(panel, encoding="utf-8")
+    if listen_protocols is not None:
+        # 只替换 listen_protocols 一行（serve.toml 其余键是合法 [server] 结构的脚手架）
+        serve_path = cfg_dir / "serve.toml"
+        value = "[" + ", ".join(f'"{p}"' for p in listen_protocols) + "]"
+        patched, hits = re.subn(r"^listen_protocols = \[[^\]]*\]",
+                                f"listen_protocols = {value}",
+                                serve_path.read_text(encoding="utf-8"), flags=re.MULTILINE)
+        assert hits == 1, f"serve.toml 的 listen_protocols 命中 {hits} 次（应为 1 次）"
+        serve_path.write_text(patched, encoding="utf-8")
     code = (
         "import sys; sys.path.insert(0, sys.argv[1]);"
         "from src.framework import config as c;"
         "print('SOURCE', c.IPPURE_SOURCE);"
         "print('RULES', [(r.match, r.use) for r in c.IPPURE_PROXY_RULES]);"
         "print('SECTIONS', sorted(c.IPPURE_SECTIONS));"
+        "print('LISTEN', c.SERVER_LISTEN_PROTOCOLS);"
         f"print('KEY', repr(__import__('os').environ.get({_ENV_KEY!r})))"
     )
     env = dict(os.environ, PROXY_POOL_CONFIG=str(cfg_dir))
@@ -111,6 +123,28 @@ def test_env_file_invalid_line_fails_fast(tmp_path) -> None:
     r = _run_config(tmp_path, env_file="not-a-kv-line\n")
     assert r.returncode != 0
     assert "第 1 行" in r.stderr
+
+
+# ---------------------------------------------------------------- serve.toml（入站监听协议）
+def test_listen_protocols_parsed(tmp_path) -> None:
+    """入站监听协议按配置解析；入站 socks4 仍受支持（出站 socks4 已从策略中移除）"""
+    r = _run_config(tmp_path, listen_protocols=("http", "socks4"))
+    assert r.returncode == 0, r.stderr
+    assert "LISTEN ('http', 'socks4')" in r.stdout
+
+
+def test_listen_protocols_unknown_fails_fast(tmp_path) -> None:
+    """入站协议取 pproxy 不认识的取值时报错（防拼错静默失效）"""
+    r = _run_config(tmp_path, listen_protocols=("http", "telnet"))
+    assert r.returncode != 0
+    assert "telnet" in r.stderr
+
+
+def test_listen_protocols_empty_fails_fast(tmp_path) -> None:
+    """入站协议集合为空报错（监听 URI 无协议段）"""
+    r = _run_config(tmp_path, listen_protocols=())
+    assert r.returncode != 0
+    assert "listen_protocols" in r.stderr
 
 
 # ---------------------------------------------------------------- ippure.toml

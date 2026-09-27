@@ -203,7 +203,8 @@ def cmd_serve(args):
     # 监听实例由 serve._run 按 host/port 自建（容器只提供池与用例）
     c = build_container()
     allowed = set(args.type) if args.type else set(config.SERVER_PROXY_TYPES)
-    print(f"启动本地代理服务器: {args.host}:{args.port} (类型: {','.join(sorted(allowed))})")
+    print(f"启动本地代理服务器: {args.host}:{args.port} "
+          f"(监听 {','.join(config.SERVER_LISTEN_PROTOCOLS)}; 上游类型: {','.join(sorted(allowed))})")
     run(
         c,
         host=args.host,
