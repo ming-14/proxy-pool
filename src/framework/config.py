@@ -33,6 +33,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # Python 3.8 兼容
 
+from src.domain.models import SUPPORTED_SCHEMES  # noqa: E402
 from src.domain.purity import ProxyRule  # noqa: E402  (tomllib 分支之后，保持导入分组清晰)
 
 # config.py 位于 src/framework/，上溯 3 级到项目根
@@ -297,7 +298,7 @@ IPPURE_SECTIONS: dict[str, dict] = {
 }
 
 # 声明式代理规则：match 为插件名 glob，use 为代理 URL（空 = 直连）；按声明顺序取首个命中
-_PROXY_SCHEMES = ("http://", "https://", "socks4://", "socks5://")
+_PROXY_SCHEMES = tuple(f"{s}://" for s in SUPPORTED_SCHEMES)  # 与池支持集合同源，避免两处漂移
 
 
 def _parse_proxy_rule(rule: dict) -> ProxyRule:

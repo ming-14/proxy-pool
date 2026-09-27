@@ -13,6 +13,8 @@ standby.update_fill_probe_params 完成）。
 
 from __future__ import annotations
 
+from src.domain.models import SUPPORTED_SCHEMES
+
 SCHEDULE_ALGORITHMS = ("fa", "rr", "rc", "lc")
 
 
@@ -91,7 +93,7 @@ class ServeControl:
             changed["probe_url"] = self.probe_url
         if "allowed_types" in patch and sorted(patch["allowed_types"]) != sorted(self.allowed_types):
             types = set(patch["allowed_types"])
-            invalid = types - {"http", "https", "socks5"}
+            invalid = types - set(SUPPORTED_SCHEMES)
             if invalid:
                 raise ValueError(f"非法代理类型: {sorted(invalid)}")
             self.allowed_types = types

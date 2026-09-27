@@ -420,17 +420,23 @@ async def _do_group_add(request: web.Request) -> web.Response:
     if not proxies:
         return web.json_response({"error": "缺少 proxies"}, status=400)
     added = 0
+    rejected: list[str] = []
     for p in proxies:
         p = normalize_proxy(p.strip())
         if not p:
             continue
-        ctx.pool.add_to_group(group_name, p, consecutive_fails=0)
-        added += 1
+        if ctx.pool.add_to_group(group_name, p, consecutive_fails=0):
+            added += 1
+        else:
+            rejected.append(p)
+    if rejected:
+        # 协议策略拒绝（不在 SUPPORTED_SCHEMES）：响应回传 + 记日志，不静默丢
+        logger.warning("添加代理被拒（协议不受支持）: group=%s proxies=%s", group_name, rejected)
     # 从 standby 组添加时同步 pproxy 上游
     if group_name == config.STANDBY_GROUP:
         ctx.server.sync(ctx.standby.upstream_proxies())
     ctx.save()
-    return web.json_response({"ok": True, "added": added})
+    return web.json_response({"ok": True, "added": added, "rejected": rejected})
 
 
 async def _proxy_history(request: web.Request) -> web.Response:

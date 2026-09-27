@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import time
 
-from src.domain.models import normalize_proxy
+from src.domain.models import is_supported_proxy, normalize_proxy
 from src.domain.proxy_pool import ProxyPool
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,10 @@ def _parse(content: str) -> list[str]:
         if not addr:
             continue
         proxy = normalize_proxy(addr)
+        if not is_supported_proxy(proxy):
+            # 清单里的协议不在支持集合（如 socks4）：跳过并记日志，不静默
+            logger.warning("autoload 跳过协议不受支持的代理: %s", addr)
+            continue
         if proxy not in seen:
             seen.add(proxy)
             proxies.append(proxy)

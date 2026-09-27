@@ -51,6 +51,25 @@ class TestProxyPool(unittest.TestCase):
         self.pool.add_to_group("nonexistent", "http://1.2.3.4:8080")
         self.assertNotIn("nonexistent", self.pool.proxy_groups)
 
+    def test_add_to_group_rejects_unsupported_scheme(self):
+        """scheme 不在 SUPPORTED_SCHEMES（socks4）：入池被拒（返回 False），不写入组"""
+        self.assertFalse(self.pool.add_to_group("default-http", "socks4://1.2.3.4:1080"))
+        self.assertNotIn("socks4://1.2.3.4:1080",
+                         self.pool.proxy_groups["default-http"]["proxies"])
+        self.assertTrue(self.pool.add_to_group("default-http", "socks5://1.2.3.4:1080"))
+
+    def test_restore_state_drops_unsupported_scheme(self):
+        """历史入库的 socks4 条目恢复时被丢弃并计数（协议集合收窄后的迁移语义）"""
+        now = int(time.time())
+        data = {"proxy_groups": {"default-http": {"ttl": 3600, "proxies": [
+            {"proxy": "socks4://1.2.3.4:1080", "joined_at": now, "consecutive_fails": 0},
+            {"proxy": "http://5.6.7.8:8080", "joined_at": now, "consecutive_fails": 0},
+        ]}}}
+        self.assertEqual(self.pool.restore_state(data), 1)
+        self.assertIn("http://5.6.7.8:8080", self.pool.proxy_groups["default-http"]["proxies"])
+        self.assertNotIn("socks4://1.2.3.4:1080",
+                         self.pool.proxy_groups["default-http"]["proxies"])
+
     def test_add_to_group_custom_consecutive_fails(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=3)
         self.assertEqual(self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 3)

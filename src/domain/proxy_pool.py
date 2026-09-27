@@ -26,7 +26,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from src.domain.models import normalize_proxy
+from src.domain.models import is_supported_proxy, normalize_proxy
 
 # 内建锁定组（不在配置文件，ProxyPool.__init__ 自动创建，ttl=never 永不过期）。
 # serve lock 时代理 move 到该组，standby_proxies 只返回该组代理作为 pproxy 唯一上游；
@@ -109,8 +109,14 @@ class ProxyPool:
     def add_to_group(self, group_name: str, proxy: str, consecutive_fails: int = 0,
                      latency: float | None = None, *,
                      pinned: bool = False, pinned_at: int | None = None,
-                     source_group: str | None = None) -> None:
+                     source_group: str | None = None) -> bool:
         """将代理加入指定组（覆盖旧记录）
+
+        入池即校验 scheme 策略（SUPPORTED_SCHEMES）：不受支持的协议直接拒绝，调用方据
+        返回值上报被拒项——域层无日志，保持纯内存无 IO。
+
+        Returns:
+            是否入组（目标组不存在、或协议不在支持集合时为 False）
 
         Args:
             latency:       探测响应时间（秒），standby 队列按此排序；None 表示未探测
@@ -119,8 +125,10 @@ class ProxyPool:
             source_group:  来源组名（仅黑名单代理记录，标记从哪个组被拉黑，供前端展示）
         """
         if group_name not in self.proxy_groups:
-            return
+            return False
         proxy = normalize_proxy(proxy)
+        if not is_supported_proxy(proxy):
+            return False
         self.proxy_groups[group_name]["proxies"][proxy] = {
             "joined_at": int(time.time()),
             "consecutive_fails": consecutive_fails,
@@ -130,6 +138,7 @@ class ProxyPool:
             "source_group": source_group,
         }
         self._dirty_groups.add(group_name)
+        return True
 
     def remove_from_group(self, group_name: str, proxy: str) -> bool:
         """从指定组移除代理，返回是否实际移除"""
@@ -432,18 +441,26 @@ class ProxyPool:
             data["proxy_groups"][name] = {"ttl": group["ttl"], "proxies": proxies}
         return data
 
-    def restore_state(self, data: dict) -> None:
+    def restore_state(self, data: dict) -> int:
         """从 store.load() 结果恢复状态：组 ttl 以配置为准、过期条目过滤、源暂停过期过滤
 
         文件里保存的 ttl 不覆盖配置（TTL 是运行时配置，改配置即生效）。
+        协议不在支持集合的条目一并丢弃（历史入库数据），调用方据返回值记日志。
+
+        Returns:
+            被丢弃的不受支持协议条目数
         """
         now = time.time()
+        dropped = 0
         for name, group_data in data.get("proxy_groups", {}).items():
             if name not in self.proxy_groups:
                 continue
             ttl = self.proxy_groups[name]["ttl"]  # 以配置为准
             for p in group_data.get("proxies", []):
                 proxy = normalize_proxy(p["proxy"])
+                if not is_supported_proxy(proxy):
+                    dropped += 1
+                    continue
                 joined_at = p["joined_at"]
                 if ttl is not None and now - joined_at >= ttl:
                     continue
@@ -461,3 +478,4 @@ class ProxyPool:
             ttl = val.get("ttl") or self.default_pause_ttl
             if time.time() - paused_at < ttl:
                 self.source_paused[src] = {"paused_at": paused_at, "ttl": ttl}
+        return dropped

@@ -28,6 +28,17 @@ def proxy_type(proxy: str) -> str:
     return normalize_proxy(proxy).split("://", 1)[0]
 
 
+# 池支持的出站代理协议（单一来源：分组分拣/serve 上游过滤/面板与 CLI 类型校验均由它派生）。
+# 不含 socks4：免费源不产出，历史上仅能手动加入，保留只会形成"能被选中却无供给"的半支持状态。
+# 这是**策略**集合——pproxy 与 aiohttp_socks 对 socks4 的机制支持不受影响（入站 socks4 亦保留）。
+SUPPORTED_SCHEMES: tuple[str, ...] = ("http", "https", "socks5")
+
+
+def is_supported_proxy(proxy: str) -> bool:
+    """代理 scheme 是否属于池支持的出站协议（入池/入清单前的策略校验）"""
+    return proxy_type(proxy) in SUPPORTED_SCHEMES
+
+
 def to_proxy_dict(proxy: str) -> dict[str, str]:
     """构造 HTTP 客户端代理字典 {http, https}
 

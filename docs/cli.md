@@ -27,7 +27,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - **绝不直连**：无可用上游（队列空/全部不可用）时请求被拒绝——HTTP 回 `502`、SOCKS5 回 REP `0x01`、SOCKS4 回 CD `0x5B`，**不会以本机真实 IP 直连目标**（pproxy 原语义是回退直连并返回成功响应，等于静默泄漏真实 IP）；上游不可用↔恢复会在日志里记警告/恢复信息
 - **失败代理立即退出调度**：心跳判失败、进入退避补测的队列成员，在上游侧被标记不可用，rc/rr/lc 不再选中它（补测成功即恢复）——不必等它攒够失败次数被拉黑；存活判定以代理池心跳为唯一来源，不额外做 TCP 探测
 - **协议能力（TCP only）**：SOCKS4/SOCKS4a、SOCKS5 CONNECT、HTTP/HTTPS 隧道均支持；**UDP 不中继**——SOCKS5 `UDP ASSOCIATE` 回 REP `0x07`（command not supported），客户端据此退回 TCP；`BIND(0x02)` 等未实现 CMD 同样回 `0x07`（不再裸断连）。原因：上游是 HTTP/HTTPS/SOCKS5 免费代理，HTTP(S) 无法承载 UDP，SOCKS5 上游也需 UDP ASSOCIATE 客户端（几乎没有免费代理支持）；唯一"能跑通"的形态是 UDP 直连=泄漏真实 IP，故不做
-- **上游协议**：`--type` 只列 http/https/socks5（代理源产出的类型）；**socks4 上游**不在源产出内，但手动加入代理服务队列（面板添加 / autoload）时可用——探测走 aiohttp_socks，转发按 SOCKS4a 把域名交给上游解析（不在本机解析，避免 DNS 泄漏）
+- **上游协议**：与池支持集合一致（`http`/`https`/`socks5`，见 `SUPPORTED_SCHEMES`）；**socks4 上游已移除**——入选集合与入池校验同源，面板添加 / autoload / `blacklist`/`trust` 传入 socks4 都会被拒（响应回传 `rejected` 并记日志）。原因：免费源不产出 socks4，保留只会形成"能被选中却无供给"的半支持状态；pproxy 与 `aiohttp_socks` 的 socks4 机制能力（含入站 `socks4://` 监听）不受影响
 - 代理服务队列按响应时间（latency）升序维护，队列满时新代理更快则踢队尾 move trusted、较慢则自身 move trusted（探测成果不浪费）
 - **本地链路门控**：fill/心跳/补测在探测前和探测后各直连多个探测目标（`network_probe_urls`，任一返回状态码 <400 即正常）判定链路可用性——**两次都必须正常才允许执行正常拉黑操作**：探测前不可用（WiFi 断/ISP 故障）跳过本轮操作（不计数/不拉黑/不补测），探测后复检不可用则本轮失败不归因到代理（探测期间链路劣化），队列保持现状、恢复后自动续跑；结论缓存单向——只缓存"不可用"（`network_unhealthy_cache_ttl` 秒内复用、不再探测），"可用"每次真实探测（心跳 2s 一轮，链路抖动 10~20 秒即可让失败代理攒满拉黑阈值，陈旧的"可用"会授权误拉黑；失败结论只会让本轮跳过，复用只花时间）
 

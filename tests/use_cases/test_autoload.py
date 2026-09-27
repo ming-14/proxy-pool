@@ -39,6 +39,11 @@ class TestParse(unittest.TestCase):
         # 裸 ip:port 补默认 http:// scheme
         self.assertEqual(_parse("1.2.3.4:8080"), ["http://1.2.3.4:8080"])
 
+    def test_unsupported_scheme_skipped(self):
+        # 协议不在支持集合（socks4）：跳过该行，其余照常解析
+        self.assertEqual(_parse("socks4://1.2.3.4:1080\nhttp://5.6.7.8:8080"),
+                         ["http://5.6.7.8:8080"])
+
     def test_inline_comment(self):
         # # 行内注释：# 及之后忽略（含 # 前有空格的情况）
         self.assertEqual(_parse("http://1.2.3.4:8080 # 备注"), ["http://1.2.3.4:8080"])

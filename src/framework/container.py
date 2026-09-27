@@ -176,7 +176,10 @@ def build_container(cache_db: str | None = None) -> Container:
         blacklist_group=config.BLACKLIST_GROUP,
     )
     store = SqliteProxyStore(cache_db or config.CACHE_DB)
-    pool.restore_state(store.load())
+    dropped = pool.restore_state(store.load())
+    if dropped:
+        # 协议支持集合收窄（如移除 socks4）后，历史入库条目在此被丢弃——不静默
+        logger.warning("恢复代理池时丢弃 %d 个协议不受支持的条目", dropped)
     # autoload：启动时从清单文件加载固定代理到代理服务队列（在 restore 之后，跳过已存在）
     _load_autoload(pool, config.STANDBY_GROUP, config.AUTOLOAD_FILE)
 

@@ -10,7 +10,7 @@ import logging
 import sys
 import time
 
-from src.domain.models import normalize_proxy, to_proxy_dict
+from src.domain.models import SUPPORTED_SCHEMES, is_supported_proxy, normalize_proxy, to_proxy_dict
 from src.framework import config
 from src.framework.container import build_container
 from src.framework.logging import setup_logging
@@ -92,6 +92,9 @@ def cmd_blacklist(args):
     try:
         for proxy in args.proxies:
             proxy = normalize_proxy(proxy)
+            if not is_supported_proxy(proxy):
+                print(f"跳过（协议不受支持）: {proxy}", file=sys.stderr)
+                continue
             c.record.remove(proxy)
             print(f"已加入黑名单: {proxy}")
     finally:
@@ -103,6 +106,9 @@ def cmd_trust(args):
     try:
         for proxy in args.proxies:
             proxy = normalize_proxy(proxy)
+            if not is_supported_proxy(proxy):
+                print(f"跳过（协议不受支持）: {proxy}", file=sys.stderr)
+                continue
             c.record.trust(proxy)
             print(f"已加入信任池: {proxy}")
     finally:
@@ -269,8 +275,8 @@ def main():
     p_serve.add_argument("--queue-size", type=int, default=config.STANDBY_QUEUE_CAPACITY, help=f"代理服务队列容量 (默认{config.STANDBY_QUEUE_CAPACITY})")
     p_serve.add_argument("--interval", type=int, default=config.HEARTBEAT_INTERVAL, help=f"心跳间隔秒 (默认{config.HEARTBEAT_INTERVAL})")
     p_serve.add_argument("--probe-url", default=config.HEARTBEAT_PROBE_URL, help="心跳探测URL")
-    p_serve.add_argument("--type", action="append", choices=["http", "https", "socks5"],
-                         help="serve 使用的代理类型 (可多次指定)；不填默认取 serve.toml [server].proxy_types")
+    p_serve.add_argument("--type", action="append", choices=list(SUPPORTED_SCHEMES),
+                         help="可进入代理服务队列的上游代理类型 (可多次指定)；不填默认取 serve.toml [server].proxy_types")
     p_serve.add_argument("--web-host", default=config.WEB_HOST, help=f"Web 面板监听地址 (默认{config.WEB_HOST})")
     p_serve.add_argument("--web-port", type=int, default=config.WEB_PORT, help=f"Web 面板监听端口 (默认{config.WEB_PORT})")
 
