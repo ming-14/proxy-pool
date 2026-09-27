@@ -1,7 +1,7 @@
 """FreeProxy.World 代理源（https://www.freeproxy.world/）
 
 多阶段爬取（数据拉取职责，写缓存由 FetchProxiesUseCase 统一做）：
-    Phase1 直连拉 HTTPS 代理第 1 页（获取中转代理 + 总页数）
+    Phase1 获取 HTTPS 代理第 1 页（直连，或按 FIRST_PAGE_ENV 读本地预取文件；得到中转代理 + 总页数）
     Phase2 用 HTTPS 代理多线程爬取 HTTPS 各页
     Phase3 用 HTTPS 中转代理拉取各类型（http/https/socks5）代理第 1 页
     Phase4 多线程爬取各类型后续页
@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import sys
 import time
 from functools import partial
+from pathlib import Path
 
 import urllib3
 
@@ -41,6 +43,11 @@ from src.interfaces.ua_generator import UAGenerator
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_URL = "https://www.freeproxy.world/"
+
+# 第 1 页 HTML 的文件路径（经环境变量注入）：配置后跳过 Phase1 直连，直接读本地预取结果。
+# 用于出口 IP 被站点 403 的场景（如 GitHub Actions），首页文件由
+# scripts/fetch_fpw_first_page.py 从 base.db 的代理池预取。
+FIRST_PAGE_ENV = "FPW_FIRST_PAGE_FILE"
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +139,27 @@ async def _try_first_page(url, ua_gen, proxies_dict, seed, retries, timeout, pha
         except Exception as e:
             logger.warning("[%s] 请求失败 (尝试 %d/%d): %s", phase, attempt + 1, retries, e)
     return None
+
+
+def _load_first_page(path):
+    """从本地文件读取第 1 页 HTML 并解析，返回 (代理列表, 总页数)；不可用返回 None
+
+    与 _try_first_page 的返回结构一致，供 Phase1 在配置了首页文件时替代直连。
+    """
+    try:
+        html = Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        logger.warning("首页文件读取失败: %s (%s)", path, e)
+        return None
+    if not _validate_response(html):
+        logger.warning("首页文件无有效数据(CF墙或空页): %s", path)
+        return None
+    proxies = _parse_proxies(html)
+    if not proxies:
+        logger.warning("首页文件未解析出代理: %s", path)
+        return None
+    logger.info("首页文件解析成功: %s, 获取 %d 个代理", path, len(proxies))
+    return proxies, _parse_total_pages(html)
 
 
 async def _crawl_pages(proxies, pages, do_fetch, *, phase_name, on_page=None, retry_unused=False,
@@ -270,10 +298,16 @@ class FreeProxyWorldFetcher:
         req_timeout = timeout if timeout is not None else cfg.request_timeout
         ua_gen = UAGenerator()
 
-        # Phase1: 直连拉 HTTPS 代理第 1 页（获取中转代理 + 总页数）
-        result = await _try_first_page(
-            f"{BASE_URL}?type=https&page=1", ua_gen, None, "local", req_retries, req_timeout, "Phase1", cfg,
-        )
+        # Phase1: 获取 HTTPS 代理第 1 页（获取中转代理 + 总页数）
+        # 配置了首页文件则跳过直连，直接读本地预取结果（出口 IP 被站点 403 的场景）
+        first_page_file = os.environ.get(FIRST_PAGE_ENV)
+        if first_page_file:
+            logger.info("Phase1 使用首页文件: %s", first_page_file)
+            result = _load_first_page(first_page_file)
+        else:
+            result = await _try_first_page(
+                f"{BASE_URL}?type=https&page=1", ua_gen, None, "local", req_retries, req_timeout, "Phase1", cfg,
+            )
         if result is None:
             logger.warning("Phase1 失败，无HTTPS代理")
             return []

@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -278,6 +279,55 @@ class TestFetchProxiesFlow(unittest.TestCase):
             return None
 
         with patch.object(fpw, "_try_first_page", side_effect=fake_first):
+            proxies = FreeProxyWorldFetcher().fetch_proxies(retries=1, timeout=5)
+        self.assertEqual(proxies, [])
+
+
+class TestFirstPageFile(unittest.TestCase):
+    """配置 FPW_FIRST_PAGE_FILE 时跳过 Phase1 直连，直接读本地预取首页"""
+
+    # 1 个代理 + 分页链接(page=2)，与 _parse_proxies/_parse_total_pages 正则一致
+    HTML = ('<td style="font-weight: 500;">1.2.3.4</td><a href="/?port=8080">'
+            '<a href="/?page=2" class="page-link">2</a>')
+
+    def _write(self, text):
+        fd, path = tempfile.mkstemp(suffix=".html")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_env_skips_direct_fetch(self):
+        path = self._write(self.HTML)
+        direct_calls = []
+        crawled = []
+
+        async def fake_first(*args, **kwargs):
+            direct_calls.append(1)
+            return (["direct-only"], 1)
+
+        async def fake_crawl(proxies, pages, do_fetch, *, phase_name, on_page=None,
+                             retry_unused=False, config=None):
+            crawled.append((phase_name, list(proxies), list(pages)))
+            return [], [], []
+
+        async def fake_crawl_type(*args, **kwargs):
+            return []
+
+        with patch.dict(os.environ, {"FPW_FIRST_PAGE_FILE": path}), \
+             patch.object(fpw, "_try_first_page", side_effect=fake_first), \
+             patch.object(fpw, "_crawl_pages", side_effect=fake_crawl), \
+             patch.object(fpw, "_crawl_type", side_effect=fake_crawl_type):
+            FreeProxyWorldFetcher().fetch_proxies(retries=1, timeout=5)
+
+        self.assertEqual(direct_calls, [])  # 不走直连
+        # 用文件解析出的代理与总页数继续 Phase2
+        self.assertEqual(crawled, [("Phase2", ["1.2.3.4:8080"], [2])])
+
+    def test_invalid_file_returns_empty(self):
+        """文件无有效数据（CF 墙）时不回退直连，直接返回空"""
+        path = self._write("<html>cf wall</html>")
+        with patch.dict(os.environ, {"FPW_FIRST_PAGE_FILE": path}):
             proxies = FreeProxyWorldFetcher().fetch_proxies(retries=1, timeout=5)
         self.assertEqual(proxies, [])
 
