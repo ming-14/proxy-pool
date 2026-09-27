@@ -57,11 +57,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # GitHub 会重命名以点开头的资产名（.cache.db 会被存成 default.cache.db），故改用 cache.db 上传
+          cp .cache.db cache.db
           TAG=$(TZ=Asia/Shanghai date +%F)
+          # 同日重跑：先删掉旧 Release（含旧资产与 tag）再重建，保证只留一个干净资产
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" .cache.db --clobber
-          else
-            gh release create "$TAG" .cache.db \
-              --title "$TAG" \
-              --notes "每日代理池快照 · 可用代理 ${COUNT} 个（北京时间 $(TZ=Asia/Shanghai date '+%F %T')）"
+            gh release delete "$TAG" --yes --cleanup-tag
           fi
+          gh release create "$TAG" cache.db \
+            --title "$TAG" \
+            --notes "每日代理池快照 · 可用代理 ${COUNT} 个（北京时间 $(TZ=Asia/Shanghai date '+%F %T')）"
