@@ -265,10 +265,11 @@ class TestFetchProxiesUseCase(unittest.TestCase):
         self.assertEqual(loaded, [SCDN_SOURCE])
         self.assertIn("http://5.6.7.8:3128", self.pool.proxy_groups["default-http"]["proxies"])
 
-    def test_fetch_single_source_unknown_is_noop(self):
-        """未知源：不加载任何源，池不变"""
+    def test_fetch_single_source_unknown_raises(self):
+        """未知源：抛 ValueError（调用方传错名字，不能与「暂停中所以无事可做」混为一谈）"""
         loaded = []
-        make_fetch(self.pool, loader=lambda name: loaded.append(name)).execute("src.interfaces.sources.not_exist")
+        with self.assertRaises(ValueError):
+            make_fetch(self.pool, loader=lambda name: loaded.append(name)).execute("src.interfaces.sources.not_exist")
         self.assertEqual(loaded, [])
         self.assertEqual(len(self.pool.proxy_groups["default-http"]["proxies"]), 0)
 
@@ -294,13 +295,13 @@ class TestFetchProxiesUseCase(unittest.TestCase):
     def test_freeproxy_world_paused_after_fetch(self):
         with patch("src.interfaces.http_client.get", return_value=mock_proxy_response(["http://5.6.7.8:3128"])):
             make_fetch(self.pool).execute()
-        self.assertTrue(self.pool.is_source_paused(FPW_SOURCE))
+        self.assertIsNotNone(self.pool.source_pause_remaining(FPW_SOURCE))
         self.assertEqual(self.pool.source_paused[FPW_SOURCE]["ttl"], SOURCES[4]["pause_ttl"])
 
     def test_freeproxy_world_paused_even_on_failure(self):
         with patch("src.interfaces.http_client.get", side_effect=Exception("fail")):
             make_fetch(self.pool).execute()
-        self.assertTrue(self.pool.is_source_paused(FPW_SOURCE))
+        self.assertIsNotNone(self.pool.source_pause_remaining(FPW_SOURCE))
 
     def test_freeproxy_world_proxies_in_own_group(self):
         mock_mod = MagicMock()

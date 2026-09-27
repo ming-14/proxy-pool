@@ -248,21 +248,21 @@ class TestProxyPool(unittest.TestCase):
 
     def test_source_pause_custom_ttl(self):
         self.pool.pause_source("src.interfaces.sources.freeproxy_world", ttl=SOURCES[4]["pause_ttl"])
-        self.assertTrue(self.pool.is_source_paused("src.interfaces.sources.freeproxy_world"))
+        self.assertIsNotNone(self.pool.source_pause_remaining("src.interfaces.sources.freeproxy_world"))
         self.assertEqual(self.pool.source_paused["src.interfaces.sources.freeproxy_world"]["ttl"], SOURCES[4]["pause_ttl"])
 
     def test_source_pause_default_ttl(self):
         self.pool.pause_source("src.interfaces.sources.ip89")
-        self.assertTrue(self.pool.is_source_paused("src.interfaces.sources.ip89"))
+        self.assertIsNotNone(self.pool.source_pause_remaining("src.interfaces.sources.ip89"))
         self.assertIsNone(self.pool.source_paused["src.interfaces.sources.ip89"]["ttl"])
 
     def test_source_pause_expires(self):
         self.pool.source_paused["src.interfaces.sources.ip89"] = {"paused_at": time.time() - SOURCE_PAUSE_TTL - 1, "ttl": None}
-        self.assertFalse(self.pool.is_source_paused("src.interfaces.sources.ip89"))
+        self.assertIsNone(self.pool.source_pause_remaining("src.interfaces.sources.ip89"))
         self.assertNotIn("src.interfaces.sources.ip89", self.pool.source_paused)
 
     def test_source_pause_not_paused(self):
-        self.assertFalse(self.pool.is_source_paused("nonexistent"))
+        self.assertIsNone(self.pool.source_pause_remaining("nonexistent"))
 
     def test_source_pause_remaining(self):
         self.pool.pause_source("src.interfaces.sources.ip89")
@@ -278,6 +278,27 @@ class TestProxyPool(unittest.TestCase):
         self.pool.source_paused["src.interfaces.sources.ip89"] = {"paused_at": time.time() - SOURCE_PAUSE_TTL - 1, "ttl": None}
         self.assertIsNone(self.pool.source_pause_remaining("src.interfaces.sources.ip89"))
         self.assertNotIn("src.interfaces.sources.ip89", self.pool.source_paused)
+
+    def test_source_resume_removes_and_marks_dirty(self):
+        """恢复：移除记录并置脏（漏置脏则增量保存跳过该表，DB 残留已解除的暂停行）"""
+        self.pool.pause_source("src.interfaces.sources.ip89")
+        self.pool.clear_dirty()
+        self.assertTrue(self.pool.resume_source("src.interfaces.sources.ip89"))
+        self.assertNotIn("src.interfaces.sources.ip89", self.pool.source_paused)
+        self.assertTrue(self.pool.source_paused_dirty())
+
+    def test_source_resume_not_paused(self):
+        """未处于暂停：返回 False（无变更，不置脏）"""
+        self.pool.clear_dirty()
+        self.assertFalse(self.pool.resume_source("nonexistent"))
+        self.assertFalse(self.pool.source_paused_dirty())
+
+    def test_source_pause_expiry_marks_dirty(self):
+        """过期自动解除同样置脏：否则那次「已暂停」永远留在 DB 里"""
+        self.pool.source_paused["src.interfaces.sources.ip89"] = {"paused_at": time.time() - SOURCE_PAUSE_TTL - 1, "ttl": None}
+        self.pool.clear_dirty()
+        self.assertIsNone(self.pool.source_pause_remaining("src.interfaces.sources.ip89"))
+        self.assertTrue(self.pool.source_paused_dirty())
 
     def test_remove_all_copies(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")

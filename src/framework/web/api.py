@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 # aiohttp 类型化应用 key（避免字符串 key 触发 NotAppKeyWarning）
 _PANEL_KEY = web.AppKey("panel", "PanelContext")
 
+# 配置声明的源名集合：暂停/恢复入参校验用（config 在导入时固定，运行时不增删源）
+_SOURCE_NAMES = frozenset(s["name"] for s in config.SOURCES)
+
 
 @dataclass
 class PanelContext:
@@ -161,12 +164,14 @@ def _status_snapshot(ctx: PanelContext) -> dict:
     traffic_upload, traffic_download = ctx.server.traffic_total()
     sources = []
     for s in config.SOURCES:
+        # 一次调用同时得到「是否暂停」与剩余时长，不必再调一次判定重算
+        remaining = pool.source_pause_remaining(s["name"])
         sources.append({
             "name": s["name"],
             "short_name": s["name"].rsplit(".", 1)[-1],
             "enabled": s["enabled"],
-            "paused": pool.is_source_paused(s["name"]),
-            "pause_remaining": pool.source_pause_remaining(s["name"]),
+            "paused": remaining is not None,
+            "pause_remaining": remaining,
             # 拉取进行中（后端状态，前端刷新后据此恢复按钮的「处理中」）
             "fetching": ctx.tasks.is_fetching(s["name"]),
         })
@@ -630,23 +635,25 @@ async def _do_fetch(request: web.Request) -> web.Response:
     轮次也在本线程改池），只有网络拉取放 executor 线程。
     幂等：已有拉取在跑直接返回 {"status": "running"}（await 前置状态，无竞态）——
     并发拉取会重复打外网，且两条入池流程交错。
+    source 非法（不在配置里 / 未启用）返回 400，而不是 200「拉取完成」（一个源都没拉）。
     """
     ctx = request.app[_PANEL_KEY]
     body = await _json_body(request)
     # 空串等价于未传：否则会被记成「某源拉取」占住闸门，快照却无处显示处理中
     source = body.get("source") or None
+    # 选源先于闸门：名字非法是请求本身的问题（400），不该占闸门、也不该落到 500；
+    # 且此时未持有中间态，无需在异常路径里补清（放在闸门后就必须靠 finally 兜底）
+    try:
+        sources = ctx.fetch.plan(source)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     if not ctx.tasks.fetch_start(source):
         logger.info("拉取进行中, 忽略重复拉取请求 (source=%s)", source)
         return web.json_response({"status": "running"})
 
     async def _run_fetch() -> tuple[int, str | None]:
-        """选源 → 网络拉取（executor）→ 入池 → 落盘；结束（含异常）清中间态
-
-        选源必须留在本 try 内：它读池，一旦抛异常同样要走 finally 清中间态，
-        否则面板永久停在「拉取中」，后续拉取全被闸门拒绝。
-        """
+        """网络拉取（executor）→ 入池 → 落盘；结束（含异常）清中间态"""
         try:
-            sources = ctx.fetch.plan(source)
             results = await asyncio.get_running_loop().run_in_executor(
                 None, ctx.fetch.collect, sources)
             ctx.fetch.apply(results)  # 只改内存，耗时与网络无关
@@ -736,25 +743,38 @@ async def _do_trust(request: web.Request) -> web.Response:
 
 
 async def _do_source_pause(request: web.Request) -> web.Response:
+    """暂停指定源（ttl 缺省用配置默认时长）
+
+    源名必须在配置里：否则会持久化一条快照永远不下发（面板只遍历 config.SOURCES）
+    的暂停记录——UI 看不到也解不掉，属脏数据。
+    """
     ctx = request.app[_PANEL_KEY]
     body = await _json_body(request)
     src = body.get("source")
     if not src:
         return web.json_response({"error": "缺少 source"}, status=400)
+    if src not in _SOURCE_NAMES:
+        return web.json_response({"error": f"代理源 {src} 不存在"}, status=400)
     ctx.pool.pause_source(src, ttl=body.get("ttl"))
     ctx.save()
     return web.json_response({"ok": True, "pause_remaining": ctx.pool.source_pause_remaining(src)})
 
 
 async def _do_source_resume(request: web.Request) -> web.Response:
+    """解除指定源暂停（未处于暂停则 resumed=false）
+
+    走领域方法而非直接 pop：移除记录与置脏必须在同一处发生（漏置脏则 DB 残留旧行）。
+    """
     ctx = request.app[_PANEL_KEY]
     body = await _json_body(request)
     src = body.get("source")
     if not src:
         return web.json_response({"error": "缺少 source"}, status=400)
-    ctx.pool.source_paused.pop(src, None)
+    if src not in _SOURCE_NAMES:
+        return web.json_response({"error": f"代理源 {src} 不存在"}, status=400)
+    resumed = ctx.pool.resume_source(src)
     ctx.save()
-    return web.json_response({"ok": True, "resumed": True})
+    return web.json_response({"ok": True, "resumed": resumed})
 
 
 async def _do_standby_pin(request: web.Request) -> web.Response:

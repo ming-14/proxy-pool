@@ -356,11 +356,23 @@ class ProxyPool:
         self.source_paused[source] = {"paused_at": int(time.time()), "ttl": ttl}
         self._source_paused_dirty = True
 
+    def resume_source(self, source: str) -> bool:
+        """解除源暂停；未处于暂停时返回 False
+
+        手动恢复与过期自动解除都走这里：「移除记录」与「置脏」只在同一处发生，
+        漏置脏会让增量保存跳过 source_paused 表、DB 残留已解除的暂停行。
+        """
+        if source not in self.source_paused:
+            return False
+        del self.source_paused[source]
+        self._source_paused_dirty = True
+        return True
+
     def source_pause_remaining(self, source: str) -> int | None:
         """源暂停剩余秒数；未暂停或已过期（自动解除并移除记录）返回 None
 
-        统一各调用点（fetch 跳过提示 / cli status 显示 / 暂停判定）的
-        ttl 解析与剩余时间计算，避免三处重复。
+        暂停与否 + 剩余时长由本方法一次给出（`paused = 返回值非 None`）——统一各调用点
+        （fetch 跳过提示 / cli status 显示 / 快照下发）的 ttl 解析与过期判定，不做第二次重算。
         """
         if source not in self.source_paused:
             return None
@@ -368,13 +380,9 @@ class ProxyPool:
         ttl = info.get("ttl") or self.default_pause_ttl
         remaining = ttl - (time.time() - info["paused_at"])
         if remaining <= 0:
-            del self.source_paused[source]
+            self.resume_source(source)
             return None
         return int(remaining)
-
-    def is_source_paused(self, source: str) -> bool:
-        """源是否处于暂停期（复用 source_pause_remaining 的过期判定）"""
-        return self.source_pause_remaining(source) is not None
 
     def dirty_groups(self) -> set[str]:
         """自上次 clear_dirty 后变更的组集合（供 Container.save 增量持久化）"""

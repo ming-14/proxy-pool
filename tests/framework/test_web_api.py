@@ -288,6 +288,15 @@ class FetchRouteIntegrationTest(unittest.IsolatedAsyncioTestCase):
         assert self.ctx.tasks.fetching_all() is False
         assert self.ctx.tasks.is_fetching(self.spec.name) is False
 
+    async def test_fetch_unknown_source_rejected(self):
+        """source 不在配置里：400（过去返回 200「拉取完成」，其实一个源都没拉）"""
+        resp = await self.client.post("/api/fetch", json={"source": "src.interfaces.sources.ghost"})
+        assert resp.status == 400
+        assert "不存在或未启用" in (await resp.json())["error"]
+        assert self.loaded == []
+        # 非法请求不占闸门，后续正常拉取照常放行
+        assert self.ctx.tasks.fetching_all() is False
+
     async def test_fetch_all_sources_failed_reports_error(self):
         """全部源拉取异常 → 500（不谎报「拉取完成 0 个」），中间态照常清空"""
         def loader(_name):
@@ -305,7 +314,11 @@ class FetchRouteIntegrationTest(unittest.IsolatedAsyncioTestCase):
         assert self.ctx.tasks.is_fetching(self.spec.name) is False
 
     async def test_fetch_plan_failure_clears_state(self):
-        """选源（plan）抛异常也必须清中间态：它在任务 try 内，否则面板永久「拉取中」"""
+        """选源（plan）抛非 ValueError 异常 → 500 且不占闸门（选源已前移到闸门之外）
+
+        非 ValueError 属配置/代码问题，交给 aiohttp 兜底成 500；关键是闸门从未被
+        占住，下一次拉取照常放行。
+        """
         plan = self.ctx.fetch.plan
         self.ctx.fetch.plan = MagicMock(side_effect=RuntimeError("选源挂了"))
         resp = await self.client.post("/api/fetch", json={})
@@ -640,7 +653,9 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
             resp = await self.client.post("/api/fetch", json={})
             assert resp.status == 200
             assert (await resp.json())["status"] == "running"
-            self.fetch.plan.assert_not_called()
+            # 选源是闸门前的只读预检（照常执行），不再起第二个「网络 + 入池」任务
+            self.fetch.collect.assert_not_called()
+            self.fetch.apply.assert_not_called()
         finally:
             self.ctx.tasks.fetch_done()
 
@@ -719,14 +734,27 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_source_pause_resume(self):
         pool = self.pool
-        r = await self.client.post("/api/source/pause",
-                                   json={"source": "https://example.com/list.txt", "ttl": 60})
+        src = SOURCES[0]["name"]
+        r = await self.client.post("/api/source/pause", json={"source": src, "ttl": 60})
         assert r.status == 200
-        assert "https://example.com/list.txt" in pool.source_paused
-        r2 = await self.client.post("/api/source/resume",
-                                    json={"source": "https://example.com/list.txt"})
+        assert src in pool.source_paused
+        # 恢复走领域方法（移除记录 + 置脏）并落盘；脏标记由 container.save 消费，此处只验已请求落盘
+        r2 = await self.client.post("/api/source/resume", json={"source": src})
         assert r2.status == 200
-        assert "https://example.com/list.txt" not in pool.source_paused
+        assert (await r2.json())["resumed"] is True
+        assert src not in pool.source_paused
+        assert self.ctx.save.called
+        # 未在暂停中再恢复：resumed=false（不报错，幂等）
+        r3 = await self.client.post("/api/source/resume", json={"source": src})
+        assert r3.status == 200 and (await r3.json())["resumed"] is False
+
+    async def test_source_pause_unknown_source_rejected(self):
+        """未在配置里的源名：400，不落库成 UI 永远看不到的幽灵暂停记录"""
+        r = await self.client.post("/api/source/pause", json={"source": "src.interfaces.sources.ghost"})
+        assert r.status == 400
+        assert not self.pool.source_paused
+        r2 = await self.client.post("/api/source/resume", json={"source": "src.interfaces.sources.ghost"})
+        assert r2.status == 400
         bad = await self.client.post("/api/source/pause", json={})
         assert bad.status == 400
 

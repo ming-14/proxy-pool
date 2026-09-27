@@ -27,6 +27,15 @@ const {
 const pageTitle = computed(() => String(route.meta.title ?? '仪表盘'));
 const sidebarOpen = ref(false);
 
+/** 顶栏连接态：暂停轮询后不再发请求、连接性无从判断，故第三态「已暂停」，
+ *  不能沿用暂停前的「已连接」装作后端还在（后端此刻可能已经挂了）。 */
+const conn = computed(() => {
+  if (statusStore.paused) return { dot: 'paused', text: '已暂停', cls: 'text-[var(--color-t-muted)]' };
+  return statusStore.connected
+    ? { dot: 'online', text: '已连接', cls: 'text-[var(--color-success)]' }
+    : { dot: 'offline', text: '已断开', cls: 'text-[var(--color-danger)]' };
+});
+
 /** 导航项（图标见 components/ui/icons.ts；name 是路由名，icon 是图标名） */
 const NAV: { name: string; label: string; icon: IconName }[] = [
   { name: 'dashboard', label: '仪表盘', icon: 'dashboard' },
@@ -87,9 +96,9 @@ const NAV: { name: string; label: string; icon: IconName }[] = [
           <span>{{ statusStore.paused ? '继续' : '暂停' }}</span>
         </button>
         <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--color-hover)] text-xs font-medium">
-          <span data-testid="conn-dot" class="conn-dot" :class="statusStore.connected ? 'online' : 'offline'" />
-          <span data-testid="conn-text" :class="statusStore.connected ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'">
-            {{ statusStore.connected ? '已连接' : '已断开' }}
+          <span data-testid="conn-dot" class="conn-dot" :class="conn.dot" />
+          <span data-testid="conn-text" :class="conn.cls">
+            {{ conn.text }}
           </span>
         </div>
         <button data-testid="btn-theme" class="btn btn-ghost btn-sm" title="切换主题" @click="themeStore.toggle()">

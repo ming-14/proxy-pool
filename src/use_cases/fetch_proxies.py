@@ -56,17 +56,23 @@ class FetchProxiesUseCase:
 
         Args:
             source_name: 只拉取该源（面板单源拉取按钮）；None 表示拉取全部启用源
+
+        Raises:
+            ValueError: 指定了不存在或未启用的源——这是调用方传错名字（配置里没有），
+                与「源存在但暂停中所以本轮无事可做」不同，必须让调用方能区分（面板转 400，
+                否则前端会弹「拉取完成」而其实一个源都没拉）。
         """
         active_sources = [s for s in self._sources if s.enabled]
         if source_name is not None:
-            active_sources = [s for s in active_sources if s.name == source_name]
-            if not active_sources:
-                logger.warning("单源拉取: 代理源 %s 不存在或未启用", source_name)
-                return []
+            matched = [s for s in active_sources if s.name == source_name]
+            if not matched:
+                raise ValueError(f"代理源 {source_name} 不存在或未启用")
+            active_sources = matched
         sources_to_call = []
         for src in active_sources:
-            if self._pool.is_source_paused(src.name):
-                remaining = self._pool.source_pause_remaining(src.name)
+            # 一次调用同时得到「是否暂停」与剩余时长（两次调用会各解析一遍 ttl 与过期）
+            remaining = self._pool.source_pause_remaining(src.name)
+            if remaining is not None:
                 logger.info("代理源 %s 已暂停, 剩余 %ds", src.name, remaining)
                 continue
             sources_to_call.append(src)

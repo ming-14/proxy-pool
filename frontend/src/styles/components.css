@@ -411,6 +411,11 @@ tbody tr.row-dimmed {
   background-color: var(--color-danger);
   box-shadow: 0 0 0 2px var(--color-danger-bg);
 }
+/* 轮询暂停：不发请求故连接性未知，用中性色（不冒充在线/离线） */
+.conn-dot.paused {
+  background-color: var(--color-t-muted);
+  box-shadow: 0 0 0 2px var(--color-hover);
+}
 
 /* ---------------- 侧边栏 / 布局 ---------------- */
 .sidebar {

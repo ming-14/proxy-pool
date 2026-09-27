@@ -136,6 +136,8 @@ class TestShell:
     def test_pause_resume_polling(self, page):
         page.click('[data-testid="btn-pause"]')
         assert page.locator('[data-testid="btn-pause"]').inner_text().strip() == "继续"
+        # 暂停后不再发请求、连接性无从判断：连接态转「已暂停」，不沿用暂停前的「已连接」
+        assert page.locator('[data-testid="conn-text"]').inner_text() == "已暂停"
         snap1 = page.evaluate("document.querySelector('[data-testid=kpi-available] .kpi-value').textContent")
         # 暂停期间制造数据变化（API 加代理），KPI 不应刷新
         requests.post(f"{BASE_URL}/api/group/default-http/add", json={"proxies": ["http://9.9.9.9:1"]}, timeout=5)
@@ -150,6 +152,7 @@ class TestShell:
             if page.evaluate("document.querySelector('[data-testid=kpi-available] .kpi-value').textContent") != snap2:
                 break
             page.wait_for_timeout(500)
+        assert page.locator('[data-testid="conn-text"]').inner_text() == "已连接"
         # 清理：删除测试代理
         requests.post(f"{BASE_URL}/api/proxy/remove", json={"proxies": ["http://9.9.9.9:1"], "group": "default-http"}, timeout=5)
 

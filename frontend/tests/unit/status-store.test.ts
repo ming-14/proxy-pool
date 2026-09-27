@@ -10,9 +10,15 @@ function mockResponses(status: unknown, history: unknown) {
   }));
 }
 
+/** 模拟页面可见性（jsdom 的 document.hidden 恒为 false，用自有属性改写） */
+function setHidden(hidden: boolean) {
+  Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.unstubAllGlobals();
+  setHidden(false); // 可见性可能被上一个用例改写，逐例归位
 });
 
 describe('useStatusStore.tick', () => {
@@ -49,6 +55,37 @@ describe('useStatusStore.tick', () => {
     store.paused = true;
     await store.tick();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('页面切后台时 tick 为空操作，切回前台立即补一次', async () => {
+    mockResponses({ standby: [{ proxy: 'a' }] }, {});
+    const store = useStatusStore();
+    setHidden(true);
+    await store.tick();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(store.connected).toBe(false);
+    setHidden(false);
+    await store.tick();
+    expect(store.connected).toBe(true);
+  });
+
+  it('start 注册可见性监听：切回前台不等下一拍就取数', async () => {
+    vi.useFakeTimers();
+    const store = useStatusStore();
+    try {
+      mockResponses({ standby: [] }, {});
+      store.start(); // 首帧立即拉一次
+      expect(fetch).toHaveBeenCalledTimes(1);
+      setHidden(false);
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(fetch).toHaveBeenCalledTimes(2);
+      store.stop();
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(fetch).toHaveBeenCalledTimes(2); // stop 已摘掉监听
+    } finally {
+      store.stop(); // 断言失败时也不留 interval
+      vi.useRealTimers();
+    }
   });
 
   it('增量游标：第二轮历史请求带 since=最后 ts', async () => {

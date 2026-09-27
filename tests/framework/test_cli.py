@@ -524,6 +524,17 @@ class TestCmdTest(ContainerTestCase):
 
 
 class TestMainArgParsing(unittest.TestCase):
+    def setUp(self):
+        """只验参数解析：屏蔽 main 里的真实日志装配
+
+        setup_logging 会在仓库 logs/ 下建文件，并把本进程后续用例的日志一起写进
+        那个真实日志文件（污染仓库、且与用例无关）。日志装配本身由
+        test_logging.py 与下面两个 --debug 用例覆盖。
+        """
+        patcher = patch.object(cli, "setup_logging")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_no_command_exits(self):
         with self.assertRaises(SystemExit):
             cli.main()

@@ -6,6 +6,8 @@
  * - 历史前端按服务端留存时长裁剪（`retention_window` = 后端 METRICS_WINDOW，随响应下发），
  *   不在前端写死点数上限：采样节奏可变（心跳 2s），点数上限与留存时长不等价；
  * - paused 只停轮询（保留最后数据）；首次加载失败弹一次 error toast；
+ * - 页面切后台（document.hidden）同样停轮询，切回前台立即补一次——历史走 since 游标
+ *   增量，后台期间的点不会丢（与日志面板的可见性口径一致）；
  * - 历史拉取失败不阻断状态刷新（图表滞后一拍，下轮重试）；
  * - 写动作（固定/锁定等）后由页面调用 refreshNow 立即取数：paused 是"停止自动轮询"，
  *   不该压住用户刚触发的操作结果，故 refreshNow 不带 paused 判断。
@@ -93,7 +95,9 @@ export const useStatusStore = defineStore('status', () => {
   }
 
   async function tick() {
-    if (paused.value) return;
+    // 页面切后台不发请求（与日志面板同一口径）；切回前台由 visibilitychange 立即补一次，
+    // 历史走 since 游标增量，期间的点不会丢
+    if (paused.value || document.hidden) return;
     await fetchStatus();
   }
 
@@ -102,8 +106,13 @@ export const useStatusStore = defineStore('status', () => {
     await fetchStatus();
   }
 
+  function onVisibilityChange() {
+    if (!document.hidden) void tick();
+  }
+
   function start() {
     if (timer) return;
+    document.addEventListener('visibilitychange', onVisibilityChange);
     timer = setInterval(tick, POLL_INTERVAL_MS);
     tick();
   }
@@ -111,6 +120,7 @@ export const useStatusStore = defineStore('status', () => {
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    document.removeEventListener('visibilitychange', onVisibilityChange);
   }
 
   function togglePause() {
