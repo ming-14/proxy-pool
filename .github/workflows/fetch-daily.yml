@@ -27,10 +27,18 @@ jobs:
           cache: pip
 
       - name: 确保 .cache.db 为空
-        run: rm -f .cache.db .cache.db-wal .cache.db-shm
+        run: rm -f .cache.db .cache.db-wal .cache.db-shm .fpw-first-page.html
 
       - name: 安装依赖
         run: pip install -r requirements.txt
+
+      - name: 预取 FPW 首页（CI 出口 IP 被站点 403，用 daily/base.db 的 https 代理绕过）
+        run: |
+          if python scripts/fetch_fpw_first_page.py --out .fpw-first-page.html; then
+            echo "FPW_FIRST_PAGE_FILE=$PWD/.fpw-first-page.html" >> "$GITHUB_ENV"
+          else
+            echo "::warning::FPW 首页预取失败，本次跳过 freeproxy_world 源"
+          fi
 
       - name: 拉取代理
         run: python cli.py fetch
