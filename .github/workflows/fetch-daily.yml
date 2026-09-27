@@ -1,0 +1,67 @@
+name: daily-fetch
+
+on:
+  schedule:
+    - cron: "0 20 * * *"   # UTC 20:00 = 北京时间 04:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-fetch
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 确保 .cache.db 为空
+        run: rm -f .cache.db .cache.db-wal .cache.db-shm
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 拉取代理
+        run: python cli.py fetch
+
+      - name: 校验代理数（fetch 全源失败仍退出 0，需自行判定）
+        run: |
+          set -euo pipefail
+          test -f .cache.db
+          COUNT=$(python cli.py list --json | jq 'length')
+          echo "可用代理数: $COUNT"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "::error::fetch 未获得任何代理，跳过发布"
+            exit 1
+          fi
+          echo "COUNT=$COUNT" >> "$GITHUB_ENV"
+
+      - name: WAL 落盘（保证单个 .cache.db 即完整）
+        run: |
+          set -euo pipefail
+          sqlite3 .cache.db "PRAGMA wal_checkpoint(TRUNCATE);"
+
+      - name: 发布 Release（tag/title = 北京时间日期）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(TZ=Asia/Shanghai date +%F)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" .cache.db --clobber
+          else
+            gh release create "$TAG" .cache.db \
+              --title "$TAG" \
+              --notes "每日代理池快照 · 可用代理 ${COUNT} 个（北京时间 $(TZ=Asia/Shanghai date '+%F %T')）"
+          fi
