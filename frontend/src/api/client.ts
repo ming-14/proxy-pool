@@ -62,7 +62,8 @@ export const api = {
   group: (name: string) => request<GroupDetail>(`/api/group/${encodeURIComponent(name)}`),
 
   addProxy: (group: string, proxies: string[]) =>
-    post<{ ok: boolean; added: number }>(`/api/group/${encodeURIComponent(group)}/add`, { proxies }),
+    post<{ ok: boolean; added: number; rejected: string[] }>(
+      `/api/group/${encodeURIComponent(group)}/add`, { proxies }),
 
   /** 拉取代理；source 非空时只拉该源。后端已有拉取在跑时返回 {"status":"running"}（幂等拒绝） */
   fetch: (source?: string) =>

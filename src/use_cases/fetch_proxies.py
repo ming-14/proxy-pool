@@ -115,7 +115,11 @@ class FetchProxiesUseCase:
                     # 禁用的代理（如端口 80 的假代理）直接入黑名单组，不进入可用池
                     self._pool.add_to_group(self._pool.blacklist_group, p)
                     continue
-                self._pool.add_to_group(_resolve_group(src, p), p)
+                group = _resolve_group(src, p)
+                if not self._pool.add_to_group(group, p):
+                    # 入组失败（组未定义 / 协议不在 SUPPORTED_SCHEMES）：不静默，明确记日志
+                    logger.warning("代理 %s 未入池（组 %s 未定义或协议不受支持）", p, group)
+                    continue
                 new_count += 1
         available = self._pool.get_available_proxies()
         logger.info("去重后新增 %d 个代理 (可请求 %d, 信任池 %d, 黑名单 %d)",

@@ -888,6 +888,16 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["added"] == 2
         assert "http://3.3.3.3:80" in self.pool.get_trusted_proxies()
 
+    async def test_group_add_rejects_unsupported_scheme(self):
+        """协议不在支持集合（socks4）的代理被拒：不计入 added，经 rejected 回传（不静默丢）"""
+        r = await self.client.post("/api/group/trusted/add",
+                                   json={"proxies": ["socks4://5.5.5.5:1080", "http://6.6.6.6:3128"]})
+        assert r.status == 200
+        data = await r.json()
+        assert data["added"] == 1
+        assert data["rejected"] == ["socks4://5.5.5.5:1080"]
+        assert "http://5.5.5.5:1080" not in self.pool.get_trusted_proxies()
+
     async def test_group_add_empty(self):
         """空列表返回 400"""
         r = await self.client.post("/api/group/trusted/add", json={"proxies": []})

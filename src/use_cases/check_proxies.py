@@ -7,7 +7,6 @@ async 实现：网络请求经 aiohttp 原生 async 发送（不经 asyncio.to_t
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import Callable

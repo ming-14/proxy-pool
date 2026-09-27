@@ -88,7 +88,7 @@ class TestPproxyServer(unittest.TestCase):
     def test_sync_idempotent_no_rebuild(self):
         """回归测试：连续 sync 相同列表不应重建 Connection（bind 匹配 bug 会导致全量重建）
 
-        旧 bug：sync 用 Connection.bind（不含前缀）与 _pproxy_uri（含前缀）比较，永远
+        旧 bug：sync 用 Connection.bind（不含前缀）与上游 URI（含前缀）比较，永远
         对不上，每轮全量移除+全量新建。对 http+ssl:// 上游每次创建 2 个 SSLContext
         append 到 pproxy 全局 sslcontexts → 内存泄漏/堆损坏崩溃。
         修复后 sync 按 _uri_index 的完整 uri 匹配，相同列表第二次 sync 零创建。

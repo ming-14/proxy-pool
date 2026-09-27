@@ -1,10 +1,8 @@
 """出站代理协议的机制描述表（接口适配器层：协议知识的唯一归属）
 
-池内代理是 "scheme://host:port" 字符串，scheme 被三处消费，此前各自硬编码判断前缀；
-集中到本表后新增协议只改这里，调用方不再解析 scheme：
-    engine_uri              pproxy 上游 URI 映射（https → http+ssl，TLS 到代理）
-    needs_socks_connector   探测客户端选择（aiohttp 原生 proxy= 只认 http/https）
-    verify_target           探测时是否校验目标证书（https 代理校验的是代理自签证书）
+池内代理是 "scheme://host:port" 字符串，其 scheme 被三处消费：pproxy 上游 URI 映射、
+探测客户端选择、探测时的目标证书校验策略。三处此前各自硬编码判断前缀，现集中到本表，
+新增协议只改这里，调用方不再解析 scheme。
 
 **策略 vs 机制**：池"支持哪些协议"是策略，定义在 domain.SUPPORTED_SCHEMES（入池校验）；
 本表只回答"每种协议怎么用"，属机制——因此仍含策略已移除的 socks4（pproxy 与

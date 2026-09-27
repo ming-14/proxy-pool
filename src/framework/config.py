@@ -224,8 +224,8 @@ METRICS_WINDOW = int(_toml["server"]["metrics_window"])
 # 不参与数据留存（留存统一由 METRICS_WINDOW 决定，也不影响仪表盘）。
 STANDBY_CHART_WINDOW = int(_toml["server"]["standby_chart_window"])
 # serve 默认上游代理类型（CLI 未指定 --type 时的初始值；运行时由 ServeControl 持有，面板可增删）。
-# 只过滤进入代理服务队列的上游类型（standby.fill 候选筛选），不参与本地监听协议构造
-# （监听恒为 http+socks4+socks5://host:port，见 PproxyServer）。
+# 只过滤进入代理服务队列的上游类型（standby.fill 候选筛选），不参与本地监听 URI 的构造
+# （监听由 [server].listen_protocols 决定，见 SERVER_LISTEN_PROTOCOLS）。
 SERVER_PROXY_TYPES: tuple[str, ...] = tuple(_toml["server"]["proxy_types"])
 # 本地链路门控（serve 心跳/补测/fill 探测前后各 check 一次本地链路，任何一次不可用即跳过本轮/不计分避免误拉黑）
 NETWORK_PROBE_URLS: tuple[str, ...] = tuple(_toml["server"]["network_probe_urls"])  # 探测目标（任一返回 <400 即正常）

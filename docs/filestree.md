@@ -31,7 +31,7 @@ proxy-pool/
 │   │   ├── get_proxies.py         # 获取用例（trusted 优先，池空自动拉取）
 │   │   ├── record_proxy.py        # 成功/失败记录、拉黑、信任
 │   │   ├── request_with_retry.py  # 带重试换代理的请求
-│   │   ├── check_proxies.py       # 并发测试代理
+│   │   ├── check_proxies.py       # 并发测试代理（证书校验策略经组合根注入 proxy_scheme.verify_target）
 │   │   ├── network_gate.py        # 本地链路门控（链路可用性判定；只缓存失败结论，成功结论每次真实探测）
 │   │   └── standby.py             # 代理服务队列维护（fill 补入/心跳/退避补测，含链路门控 + per-proxy 延时历史）
 │   ├── interfaces/                # 接口适配器层：实现 domain 端口

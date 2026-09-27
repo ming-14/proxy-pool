@@ -173,7 +173,7 @@ class AsyncHttpGetter:
         """
         # aiohttp ssl 语义：True=校验证书, False=不校验, None=默认校验(=True)。
         # verify=False 时须传 ssl=False（None 仍校验，免费代理自签证书会握手失败）。
-        ssl_ctx = True if verify else False
+        ssl_ctx = bool(verify)
         aio_timeout = aiohttp.ClientTimeout(total=timeout)
         hdrs = headers or {}
 

@@ -328,7 +328,13 @@ function exportJson() {
 function onAddSubmit(proxies: string[], done: () => void) {
   api.addProxy(currentGroup.value!, proxies)
     .then((d) => {
-      toast.success('已添加', `成功添加 ${d.added} 个代理`);
+      // 协议不在支持集合（如 socks4）的项由后端拒绝，单独提示，不混进成功数
+      if (d.rejected.length) {
+        toast.warning('部分未添加', `${d.rejected.length} 个代理协议不受支持，已跳过`);
+      }
+      if (d.added) {
+        toast.success('已添加', `成功添加 ${d.added} 个代理`);
+      }
       showAdd.value = false;
       reload();
     })

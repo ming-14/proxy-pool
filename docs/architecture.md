@@ -79,7 +79,7 @@ TTL 规则：代理入组时记录 `joined_at`，`now - joined_at >= ttl` 即过
 2. **跨源去重入组**：
    - 跳过：已在本次拉取中出现过的（跨源重复）、已存在于池中任一组的、黑名单中的；
    - 禁用代理（端口 80，FreeProxy.World 大量 Cloudflare 假代理）直接入黑名单，不进入可用池（`DISABLED_PORTS = {80}`）；
-   - 入组名由 `_resolve_group` 计算：`group_by_protocol` 源按代理 scheme 前缀分拣为 `group-scheme`（如 `default` → `default-http`/`-https`/`-socks5`，无 scheme 前缀按 http），否则固定入 `group`。
+   - 入组名由 `_resolve_group` 计算：`group_by_protocol` 源按代理 scheme 前缀分拣为 `group-scheme`（如 `default` → `default-http`/`-https`/`-socks5`，无 scheme 前缀按 http），否则固定入 `group`；入组时按 `domain.SUPPORTED_SCHEMES`（池支持的出站协议，当前 http/https/socks5）校验，不受支持或目标组未定义则拒入并记日志。
 3. **去重率检查**：见「源暂停机制」。
 
 三段按「选源 / 网络 / 入池」拆成 `plan`（读池）→ `collect`（纯网络，不碰池）→ `apply`（写池）：**代理池是纯内存可变结构，必须单写线程**——serve 心跳轮次（fill/heartbeat）在事件循环线程改池，故 Web 面板只把 `collect` 放 executor 线程（同 `_do_purity` 的三步编排），入池回事件循环线程；CLI 等单线程路径用 `execute(source_name)` 串起三段。
@@ -159,7 +159,7 @@ for attempt in range(max_retries):
 - **退避补测（retry_probe）**：心跳失败的代理由主循环启动独立异步复核任务（不占心跳轮次），间隔 1s/2s/4s…指数退避（上限 30s）反复探测：成功清零连续失败计数恢复，失败继续累计直至阈值拉黑；
 - **主循环**：启动时先 fill → 启动服务器 → 周期性「fill → heartbeat → 为待补测代理启动复核任务 → sync → 保存」，两轮之间如再缺再 fill；轮次**绝不重叠**（以上一轮完成时刻 + interval 为下一轮最早起点，避免刷屏与 sleep 计时误差）；**流量采样独立循环**（固定 2s，不随心跳放宽——锁定单一上游时心跳降频但流量照常采，见"流量统计"）；Ctrl+C 优雅退出（取消心跳/采样与复核任务 → 关服务器 → 保存）；
 - **成功复制**：代理服务队列成员被请求成功（`record_success`）时**复制进 trusted 并清零 standby 副本的连续失败计数、保留在队列**（serve 上游不被掏空，连续语义：成功即清零）；拉黑（`remove`）时清理其在所有组的副本（含 trusted 残留），单次遍历实现；
-- **默认上游类型**：CLI 未指定 `--type` 时取 `[server].proxy_types`（仅启动初始值，面板可运行时增删）。该键只过滤**进入代理服务队列的上游代理类型**（fill 候选筛选），**不参与本地监听协议的构造**——监听恒为 `http+socks4+socks5://host:port`（见上文本地代理服务器一节）。
+- **默认上游类型**：CLI 未指定 `--type` 时取 `[server].proxy_types`（仅启动初始值，面板可运行时增删）。该键只过滤**进入代理服务队列的上游代理类型**（fill 候选筛选），**不参与本地监听 URI 的构造**——后者由 `[server].listen_protocols` 决定（见上文本地代理服务器一节）。
 - **固定代理（pin）**：Web 面板可固定队列内代理（`POST /api/standby/pin`，持久化 `pinned`+`pinned_at` 到 `.cache.db`）；固定代理**排队列最前（按固定时间 `pinned_at` 升序），正常心跳正常计数连续失败，但不管怎样都不会被踢出/拉黑/补测**——fill 只踢非固定队尾（全固定时新代理 move trusted），heartbeat 失败只计数不拉黑不补测不移出；**超出 `capacity` 的固定代理忽略**（保留在组内不移出不丢失固定状态，但不参与队列/上游/心跳，用户解固其他代理使固定数 ≤ capacity 后自动重新生效）。
 - **面板展示不截断**：`standby_proxies(truncate=False)` 返回组内全部代理（含超出 capacity 的溢出代理），面板显示实际数量 vs capacity（如 16/15）；`truncate=True`（默认）仅返回 capacity 内的代理，用于 pproxy 上游/心跳/指标采样。`/api/status` 把锁定代理（已 move 出队列组）作为列表**首行**并入 `standby`（行带 `locked=true`，队列组若留有历史副本按地址去重），面板据此渲染「已锁定」行、其余行灰显——锁定代理不在队列组内，只能由该合并结果下发。队列行除延迟/连续失败/固定/纯净度缓存外，另下发 `joined_at`（进入队列组的时间，前端算「入队 x」；锁定行的值是锁定时刻故不展示）、`speedtest`（测速任务状态，见"单代理测速"）与 `purity_state`（纯净度检查中间态 checking/error，结果本身由 SQLite 缓存经 `purity` 字段承载）——后两者供前端刷新页面后恢复"测速中/检查中/结果"。
 - **锁定单一上游（lock）**：Web 面板可锁定队列内代理为 pproxy 唯一上游（`POST /api/standby/lock`，move 到内建隐藏组 `LOCKED_GROUP="_proxy-pool-locked"`，不在配置文件/前端组列表，持久化到 `.cache.db`）。锁定后 `upstream_proxies()` 只返回该代理（pproxy 上游只有它），**fill 跳过**（不补入），**心跳仍探测锁定代理测速**（latency 数据加延迟趋势图，失败只计数不拉黑不移出不补测），无论心跳是否成功都只用该代理；锁定期间采样点带 `locked=True` 标记，**健康率趋势图该点置 null 断开、仪表盘健康率卡片隐藏**（健康率/队列长度无意义），延迟趋势图连续显示测速；其他队列代理保留不动，解锁（`POST /api/standby/unlock`）后 move 回队列恢复原调度。与 pin 的区别：pin 只是不被踢出（rc 调度仍可能选其他代理），lock 是上游**只有**这一个代理。
