@@ -2,7 +2,7 @@
 
 覆盖：壳层导航/主题/暂停轮询、仪表盘 KPI 与三趋势图与地图、代理组（过滤/排序/添加/
 右键拉黑还原/框选/导出）、队列（表格/行下质量带常显与低质量标记/固定置顶/锁定/右键菜单夹取）、
-设置页（调度参数保存）、代理源（暂停恢复 / 单源拉取）。截图输出到 build-artifacts/e2e-screenshots/
+设置页（调度参数保存）、代理源（暂停恢复 / 单源拉取 / 拉取中状态刷新后恢复）。截图输出到 build-artifacts/e2e-screenshots/
 供与参考图人工比对。
 """
 
@@ -686,6 +686,44 @@ class TestSources:
         resume.click()
         fetched.wait_for(timeout=8000)  # 恢复后重新出现
         assert pause.count() == 1
+
+    def test_fetch_state_survives_reload(self, page):
+        """拉取中状态随快照恢复：刷新页面后按钮仍「处理中」且禁用
+
+        /api/status 用路由拦截把 fetching 置真（真实拉取要打外网源，端点行为由
+        tests/framework 覆盖）：刷新会把本地点击态清空，能恢复即说明读的是后端状态。
+        """
+        def _stub(route):
+            body = api_status()
+            body["fetching_all"] = True
+            for s in body["sources"]:
+                s["fetching"] = True
+            route.fulfill(json=body)
+
+        page.route("**/api/status", _stub)
+        page.reload()
+        full = page.locator('[data-testid="src-fetch"]')
+        page.wait_for_function(
+            "() => document.querySelector('[data-testid=src-fetch]').disabled", timeout=10000)
+        assert "处理中" in full.inner_text()
+        row_btn = page.locator('button[data-action="fetch"]').first
+        row_btn.wait_for(timeout=8000)
+        assert row_btn.is_disabled() and "处理中" in row_btn.inner_text()
+
+    def test_fetch_failure_toast(self, page):
+        """全部源拉取异常（后端 500）→ 弹「拉取失败」，不吞错误也不谎报完成
+
+        端点为何返回 500 由 tests/framework 覆盖，这里只验前端把它显示出来。
+        """
+        page.route("**/api/fetch", lambda route: route.fulfill(
+            status=500, json={"error": "拉取失败: 全部代理源拉取失败"}))
+        page.locator('[data-testid="src-fetch"]').click()
+        toast = page.locator(".toast-error")
+        toast.wait_for(timeout=8000)
+        assert "拉取失败" in toast.locator(".toast-title").inner_text()
+        # 失败即释放本地点击态，按钮可再次点击
+        page.wait_for_function(
+            "() => !document.querySelector('[data-testid=src-fetch]').disabled", timeout=8000)
 
 
 # ---------------------------------------------------------------- 控制台日志面板

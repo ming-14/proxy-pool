@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 import unittest
 from unittest.mock import MagicMock, AsyncMock
 
@@ -17,12 +18,16 @@ logging.disable(logging.WARNING)
 from aiohttp.test_utils import TestClient, TestServer
 
 from src.domain.proxy_pool import ProxyPool, LOCKED_GROUP
+from src.domain.models import SourceSpec
+from src.use_cases.fetch_proxies import FetchProxiesUseCase
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.framework.config import (
     PROXY_GROUPS,
+    SOURCES,
     MAX_CONSECUTIVE_FAILS,
     TRUSTED_MAX_CONSECUTIVE_FAILS,
     SOURCE_PAUSE_TTL,
+    SOURCE_DEDUP_THRESHOLD,
     TRUSTED_GROUP,
     BLACKLIST_GROUP,
     STANDBY_GROUP,
@@ -31,7 +36,7 @@ from src.framework.config import (
     METRICS_WINDOW,
 )
 from src.framework.web.control import ServeControl
-from src.framework.web.api import build_app, PanelContext
+from src.framework.web.api import build_app, PanelContext, _do_fetch
 from src.framework.web.panel_state import PanelTasks
 from src.framework import logbuffer
 from src.use_cases.standby import ProxyLatencySample
@@ -114,8 +119,24 @@ def make_purity_mock() -> MagicMock:
     return purity
 
 
+class _FakeRequest:
+    """只喂 _do_fetch 依赖的两样东西：取 PanelContext 的 app 与 JSON body
+
+    直接驱动 handler 而不走 TestClient，才能稳定制造「请求协程被取消」那一幕
+    （客户端断开不一定让服务端 handler 跟着取消）。
+    """
+
+    def __init__(self, app, body):
+        self.app = app
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+
 def make_ctx(pool):
     fetch = MagicMock()
+    fetch.collect.return_value = []  # 无拉取结果：路由会遍历它判定是否全部源失败
     record = RecordProxyUseCase(pool=pool, standby_group=STANDBY_GROUP)
     standby = FakeStandby(pool)
     server = MagicMock()
@@ -144,6 +165,26 @@ def make_ctx(pool):
 
 class PanelTasksTest(unittest.TestCase):
     """面板任务状态注册表单测：幂等 / 结果存储 / FIFO 容量 / purity 按 IP 共享"""
+
+    def test_fetch_gate_allows_single_run(self):
+        """拉取全局单任务：进行中时第二次 start 返回 False（并发拉取直接拒绝）"""
+        tasks = PanelTasks()
+        assert tasks.fetch_start(None) is True  # 全量
+        assert tasks.fetch_start("src.a") is False
+        assert tasks.fetch_start(None) is False
+        tasks.fetch_done()
+        assert tasks.fetch_start("src.a") is True  # 结束后可再起（单源）
+
+    def test_fetch_state_covers_target_source(self):
+        """中间态归属：全量拉取覆盖所有源，单源拉取只覆盖目标源"""
+        tasks = PanelTasks()
+        tasks.fetch_start(None)
+        assert tasks.fetching_all() is True
+        assert tasks.is_fetching("src.a") is True and tasks.is_fetching("src.b") is True
+        tasks.fetch_done()
+        tasks.fetch_start("src.a")
+        assert tasks.fetching_all() is False
+        assert tasks.is_fetching("src.a") is True and tasks.is_fetching("src.b") is False
 
     def test_speedtest_start_idempotent(self):
         """同一 bind 已在 running 时第二次 start 返回 False（不重复起任务）"""
@@ -208,6 +249,105 @@ class PanelTasksTest(unittest.TestCase):
         assert tasks.speedtest_of("c") is not None
 
 
+class FetchRouteIntegrationTest(unittest.IsolatedAsyncioTestCase):
+    """拉取路由 × 真实用例：网络段走 executor 线程、入池段回事件循环线程
+
+    上面 WebApiTest 用 MagicMock 验编排契约，这里用真实 FetchProxiesUseCase（loader 注入
+    假源，不打网络）验整条路径——三段拆分后结果仍要能入池、中间态仍要清干净。
+    """
+
+    async def asyncSetUp(self):
+        self.pool = make_pool()
+        self.ctx, _, _, _ = make_ctx(self.pool)
+        self.spec = SourceSpec(**SOURCES[0])
+        self.loaded: list[str] = []
+
+        def loader(name):
+            self.loaded.append(name)
+            fake = MagicMock()
+            fake.fetch_proxies.return_value = ["http://5.6.7.8:3128"]
+            return fake
+
+        self.ctx.fetch = FetchProxiesUseCase(
+            pool=self.pool, sources=[self.spec], loader=loader,
+            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD)
+        self.client = TestClient(TestServer(build_app(self.ctx)))
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_fetch_merges_and_clears_state(self):
+        resp = await self.client.post("/api/fetch", json={"source": self.spec.name})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True and body["available"] == 1
+        assert self.loaded == [self.spec.name]
+        assert "http://5.6.7.8:3128" in self.pool.get_available_proxies()
+        # 中间态已清（拉取结束后快照不再显示「处理中」）
+        assert self.ctx.tasks.fetching_all() is False
+        assert self.ctx.tasks.is_fetching(self.spec.name) is False
+
+    async def test_fetch_all_sources_failed_reports_error(self):
+        """全部源拉取异常 → 500（不谎报「拉取完成 0 个」），中间态照常清空"""
+        def loader(_name):
+            fake = MagicMock()
+            fake.fetch_proxies.side_effect = RuntimeError("源挂了")
+            return fake
+
+        self.ctx.fetch = FetchProxiesUseCase(
+            pool=self.pool, sources=[self.spec], loader=loader,
+            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD)
+        resp = await self.client.post("/api/fetch", json={"source": self.spec.name})
+        assert resp.status == 500
+        assert "全部代理源拉取失败" in (await resp.json())["error"]
+        assert self.pool.get_available_proxies() == {}  # 拉取失败的源不入池
+        assert self.ctx.tasks.is_fetching(self.spec.name) is False
+
+    async def test_fetch_plan_failure_clears_state(self):
+        """选源（plan）抛异常也必须清中间态：它在任务 try 内，否则面板永久「拉取中」"""
+        plan = self.ctx.fetch.plan
+        self.ctx.fetch.plan = MagicMock(side_effect=RuntimeError("选源挂了"))
+        resp = await self.client.post("/api/fetch", json={})
+        assert resp.status == 500
+        assert self.ctx.tasks.fetching_all() is False
+        # 闸门已释放：选源恢复后下一次拉取照常放行
+        self.ctx.fetch.plan = plan
+        resp = await self.client.post("/api/fetch", json={})
+        assert resp.status == 200
+
+    async def test_fetch_survives_request_cancellation(self):
+        """客户端刷新/关页取消请求协程：后台拉取照常入池并自清中间态
+
+        HTTP 层无法稳定制造服务端 handler 取消，故直接驱动 _do_fetch：假源在
+        executor 里阻塞 0.2s，期间取消请求协程，验证 shield 让任务独立跑完。
+        """
+        def slow_source(retries=None):
+            time.sleep(0.2)  # 让取消动作落在拉取进行中，而非已经跑完
+            return ["http://5.6.7.8:3128"]
+
+        def slow_loader(_name):
+            fake = MagicMock()
+            fake.fetch_proxies.side_effect = slow_source
+            return fake
+
+        self.ctx.fetch = FetchProxiesUseCase(
+            pool=self.pool, sources=[self.spec], loader=slow_loader,
+            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD)
+        handler = asyncio.ensure_future(_do_fetch(_FakeRequest(self.client.server.app, {})))
+        await asyncio.sleep(0.05)  # 已过闸门、拉取正挂在 executor 里
+        assert self.ctx.tasks.fetching_all() is True
+        handler.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await handler
+        for _ in range(100):  # 后台任务不随请求协程一起死
+            if not self.ctx.tasks.fetching_all():
+                break
+            await asyncio.sleep(0.02)
+        assert self.ctx.tasks.fetching_all() is False
+        assert "http://5.6.7.8:3128" in self.pool.get_available_proxies()
+
+
 class WebApiTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.pool = make_pool()
@@ -235,6 +375,9 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["settings"]["salgorithm"] == "rc"
         assert data["settings"]["allowed_types"] == ["http", "socks5"]
         assert any(s["name"] for s in data["sources"])
+        # 拉取中间态随快照下发（前端刷新后据此恢复按钮的「处理中」）
+        assert data["fetching_all"] is False
+        assert all(s["fetching"] is False for s in data["sources"])
         assert "Proxy-pool-standby-queue" in data["groups"]
         # 历史数据已从 status 快照分离（体量大，改走 /api/status/history 增量拉取）
         assert "standby_history" not in data
@@ -476,15 +619,41 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.ctx.geo.save_cache.assert_called_once()
 
     async def test_fetch_control(self):
+        """全量拉取：plan/collect/apply 三段编排，只有 collect 走线程（不碰池）"""
         resp = await self.client.post("/api/fetch", json={})
         assert resp.status == 200
-        self.fetch.execute.assert_called_once_with(None)
+        self.fetch.plan.assert_called_once_with(None)
+        self.fetch.collect.assert_called_once()
+        self.fetch.apply.assert_called_once()
+        assert self.ctx.tasks.fetching_all() is False
 
     async def test_fetch_single_source(self):
         """单源拉取：body.source 透传给用例，只拉该源"""
         resp = await self.client.post("/api/fetch", json={"source": "src.interfaces.sources.demo"})
         assert resp.status == 200
-        self.fetch.execute.assert_called_once_with("src.interfaces.sources.demo")
+        self.fetch.plan.assert_called_once_with("src.interfaces.sources.demo")
+
+    async def test_fetch_rejected_while_running(self):
+        """并发拉取幂等拒绝：已有拉取在跑时返回 running，且不再起第二个拉取"""
+        try:
+            assert self.ctx.tasks.fetch_start("src.interfaces.sources.demo") is True
+            resp = await self.client.post("/api/fetch", json={})
+            assert resp.status == 200
+            assert (await resp.json())["status"] == "running"
+            self.fetch.plan.assert_not_called()
+        finally:
+            self.ctx.tasks.fetch_done()
+
+    async def test_fetch_state_exposed_and_cleared(self):
+        """拉取中间态：进行中随快照下发（刷新可恢复），结束后清除"""
+        src = SOURCES[0]["name"]
+        assert self.ctx.tasks.fetch_start(src) is True
+        data = await (await self.client.get("/api/status")).json()
+        assert data["fetching_all"] is False
+        assert [s["fetching"] for s in data["sources"] if s["name"] == src] == [True]
+        self.ctx.tasks.fetch_done()
+        data = await (await self.client.get("/api/status")).json()
+        assert all(s["fetching"] is False for s in data["sources"])
 
     async def test_blacklist_removes_proxy(self):
         self.pool.add_to_group("default-http", "9.9.9.9:80", consecutive_fails=0)

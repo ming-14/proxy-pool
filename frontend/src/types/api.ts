@@ -96,6 +96,7 @@ export interface SourceStat {
   enabled: boolean;
   paused: boolean;
   pause_remaining: number | null;
+  fetching: boolean;       // 该源正在拉取（全量拉取时为 true；后端状态，刷新后仍可恢复）
 }
 
 export interface ScheduleSettings {
@@ -125,6 +126,7 @@ export interface StatusSnapshot {
   locked_proxy: string | null;
   capacity: number;
   pending_retries: string[];
+  fetching_all: boolean;   // 全量拉取进行中（后端状态，刷新后仍可恢复）
   sources: SourceStat[];
   settings: ScheduleSettings;
   traffic_total: TrafficTotal;

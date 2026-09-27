@@ -56,7 +56,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 
 写端点均复用现有用例，即时生效并落盘：
 
-- 手动拉取（`POST /api/fetch`）：`{"source": "<源模块路径>"}` 只拉该源，省略 `source` 时拉取全部启用源。单源拉取复用自动拉取同一条用例路径——已暂停的源跳过、去重率过高按默认时长暂停、源 `pause_ttl` 照常生效
+- 手动拉取（`POST /api/fetch`）：`{"source": "<源模块路径>"}` 只拉该源，省略 `source` 时拉取全部启用源。单源拉取复用自动拉取同一条用例路径——已暂停的源跳过、去重率过高按默认时长暂停、源 `pause_ttl` 照常生效。**同一时刻只跑一个拉取**：已有拉取在跑返回 `{"status": "running"}` 不重复起任务；进行中状态随 `/api/status` 下发（`fetching_all` 全量 / 每源 `sources[].fetching`），面板**刷新后仍显示「处理中」**；**全部源拉取异常**返回 HTTP 500 `{"error": "拉取失败: 全部代理源拉取失败"}`，面板弹「拉取失败」
 - 拉黑 / 加入信任池（`/api/blacklist`、`/api/trust`）：拉黑时从所有组移除并加入黑名单，同步 pproxy 上游
 - 移出代理到指定组（`/api/proxy/move`，POST `{"proxies": [...], "target_group"}`，**批量**，proxies 为数组）：将代理从当前组移到目标组，从 standby 队列移出时同步 pproxy 上游
 - 删除代理（`/api/proxy/remove`，POST `{"proxies": [...], "group"}`，**批量**，proxies 为数组）：从指定组移除代理（不拉黑），从 standby 队列移除时同步 pproxy 上游

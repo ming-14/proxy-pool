@@ -2,6 +2,9 @@
 /**
  * 代理源页：源列表、状态、暂停/恢复、全量与单源拉取。数据来自 statusStore.sources。
  * 单源拉取按钮只对启用且未暂停的源显示（暂停态下该源本就拉不动）。
+ * 「处理中」以后端下发的 fetching 为准（刷新/重开页面仍可恢复），本地 pending 只补
+ * 点击到下一次轮询之间的空档；后端同一时刻只放行一个拉取，故任一拉取进行中就统一
+ * 禁用全部拉取按钮。
  */
 import { computed, ref } from 'vue';
 import { api } from '@/api/client';
@@ -14,33 +17,48 @@ const store = useStatusStore();
 const toast = useToastStore();
 
 const sources = computed(() => store.status?.sources ?? []);
-const fetching = ref(false);
-/** 单源拉取进行中的源名集合（按钮转「处理中…」并禁用） */
-const pendingSources = ref(new Set<string>());
+/** 本地即时反馈（后端状态要等下一次轮询才可见） */
+const pending = ref(new Set<string>());
+const pendingAll = ref(false);
+
+const fullFetching = computed(() => (store.status?.fetching_all ?? false) || pendingAll.value);
+const anyFetching = computed(() =>
+  fullFetching.value || pending.value.size > 0 || sources.value.some((s) => s.fetching),
+);
+/** 闸门被占用时禁用的按钮要给悬停说明，否则点了没反应却看不出原因 */
+const busyHint = computed(() => (anyFetching.value ? '已有拉取任务在跑' : undefined));
+
+/** 该源按钮是否显示「处理中…」：后端状态或本地刚点击 */
+function rowFetching(s: SourceStat): boolean {
+  return s.fetching || pending.value.has(s.name);
+}
 
 async function doFetch() {
-  fetching.value = true;
+  pendingAll.value = true;
   try {
     const d = await api.fetch();
-    toast.success('拉取完成', `可用代理 ${d.available}`);
+    // 后端已有拉取在跑时幂等拒绝，按「进行中」提示，不谎报完成
+    if ('status' in d) toast.info('拉取进行中', '已有拉取任务在跑，请稍候');
+    else toast.success('拉取完成', `可用代理 ${d.available}`);
   } catch (e) {
     toast.error('拉取失败', e instanceof Error ? e.message : String(e));
   } finally {
-    fetching.value = false;
+    pendingAll.value = false;
     await store.refreshNow();
   }
 }
 
 /** 单源拉取：拉取可能触发去重率暂停，完成后立即刷新以同步暂停态与按钮可见性 */
 async function doFetchSource(s: SourceStat) {
-  pendingSources.value.add(s.name);
+  pending.value.add(s.name);
   try {
     const d = await api.fetch(s.name);
-    toast.success('拉取完成', `${s.short_name} · 可用代理 ${d.available}`);
+    if ('status' in d) toast.info('拉取进行中', '已有拉取任务在跑，请稍候');
+    else toast.success('拉取完成', `${s.short_name} · 可用代理 ${d.available}`);
   } catch (e) {
     toast.error('拉取失败', e instanceof Error ? e.message : String(e));
   } finally {
-    pendingSources.value.delete(s.name);
+    pending.value.delete(s.name);
     await store.refreshNow();
   }
 }
@@ -76,8 +94,8 @@ async function doResume(source: string) {
           <div class="card-title">代理源</div>
           <div class="card-subtitle">建议及时更新</div>
         </div>
-        <button data-testid="src-fetch" class="btn btn-primary btn-sm" :disabled="fetching" @click="doFetch">
-          {{ fetching ? '处理中…' : '拉取代理' }}
+        <button data-testid="src-fetch" class="btn btn-primary btn-sm" :disabled="anyFetching" :title="busyHint" @click="doFetch">
+          {{ fullFetching ? '处理中…' : '拉取代理' }}
         </button>
       </div>
       <div data-testid="src-table" class="table-wrap border-0 rounded-t-none">
@@ -109,10 +127,11 @@ async function doResume(source: string) {
                       class="btn btn-ghost btn-sm"
                       data-action="fetch"
                       :data-source="s.name"
-                      :disabled="pendingSources.has(s.name)"
+                      :disabled="anyFetching"
+                      :title="busyHint"
                       @click="doFetchSource(s)"
                     >
-                      {{ pendingSources.has(s.name) ? '处理中…' : '拉取' }}
+                      {{ rowFetching(s) ? '处理中…' : '拉取' }}
                     </button>
                   </template>
                   <template v-else>-</template>

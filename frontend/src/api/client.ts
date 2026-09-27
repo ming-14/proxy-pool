@@ -64,8 +64,9 @@ export const api = {
   addProxy: (group: string, proxies: string[]) =>
     post<{ ok: boolean; added: number }>(`/api/group/${encodeURIComponent(group)}/add`, { proxies }),
 
-  /** 拉取代理；source 非空时只拉该源 */
-  fetch: (source?: string) => post<{ ok: boolean; available: number }>('/api/fetch', { source }),
+  /** 拉取代理；source 非空时只拉该源。后端已有拉取在跑时返回 {"status":"running"}（幂等拒绝） */
+  fetch: (source?: string) =>
+    post<{ ok: boolean; available: number } | { status: 'running' }>('/api/fetch', { source }),
 
   blacklist: (proxies: string[]) => post<{ ok: boolean; count: number }>('/api/blacklist', { proxies }),
 

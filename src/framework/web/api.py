@@ -167,6 +167,8 @@ def _status_snapshot(ctx: PanelContext) -> dict:
             "enabled": s["enabled"],
             "paused": pool.is_source_paused(s["name"]),
             "pause_remaining": pool.source_pause_remaining(s["name"]),
+            # 拉取进行中（后端状态，前端刷新后据此恢复按钮的「处理中」）
+            "fetching": ctx.tasks.is_fetching(s["name"]),
         })
     return {
         "groups": groups,
@@ -181,6 +183,8 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "locked_proxy": locked_proxy,
         "capacity": ctx.capacity,
         "pending_retries": ctx.standby.pending_retries(),
+        # 全量拉取进行中（前端刷新后恢复全量按钮的「处理中」）
+        "fetching_all": ctx.tasks.fetching_all(),
         "sources": sources,
         "settings": ctx.control.to_dict(),
         "traffic_total": {"upload": traffic_upload, "download": traffic_download},
@@ -614,14 +618,50 @@ async def _geo_map(request: web.Request) -> web.Response:
 
 
 async def _do_fetch(request: web.Request) -> web.Response:
-    """拉取代理；body.source 非空时只拉该源（面板单源拉取按钮）"""
+    """拉取代理；body.source 非空时只拉该源（面板单源拉取按钮）
+
+    线程编排（同 _do_purity）：选源与结果入池在事件循环线程（代理池单写者，心跳
+    轮次也在本线程改池），只有网络拉取放 executor 线程。
+    幂等：已有拉取在跑直接返回 {"status": "running"}（await 前置状态，无竞态）——
+    并发拉取会重复打外网，且两条入池流程交错。
+    """
     ctx = request.app[_PANEL_KEY]
     body = await _json_body(request)
-    source = body.get("source")
-    # 大量网络请求，避免阻塞事件循环
-    await asyncio.get_running_loop().run_in_executor(None, ctx.fetch.execute, source)
-    ctx.save()
-    return web.json_response({"ok": True, "available": len(ctx.pool.get_available_proxies())})
+    # 空串等价于未传：否则会被记成「某源拉取」占住闸门，快照却无处显示处理中
+    source = body.get("source") or None
+    if not ctx.tasks.fetch_start(source):
+        logger.info("拉取进行中, 忽略重复拉取请求 (source=%s)", source)
+        return web.json_response({"status": "running"})
+
+    async def _run_fetch() -> tuple[int, str | None]:
+        """选源 → 网络拉取（executor）→ 入池 → 落盘；结束（含异常）清中间态
+
+        选源必须留在本 try 内：它读池，一旦抛异常同样要走 finally 清中间态，
+        否则面板永久停在「拉取中」，后续拉取全被闸门拒绝。
+        """
+        try:
+            sources = ctx.fetch.plan(source)
+            results = await asyncio.get_running_loop().run_in_executor(
+                None, ctx.fetch.collect, sources)
+            ctx.fetch.apply(results)  # 只改内存，耗时与网络无关
+            ctx.save()
+            # 全部源拉取异常（代理列表均为 None）不算成功，否则面板会报「拉取完成 0 个」
+            if results and all(proxy_list is None for _, proxy_list in results):
+                return 0, "全部代理源拉取失败"
+            return len(ctx.pool.get_available_proxies()), None
+        except Exception as e:
+            logger.exception("拉取代理失败")
+            return 0, str(e)
+        finally:
+            ctx.tasks.fetch_done()
+
+    # 任务与请求协程解耦：客户端刷新/关页会取消请求协程，但已拉到的数据照常入池，
+    # 中间态由任务自身清除（在协程侧清除会提前显示空闲、放进第二个拉取）
+    task = asyncio.create_task(_run_fetch())
+    available, error = await asyncio.shield(task)
+    if error:
+        return web.json_response({"error": f"拉取失败: {error}"}, status=500)
+    return web.json_response({"ok": True, "available": available})
 
 
 async def _do_blacklist(request: web.Request) -> web.Response:
