@@ -1,6 +1,7 @@
 requests
 PySocks
 fake-useragent<2.0; python_version < "3.9"
+fake-useragent>=2.0; python_version >= "3.9"
 aiohttp
 aiohttp-socks
 tomli>=2.0; python_version < "3.11"
