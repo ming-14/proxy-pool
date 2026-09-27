@@ -12,7 +12,6 @@ import logging
 import time
 from typing import Callable
 
-from src.domain.models import to_proxy_dict
 from src.domain.ports import TaskScheduler
 
 logger = logging.getLogger(__name__)

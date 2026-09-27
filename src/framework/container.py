@@ -24,7 +24,6 @@ from src.domain.purity import IppurePluginConfig, IppureSourceSpec, resolve_prox
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
 from src.interfaces.sqlite_store import SqliteProxyStore
-from src.interfaces.proxy_server import PproxyServer
 from src.interfaces.scheduler import ProxyScheduler
 from src.use_cases.autoload import AutoloadUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
@@ -49,7 +48,6 @@ class Container:
     record: RecordProxyUseCase
     request_with_retry: RequestWithRetryUseCase
     check_proxies: CheckProxiesUseCase
-    proxy_server: PproxyServer
     standby: StandbyQueueUseCase
     async_getter: AsyncHttpGetter
     purity: CheckPurityUseCase | None   # IP 纯净度检查；web 关闭/未启用源/缺密钥时为 None（功能禁用）
@@ -204,10 +202,6 @@ def build_container(cache_db: str | None = None) -> Container:
         scheduler_factory=lambda proxies, **kw: ProxyScheduler(proxies, **kw),
         async_getter=async_getter,
     )
-    proxy_server = PproxyServer(
-        listen_uri=f"http+socks4+socks5://{config.SERVER_HOST}:{config.SERVER_PORT}",
-        metrics_window=config.METRICS_WINDOW,
-    )
     network_gate = LocalNetworkGate(
         async_getter=async_getter,
         probe_urls=config.NETWORK_PROBE_URLS,
@@ -264,7 +258,6 @@ def build_container(cache_db: str | None = None) -> Container:
         record=record,
         request_with_retry=request_with_retry,
         check_proxies=check_proxies,
-        proxy_server=proxy_server,
         standby=standby,
         async_getter=async_getter,
         purity=purity,

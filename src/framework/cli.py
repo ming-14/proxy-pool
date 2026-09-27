@@ -194,7 +194,7 @@ def cmd_serve(args):
     """启动本地代理服务器：pproxy 监听 + 代理服务队列心跳"""
     from src.framework.serve import run
 
-    # serve 用 CLI 的 host/port 重建组合根（proxy_server 按监听地址构造）
+    # 监听实例由 serve._run 按 host/port 自建（容器只提供池与用例）
     c = build_container()
     allowed = set(args.type) if args.type else set(config.SERVER_PROXY_TYPES)
     print(f"启动本地代理服务器: {args.host}:{args.port} (类型: {','.join(sorted(allowed))})")
