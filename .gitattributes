@@ -1,2 +1,2 @@
-# 统一行尾符：入库一律 LF，检出按平台（Windows autocrlf）
-* text=auto
+* text=auto eol=crlf
+*.db binary
