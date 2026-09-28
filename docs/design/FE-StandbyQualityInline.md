@@ -157,7 +157,7 @@ B 的固有代价（必须主动缓解，见 3.3 / 3.4）：
 1. `src/use_cases/standby.py`：探测失败时也记一笔 `ProxyLatencySample(ts, None)`；`latency` 类型放宽为 `float | None`。收益：掉线可视 + 可算成功率。
    注意：改变 `/api/proxy/history` 语义（`latency` 可能为 `null`），现有断言同步。
 2. `src/framework/web/api.py`：新增 `_standby_series` / `_standby_geo` 两个 handler + 路由；`_standby_entry` 增加 `protocol` / `source_group` / `joined_at`。
-3. 序列端点取数复用 `standby_proxies(truncate=False)` + `per_proxy_latency_history` + `per_proxy_traffic_history`，不新增存储、不改采样机制。
+3. 序列端点取数复用 `standby_members()`（组内全部成员）+ `per_proxy_latency_history` + `per_proxy_traffic_history`，不新增存储、不改采样机制。
 
 ### 5.2 前端
 

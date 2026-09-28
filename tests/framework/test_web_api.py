@@ -72,9 +72,12 @@ class FakeStandby:
     def standby_group(self):
         return STANDBY_GROUP
 
-    def standby_proxies(self, *, truncate=True):
-        # 完整队列（不因锁定状态改变，用于展示/指标）
-        # FakeStandby 不截断（测试用池无 capacity 概念），truncate 参数保持接口兼容
+    def standby_proxies(self):
+        # 进上游的队列候选（FakeStandby 无 capacity 概念，即全部成员）
+        return list(self.pool.proxy_groups.get(STANDBY_GROUP, {}).get("proxies", {}))
+
+    def standby_members(self):
+        # 队列全部成员（面板展示/心跳探测口径）
         return list(self.pool.proxy_groups.get(STANDBY_GROUP, {}).get("proxies", {}))
 
     def upstream_proxies(self):

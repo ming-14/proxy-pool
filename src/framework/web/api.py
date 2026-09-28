@@ -92,7 +92,7 @@ def _standby_rows(ctx: PanelContext) -> list[str]:
     锁定代理已 move 出队列组，只有 upstream_proxies() 能取到，故并入下发；历史数据
     可能在队列组留有副本，按地址去重避免同一代理出现两行（前端以 proxy 为 :key）。
     """
-    rows = list(ctx.standby.standby_proxies(truncate=False))
+    rows = list(ctx.standby.standby_members())
     if ctx.standby.is_locked():
         locked = ctx.standby.upstream_proxies()
         rows = locked + [p for p in rows if p not in locked]

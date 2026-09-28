@@ -13,7 +13,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_check_purity.py           # 纯净度用例（IP 提取/缓存分区与过期/归一化/三步编排边界）
 │   ├── test_ip_geo.py                 # IP 归属三步编排与聚合
 │   ├── test_network_gate.py           # 本地链路门控（状态码/多目标/失败结论缓存/成功不缓存/并发共享）
-│   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化
+│   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化/超容量程
 │   └── test_use_cases.py              # fetch/get/record/request_with_retry/check_proxies
 ├── interfaces/                        # 接口适配器测试
 │   ├── __init__.py
@@ -42,6 +42,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_logbuffer.py              # 面板日志缓冲（环形裁剪/seq 游标/stack 采集/buffer_start）
 │   ├── test_loop.py                   # run_coro 跨循环桥接
 │   ├── test_view.py                   # view.py 数据层（缓存读取/行构建）
+│   ├── test_serve.py                  # serve 主循环辅助逻辑（补测任务表同步：先回收已结束任务再补启动）
 │   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/日志增量与清空）
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py

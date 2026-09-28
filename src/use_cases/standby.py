@@ -7,7 +7,8 @@
               存活按 latency 插入队列（队列满时与队尾比较，更快则踢尾入新、较慢则
               move trusted），失败 record_fail 累计到 max_consecutive_fails 才拉黑。
               队列始终按 latency 升序维护（最快的在上游 rc 调度时更易命中）。
-- heartbeat:  并发探测队列内代理；成功更新 latency + 清零连续失败计数，失败计 consecutive_fails，
+- heartbeat:  并发探测队列**全部成员**（不因 capacity 截断；capacity 只限制进上游的
+              数量），成功更新 latency + 清零连续失败计数，失败计 consecutive_fails，
               达到所在组阈值（should_blacklist）即拉黑移出；
               未达阈值进入退避补测（retry_probe 独立异步任务负责复核，
               成功恢复、失败继续累计直至拉黑）——避免一次瞬时失败就拉黑。
@@ -115,7 +116,7 @@ class StandbyQueueUseCase:
         self._fill_probe_multiplier = fill_probe_multiplier
         self._fill_probe_min_extra = fill_probe_min_extra
         self._retrying: set[str] = set()  # 退避补测中的代理（heartbeat 轮跳过）
-        self._capacity: int | None = None  # 队列容量（serve 启动时 set，standby_proxies 截断超出容量的固定代理）
+        self._capacity: int | None = None  # 队列容量（serve 启动时 set，standby_proxies 按此截断进上游的候选）
         self._metrics_window = metrics_window
         self._chart_window = chart_window
         self._history: deque[StandbySample] = deque()  # 采样历史，按时间窗口清理过期点
@@ -181,20 +182,31 @@ class StandbyQueueUseCase:
         while dq and dq[0].ts < cutoff:
             dq.popleft()
 
-    def _sample(self, proxies: list[str]) -> None:
-        """采样本轮心跳探测对象的指标并按时间窗口清理过期点
+    def _prune_latency_history(self) -> None:
+        """回收已离开队列的 bind 的延时历史（每轮心跳末尾调用）
 
-        每轮 heartbeat 结束调一次，传入本轮探测的代理集合（锁定时为锁定代理，
-        否则为代理服务队列成员）。按 metrics_window 时间窗口清理过期点：
-        心跳动态调整时采样频率跟着变，留存窗口始终 = metrics_window。
+        key 按 bind 累积，代理被踢出/拉黑后不再被查询，不回收则只增不减。留存集合
+        与面板队列行一致：队列成员 + 锁定代理。
         """
-        latencies = [l for l in (self._pool.get_latency(p) for p in proxies) if l is not None]
+        keep = {bind_of(p) for p in self.standby_members()}
+        keep.update(bind_of(p) for p in self._pool.get_group_proxies(LOCKED_GROUP))
+        for bind in [b for b in self._per_proxy_latency_history if b not in keep]:
+            del self._per_proxy_latency_history[bind]
+
+    def _sample(self, proxies: list[str]) -> None:
+        """采样本轮心跳探测对象的指标并按 metrics_window 清理过期点
+
+        延迟只统计**无连续失败**的成员：latency 是最近一次成功探测的响应时间，失败的
+        成员保留着旧值，计入平均会让延迟显得比实际好（失败期间没有可用延迟）。健康率
+        同为 consecutive_fails == 0 的占比，两者口径一致。
+        """
+        healthy = [p for p in proxies if (self._pool.get_consecutive_fail_count(p) or 0) == 0]
+        latencies = [l for l in (self._pool.get_latency(p) for p in healthy) if l is not None]
         avg = sum(latencies) / len(latencies) if latencies else None
         mn = min(latencies) if latencies else None
         mx = max(latencies) if latencies else None
         total = len(proxies)
-        healthy = sum(1 for p in proxies if (self._pool.get_consecutive_fail_count(p) or 0) == 0)
-        rate = round(healthy / total * 100) if total else 0
+        rate = round(len(healthy) / total * 100) if total else 0
         self._append_sample(StandbySample(time.time(), avg, mn, mx, rate, total, self.is_locked()))
 
     def _append_sample(self, sample: StandbySample) -> None:
@@ -204,19 +216,12 @@ class StandbyQueueUseCase:
         while self._history and self._history[0].ts < cutoff:
             self._history.popleft()
 
-    def standby_proxies(self, *, truncate=True) -> list[str]:
-        """代理服务队列当前代理（用于展示/指标/容量判断/心跳探测）
+    def standby_members(self) -> list[str]:
+        """代理服务队列全部成员（固定优先 + latency 升序，不按容量截断）
 
-        固定代理优先（按固定时间 pinned_at 升序），非固定代理按 latency 升序排后。
-        超出 _capacity 的固定代理忽略（保留在组内不移出，但不参与队列/上游/心跳），
-        用户解固其他代理使固定数 <= capacity 后自动重新生效。
-
-        注意：本方法始终返回完整队列，不因锁定状态改变。pproxy 上游同步请用
-        upstream_proxies()（锁定时只返回锁定代理）。
-
-        Args:
-            truncate: True 时截断到 capacity（上游/心跳/指标采样用），
-                      False 时返回完整列表（面板展示用，显示实际数量 vs capacity）。
+        心跳探测、指标采样、缺口计算与面板展示的统一口径，这个排序即面板行序。
+        capacity 只约束进上游的数量：超容量程同样被探测、失败同样计数淘汰（否则
+        它们既不参与上游也不被探测，会永久滞留）。
         """
         proxies = self._pool.get_group_proxies(self._standby_group)
         pinned = sorted(
@@ -227,16 +232,23 @@ class StandbyQueueUseCase:
             [p for p in proxies if not self._pool.is_pinned(p)],
             key=lambda p: float("inf") if (l := self._pool.get_latency(p)) is None else l,
         )
-        result = pinned + others
-        if truncate and self._capacity is not None:
+        return pinned + others
+
+    def standby_proxies(self) -> list[str]:
+        """进 pproxy 上游的队列候选 = 成员视图截断到 capacity
+
+        超出容量的成员不进上游，但仍受心跳探测与淘汰（见 standby_members）。
+        """
+        result = self.standby_members()
+        if self._capacity is not None:
             result = result[:self._capacity]
         return result
 
     def upstream_proxies(self) -> list[str]:
-        """pproxy 上游同步列表：锁定时只返回锁定代理，否则返回完整队列
+        """pproxy 上游同步列表：锁定时只返回锁定代理，否则返回按容量截断的上游候选
 
         锁定状态（LOCKED_GROUP 有代理）时 pproxy 唯一上游为锁定代理，
-        无论心跳是否成功；否则上游 = 代理服务队列完整成员（standby_proxies）。
+        无论心跳是否成功；否则上游 = standby_proxies()（按 capacity 截断的候选）。
         """
         locked = self._pool.get_group_proxies(LOCKED_GROUP)
         if locked:
@@ -320,7 +332,7 @@ class StandbyQueueUseCase:
             logger.debug("已锁定单一上游，跳过填充")
             return 0
 
-        remaining = capacity - len(self.standby_proxies())
+        remaining = capacity - len(self.standby_members())
         if remaining <= 0:
             return 0
 
@@ -358,8 +370,8 @@ class StandbyQueueUseCase:
             nonlocal added
             latency = result.get("elapsed")
             if result.get("success"):
-                current = self.standby_proxies()  # 已按 latency 升序
-                if len(current) < capacity:
+                current = self.standby_proxies()  # 已按 latency 升序（进上游的候选）
+                if len(self.standby_members()) < capacity:
                     # 队列未满：入队
                     self._pool.move_proxy(proxy, self._standby_group, consecutive_fails=0, latency=latency)
                     added += 1
@@ -411,11 +423,14 @@ class StandbyQueueUseCase:
             else:
                 logger.warning("本地链路在探测期间劣化，本轮 %d 个候选失败不计分",
                                len(failed))
-        logger.info("代理服务队列补充完成: +%d (队列 %d/%d)", added, len(self.standby_proxies()), capacity)
+        logger.info("代理服务队列补充完成: +%d (队列 %d/%d)", added, len(self.standby_members()), capacity)
         return added
 
     async def heartbeat(self, probe_url: str, timeout: float, concurrency: int) -> list[str]:
-        """并发探测队列内代理，返回本轮确认存活的代理
+        """并发探测队列**全部成员**，返回本轮确认存活的代理
+
+        探测集合取 standby_members()（不按 capacity 截断）：capacity 只限制进上游的
+        数量，不影响谁受心跳管辖，否则超容成员会既不上游也不被探测而不被淘汰。
 
         成功：更新 latency + 清零连续失败计数，保留在队列（不晋级 trusted）；
         失败：连续失败计数 +1，达到所在组阈值（should_blacklist）即拉黑移出，
@@ -424,20 +439,24 @@ class StandbyQueueUseCase:
 
         锁定时：仍探测锁定代理测速（数据加趋势图），但失败只计数不拉黑不移出
         不补测——无论心跳是否成功都只用该代理（锁定语义不变）。
+
+        无探测对象（队列空且未锁定）时仅回收延时历史 key 后返回。
         """
-        # 链路门控：不可用时跳过本轮心跳（不计数/不拉黑/不补测），队列保持现状
-        if not await self._gate.check():
-            logger.warning("本地链路不可用，跳过本轮心跳（不计数/不拉黑）")
-            return []
+        # 回收已离开队列的 bind 的延时历史（与本次探测无关，成员变动后即失效）
+        self._prune_latency_history()
 
         locked = self.is_locked()
-        if locked:
-            # 锁定时探测锁定代理测速（upstream_proxies 只返回锁定代理）
-            proxies = self.upstream_proxies()
-        else:
-            proxies = [p for p in self.standby_proxies() if p not in self._retrying]
+        # 锁定时为锁定代理（测速），否则为队列全部成员——capacity 不为心跳设界，
+        # 超容量程同样探测、失败同样淘汰
+        proxies = (self.upstream_proxies() if locked
+                   else [p for p in self.standby_members() if p not in self._retrying])
         if not proxies:
             logger.debug("代理服务队列无可探测代理，跳过心跳")
+            return []
+
+        # 链路门控：不可用时跳过本轮（不计数/不拉黑/不补测），队列保持现状
+        if not await self._gate.check():
+            logger.warning("本地链路不可用，跳过本轮心跳（不计数/不拉黑）")
             return []
 
         logger.debug("心跳探测 %d 个代理 -> %s", len(proxies), probe_url)
@@ -481,7 +500,7 @@ class StandbyQueueUseCase:
                     logger.warning("代理 %s 心跳失败: %s, 进入退避补测", proxy, reason)
 
         logger.debug("心跳完成: %d 存活, %d 待补测 (队列 %d)",
-                     len(alive), len(self._retrying), len(self.standby_proxies()))
+                     len(alive), len(self._retrying), len(self.standby_members()))
         self._sample(proxies)
         return alive
 
@@ -495,7 +514,7 @@ class StandbyQueueUseCase:
         paused = False  # 链路异常只记一次日志：暂停期间每秒一轮，逐轮记录会刷爆日志
         try:
             while True:
-                if proxy not in self.standby_proxies():
+                if proxy not in self.standby_members():
                     logger.info("代理 %s 已不在代理服务队列, 停止补测", proxy)
                     return
                 await asyncio.sleep(backoff)

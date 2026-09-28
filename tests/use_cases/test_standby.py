@@ -361,12 +361,15 @@ class TestStandbyHeartbeat(unittest.TestCase):
         check.execute.assert_not_called()
 
     def test_heartbeat_empty_queue_skips(self):
+        """队列空：不发起探测，也不做链路门控（每轮空探测是浪费）"""
         self.pool.move_proxy("http://1.2.3.4:8080", self.pool.blacklist_group)
         check = MagicMock()
-        c = make_standby(self.pool, check)
+        gate = MagicMock()
+        c = make_standby(self.pool, check, gate=gate)
         alive = asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
         self.assertEqual(alive, [])
         check.execute.assert_not_called()
+        gate.check.assert_not_called()
 
 
 class TestStandbyMetrics(unittest.TestCase):
@@ -442,6 +445,21 @@ class TestStandbyMetrics(unittest.TestCase):
         self.assertEqual(s.queue_length, 2)
         # 5.6.7.8 探测前 consecutive_fails=1，探测成功清零 -> 两个都健康
         self.assertEqual(s.health_rate, 100)
+
+    def test_failed_member_stale_latency_excluded(self):
+        """本轮失败的成员不以陈旧 latency 参与平均（那是上次成功的值，失败期间无可用延迟）"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:3128", consecutive_fails=0, latency=0.3)
+        spec = {
+            "http://1.2.3.4:8080": {"success": True, "elapsed": 0.2},
+            "http://5.6.7.8:3128": {"success": False, "elapsed": 3.0},
+        }
+        c = make_standby(self.pool, make_check_results(spec))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        s = c.history()[0]
+        self.assertAlmostEqual(s.avg, 0.2)  # 5.6.7.8 的 0.3 不计入
+        self.assertEqual(s.max, 0.2)
+        self.assertEqual(s.health_rate, 50)
+        self.assertEqual(s.queue_length, 2)
 
 
 class TestStandbyRetryProbe(unittest.TestCase):
@@ -914,6 +932,133 @@ class TestPerProxyLatencyHistory(unittest.TestCase):
         """未探测过的 bind 返回空列表"""
         c = make_standby(self.pool, MagicMock())
         self.assertEqual(c.per_proxy_latency_history("9.9.9.9:9999"), [])
+
+    def test_key_pruned_when_proxy_leaves_queue(self):
+        """代理离开队列后其 bind 的延时历史被回收（key 只增不减的回归）"""
+        c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}))
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(len(c.per_proxy_latency_history("1.2.3.4:8080")), 1)
+        # 移出队列（拉黑）后跑一轮心跳：key 被回收
+        self.pool.move_proxy("http://1.2.3.4:8080", self.pool.blacklist_group)
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(c.per_proxy_latency_history("1.2.3.4:8080"), [])
+
+    def test_key_kept_for_locked_proxy(self):
+        """锁定代理不在队列组内，但其延时历史必须保留（锁定期间仍测速画图）"""
+        spec = {"http://1.2.3.4:8080": {"success": True, "elapsed": 0.4}}
+        c = make_standby(self.pool, make_check_results(spec))
+        c.lock("http://1.2.3.4:8080")
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(len(c.per_proxy_latency_history("1.2.3.4:8080")), 1)
+
+
+def make_recording_check(spec):
+    """探测 mock：记录每次收到的探测集合；spec = {proxy: {"success", "elapsed"}}，
+    未列出的代理默认成功（与 make_check_results 相反，便于表达"只有某个失败"）"""
+    check = MagicMock()
+    seen: list[list[str]] = []
+
+    async def execute(proxies, url, **kw):
+        seen.append(list(proxies))
+        results = {}
+        for p in proxies:
+            s = spec.get(p, {"success": True, "elapsed": 0.1})
+            results[p] = {
+                "success": s["success"],
+                "status_code": 200 if s["success"] else None,
+                "elapsed": s.get("elapsed", 0.1),
+                "error": None if s["success"] else "Timeout",
+            }
+        _fire_on_result(proxies, results, kw)
+        return results
+
+    check.execute.side_effect = execute
+    return check, seen
+
+
+class TestStandbyOverCapacity(unittest.TestCase):
+    """队列成员数 > capacity：capacity 只限制「进上游的数量」与「serve 补入的缺口」，
+    不限制谁受心跳管辖——超出的成员同样被探测，失败同样计数/淘汰"""
+
+    CAPACITY = 3
+    MEMBER_COUNT = 5
+
+    def setUp(self):
+        self.pool = make_pool()
+        # latency 递增：前 capacity 个进上游，末尾的成员被截断
+        self.members = [f"http://10.0.0.{i}:8080" for i in range(self.MEMBER_COUNT)]
+        for i, p in enumerate(self.members):
+            self.pool.add_to_group(STANDBY_GROUP, p, consecutive_fails=0, latency=float(i))
+
+    def _make(self, spec=None):
+        check, seen = make_recording_check(spec or {})
+        c = make_standby(self.pool, check, fill_groups=("default-http",), multiplier=2, min_extra=0)
+        c.set_capacity(self.CAPACITY)
+        return c, check, seen
+
+    def test_upstream_truncated_to_capacity(self):
+        """上游候选仍按 capacity 截断：成员数超容量，上游仍只有 capacity 个"""
+        c, _, _ = self._make()
+        self.assertEqual(c.upstream_proxies(), self.members[:self.CAPACITY])
+        self.assertEqual(len(c.standby_members()), self.MEMBER_COUNT)
+
+    def test_heartbeat_probes_all_members(self):
+        """心跳探测全部成员，不只前 capacity 个"""
+        c, _, seen = self._make()
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(sorted(seen[0]), sorted(self.members))
+
+    def test_over_capacity_member_failure_counts_and_enters_retry(self):
+        """超出 capacity 的成员失败同样计数并进入退避补测"""
+        target = self.members[-1]
+        c, _, _ = self._make({target: {"success": False, "elapsed": 0}})
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertEqual(self.pool.get_consecutive_fail_count(target), 1)
+        self.assertEqual(c.pending_retries(), [target])
+        self.assertNotIn(target, c.upstream_proxies())  # 仍未进上游（按容量截断）
+
+    def test_over_capacity_member_retry_probe_not_aborted(self):
+        """超容成员在补测中不被误判为「已离开队列」而中止"""
+        target = self.members[-1]
+        spec = {target: {"success": False, "elapsed": 0}}
+        c, _, _ = self._make(spec)
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertIn(target, c.pending_retries())
+        spec[target] = {"success": True, "elapsed": 0.2}  # 补测转为成功
+        asyncio.run(c.retry_probe(target, "http://probe.local", timeout=3))
+        self.assertEqual(self.pool.get_consecutive_fail_count(target), 0)
+        self.assertEqual(self.pool.get_latency(target), 0.2)
+
+    def test_over_capacity_member_can_reenter_upstream(self):
+        """超容成员探测成功后按 latency 重新参与上游排序（不再恒被截断）"""
+        slow = {self.members[i]: {"success": True, "elapsed": 2.0} for i in range(3)}
+        fast = {self.members[i]: {"success": True, "elapsed": 0.1} for i in range(3, self.MEMBER_COUNT)}
+        c, _, _ = self._make({**slow, **fast})
+        self.assertNotIn(self.members[3], c.upstream_proxies())
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertIn(self.members[3], c.upstream_proxies())
+        self.assertIn(self.members[4], c.upstream_proxies())
+
+    def test_over_capacity_pinned_member_probed_but_kept(self):
+        """超出 capacity 的固定成员同样被探测；失败只计数，不补测不移出"""
+        for p in self.members:
+            self.pool.pin(p)
+        target = self.members[-1]
+        c, _, seen = self._make({target: {"success": False, "elapsed": 0}})
+        asyncio.run(c.heartbeat("http://probe.local", timeout=3, concurrency=2))
+        self.assertIn(target, seen[0])
+        self.assertEqual(self.pool.get_consecutive_fail_count(target), 1)
+        self.assertEqual(c.pending_retries(), [])
+        self.assertIn(target, c.standby_members())
+
+    def test_fill_skips_when_members_exceed_capacity(self):
+        """成员数 > capacity 时缺口按成员数算，fill 不补入"""
+        self.pool.add_to_group("default-http", "http://10.0.0.9:8080")
+        c, _, _ = self._make({"http://10.0.0.9:8080": {"success": True, "elapsed": 0.1}})
+        added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=1,
+                                   capacity=self.CAPACITY))
+        self.assertEqual(added, 0)
+        self.assertNotIn("http://10.0.0.9:8080", self.pool.get_group_proxies(STANDBY_GROUP))
 
 
 if __name__ == "__main__":

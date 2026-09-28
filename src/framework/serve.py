@@ -14,6 +14,7 @@ import asyncio
 import logging
 import signal
 import time
+from typing import Callable
 
 from src.framework import config
 from src.framework.loop import run_coro
@@ -27,6 +28,23 @@ logger = logging.getLogger(__name__)
 # 锁定单一上游时心跳放宽到 heartbeat_lock_interval 但采样保持此频率——否则
 # 正被使用的锁定代理流量图会跟着变稀疏（见 traffic_sample_loop）
 TRAFFIC_SAMPLE_INTERVAL = 2.0
+
+
+def sync_retry_tasks(
+    retry_tasks: dict[str, asyncio.Task],
+    pending: list[str],
+    start: Callable[[str], asyncio.Task],
+) -> None:
+    """把补测任务表与待补测集合对齐：先回收已结束的任务，再为新增的待补测代理起任务
+
+    两步顺序不可颠倒：已结束但尚未回收的任务会占住 key，使同一代理本轮的新补测
+    不被启动，白等一轮到下次心跳才补上。
+    """
+    for p in [p for p, t in retry_tasks.items() if t.done()]:
+        del retry_tasks[p]
+    for p in pending:
+        if p not in retry_tasks:
+            retry_tasks[p] = start(p)
 
 
 async def _run(
@@ -47,7 +65,7 @@ async def _run(
     server = PproxyServer(listen_uri=listen_uri(host, port, config.SERVER_LISTEN_PROTOCOLS),
                           metrics_window=config.METRICS_WINDOW)
     standby = c.standby
-    standby.set_capacity(capacity)  # 队列容量：standby_proxies 截断超出容量的固定代理
+    standby.set_capacity(capacity)  # 队列容量：standby_proxies 按容量截断进上游的候选（超出者仍受心跳探测）
     # 调度参数集中持有：serve 各环节每轮读取，Web 面板可在运行时调整（写同一实例）
     control = ServeControl(
         interval=interval,
@@ -94,7 +112,7 @@ async def _run(
         on_change 回调让 fill 流式入队时每个代理入队即同步 pproxy 上游（含存活标记），
         探测成功的代理立即可用，不必等整批探测完成。
         """
-        if len(standby.standby_proxies()) < capacity:
+        if len(standby.standby_members()) < capacity:
             await standby.fill(control.allowed_types, control.probe_url, control.timeout,
                                control.concurrency, capacity, on_change=sync_upstream)
         sync_and_save()
@@ -141,6 +159,10 @@ async def _run(
         finally:
             sync_and_save_now()
 
+    def start_retry(p: str) -> asyncio.Task:
+        """启动单个待补测代理的复核任务（任务表由 sync_retry_tasks 维护）"""
+        return asyncio.create_task(retry_with_sync(p))
+
     async def heartbeat_loop():
         """周期心跳：轮次绝不重叠，间隔至少 interval
 
@@ -161,18 +183,11 @@ async def _run(
             try:
                 # 轮次前后各补一次缺口（心跳可能淘汰队列成员腾出缺口）
                 await fill_if_needed()
-                # 有上游代理才心跳：锁定时为锁定代理（测速），否则为代理服务队列成员
-                if standby.upstream_proxies():
-                    await standby.heartbeat(control.probe_url, control.timeout, control.concurrency)
+                # 心跳：无探测对象时内部直接返回（仍会回收延时历史 key）
+                await standby.heartbeat(control.probe_url, control.timeout, control.concurrency)
                 await fill_if_needed()
-                # 为失败后进入退避补测的代理启动独立复核任务（已启动的跳过），
-                # 复核成功恢复 / 达到阈值拉黑，期间不占心跳轮次。
-                for p in standby.pending_retries():
-                    if p not in retry_tasks:
-                        retry_tasks[p] = asyncio.create_task(retry_with_sync(p))
-                for p in list(retry_tasks):
-                    if retry_tasks[p].done():
-                        del retry_tasks[p]
+                # 为失败后进入退避补测的代理启动独立复核任务（不占心跳轮次）
+                sync_retry_tasks(retry_tasks, standby.pending_retries(), start_retry)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

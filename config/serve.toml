@@ -7,7 +7,10 @@ port = 8082                       # 监听端口
 # 取值限于 pproxy 的入站协议（http/socks4/socks5）；https（TLS 监听）需证书配置，未启用。
 listen_protocols = ["http", "socks4", "socks5"]
 standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（pproxy 上游，由心跳探测维护）
-standby_queue_capacity = 30       # 代理服务队列容量上限（serve 探测补入）
+# 代理服务队列容量上限，同时约束「进 pproxy 上游的数量」与「serve 自动补入的缺口」。
+# 它不约束队列成员数：手动添加 / autoload 使成员数超出容量时，超出者不进上游，但仍受
+# 心跳探测与淘汰（否则它们既不参与上游也不被探测，会成为永久滞留的成员）。
+standby_queue_capacity = 30
 
 # 代理服务队列填充候选数公式：缺口 × standby_fill_probe_multiplier，且至少 缺口 + standby_fill_probe_min_extra。
 standby_fill_probe_multiplier = 2

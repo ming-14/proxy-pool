@@ -29,7 +29,7 @@ from typing import Any
 from src.domain.models import is_supported_proxy, normalize_proxy
 
 # 内建锁定组（不在配置文件，ProxyPool.__init__ 自动创建，ttl=never 永不过期）。
-# serve lock 时代理 move 到该组，standby_proxies 只返回该组代理作为 pproxy 唯一上游；
+# serve lock 时代理 move 到该组，upstream_proxies 只返回该组代理作为 pproxy 唯一上游；
 # unlock 时代理 move 回代理服务队列。对前端/组列表隐藏。
 LOCKED_GROUP = "_proxy-pool-locked"
 
