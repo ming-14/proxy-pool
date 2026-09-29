@@ -1,5 +1,7 @@
 # 代理源与拉取调度（加载器见 src/framework/config.py）
 # 说明：sources 中 pause_ttl 省略表示不主动暂停该源（仅去重率过高时暂停）
+# github_lists 为 GitHub 静态列表源，镜像前缀取环境变量 GITHUB_LISTS_MIRROR
+# （未设置或为空 = 直连；raw.githubusercontent.com 在部分网络直连被 SSL 中断，此时在 config/.env 配镜像）
 
 # ---------------------------------------------------------------- 拉取调度
 [fetch]
@@ -51,6 +53,14 @@ name = "src.interfaces.sources.freeproxy_world"
 group = "freeproxy-world"
 enabled = true
 pause_ttl = 1800000
+group_by_protocol = true
+
+# GitHub 静态列表：8 条列表合并为一个源，条目自带 scheme 或按列表协议补全
+[[sources]]
+name = "src.interfaces.sources.github_lists"
+group = "github"
+enabled = true
+pause_ttl = 86400
 group_by_protocol = true
 
 # ---------------------------------------------------------------- 入池筛选规则

@@ -18,6 +18,8 @@ Web 控制面板支持 Windows 资源管理器式代理列表框选/多选（蓝
 
 IP 纯净度检查与代理配置见 `config/ippure.toml`：检查源为插件（`src/interfaces/ippure/`，内置 ipok 与 AbuseIPDB），新增源只需加一个模块并在配置里声明；密钥统一放在 `config/.env`（加载时注入环境变量，不入 TOML）。
 
+代理源清单与拉取调度见 `config/sources.toml`。其中 `github_lists` 源把多个仓库的静态列表合并为一个源（按各列表协议补 scheme，由 `group_by_protocol` 分拣入 `github-http` / `github-https` / `github-socks5` 三组）；`raw.githubusercontent.com` 直连在部分网络被中断，其镜像前缀取环境变量 `GITHUB_LISTS_MIRROR`（未设置或为空即直连，代码不含任何镜像地址）——需要时在 `config/.env` 里配。
+
 ## 安装
 
 ```bash

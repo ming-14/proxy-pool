@@ -183,10 +183,10 @@ class TestGroupSummary(unittest.TestCase):
         self.assertEqual(summary["default-http"]["alive"], 3)
         self.assertEqual(summary["trusted"]["ttl"], None)
         self.assertEqual(summary["trusted"]["invalid"], 1)
-        # 组顺序：配置 PROXY_GROUPS 在前
+        # 组顺序：配置 PROXY_GROUPS 在前，缓存中的额外组追加在后（不硬编码下标，随 [groups] 变更）
         groups = [s["group"] for s in build_group_summary(SAMPLE, build_proxy_rows(SAMPLE, now=NOW))]
-        self.assertEqual(groups[7], "trusted")
-        self.assertEqual(groups[8], "blacklist")
+        extra = [g for g in SAMPLE["proxy_groups"] if g not in config.PROXY_GROUPS]
+        self.assertEqual(groups, [*config.PROXY_GROUPS, *extra])
 
 
 class TestSourceRows(unittest.TestCase):

@@ -272,5 +272,115 @@ class TestProxyScdnFetcher(unittest.TestCase):
         self.assertEqual(fetcher.base_url, "http://custom.api/proxy")
 
 
+class TestGithubListsFetcher(unittest.TestCase):
+    """GitHub 静态列表源：多列表拉取、按列表协议补 scheme、镜像前缀"""
+
+    LIST_HTTP = ("https://raw.example/http.txt", "http")
+    LIST_SOCKS = ("https://raw.example/socks5.txt", "socks5")
+
+    def setUp(self):
+        import importlib
+        self._mod = importlib.import_module("src.interfaces.sources.github_lists")
+        self.Fetcher = self._mod.GithubListsFetcher
+
+    @staticmethod
+    def _resp(text):
+        mock = MagicMock()
+        mock.text = text
+        mock.raise_for_status = MagicMock()
+        return mock
+
+    def test_bare_entries_get_list_protocol(self):
+        def fake(url, **kw):
+            return self._resp("1.2.3.4:8080\n" if url.endswith("http.txt") else "5.6.7.8:1080\n")
+        with patch("src.interfaces.http_client.get", side_effect=fake):
+            proxies = self.Fetcher(lists=(self.LIST_HTTP, self.LIST_SOCKS), mirror="").fetch_proxies()
+        self.assertIn("http://1.2.3.4:8080", proxies)
+        self.assertIn("socks5://5.6.7.8:1080", proxies)
+
+    def test_entry_scheme_wins_over_list_protocol(self):
+        """条目自带 scheme 时以条目为准（proxifly 的 https 列表即此形态）"""
+        with patch("src.interfaces.http_client.get", return_value=self._resp("https://1.2.3.4:9002\n")):
+            proxies = self.Fetcher(lists=(self.LIST_HTTP,), mirror="").fetch_proxies()
+        self.assertEqual(proxies, ["https://1.2.3.4:9002"])
+
+    def test_invalid_lines_dropped(self):
+        text = "Proxy List\n\n# comment\n1.2.3.4:8080\nnot-a-proxy\n1.2.3.4\ngarbage:port\n"
+        with patch("src.interfaces.http_client.get", return_value=self._resp(text)):
+            proxies = self.Fetcher(lists=(self.LIST_HTTP,), mirror="").fetch_proxies()
+        self.assertEqual(proxies, ["http://1.2.3.4:8080"])
+
+    def test_unsupported_scheme_dropped(self):
+        with patch("src.interfaces.http_client.get",
+                   return_value=self._resp("socks4://1.2.3.4:1080\n1.2.3.4:8080\n")):
+            proxies = self.Fetcher(lists=(self.LIST_HTTP,), mirror="").fetch_proxies()
+        self.assertEqual(proxies, ["http://1.2.3.4:8080"])
+
+    def test_one_list_failure_keeps_others(self):
+        def fake(url, **kw):
+            if url.endswith("http.txt"):
+                raise Exception("boom")
+            return self._resp("5.6.7.8:1080\n")
+        with patch("src.interfaces.http_client.get", side_effect=fake):
+            proxies = self.Fetcher(lists=(self.LIST_HTTP, self.LIST_SOCKS), mirror="", retries=1).fetch_proxies()
+        self.assertEqual(proxies, ["socks5://5.6.7.8:1080"])
+
+    def test_cross_list_dedup(self):
+        lists = (("https://raw.example/a.txt", "http"), ("https://raw.example/b.txt", "http"))
+        with patch("src.interfaces.http_client.get", return_value=self._resp("1.2.3.4:8080\n")):
+            proxies = self.Fetcher(lists=lists, mirror="").fetch_proxies()
+        self.assertEqual(proxies, ["http://1.2.3.4:8080"])
+
+    def test_mirror_prefix_applied(self):
+        seen = []
+
+        def fake(url, **kw):
+            seen.append(url)
+            return self._resp("1.2.3.4:8080\n")
+        with patch("src.interfaces.http_client.get", side_effect=fake):
+            self.Fetcher(lists=(self.LIST_HTTP,), mirror="https://mirror.example/").fetch_proxies()
+        self.assertEqual(seen[0], "https://mirror.example/https://raw.example/http.txt")
+
+    def test_mirror_from_env(self):
+        seen = []
+
+        def fake(url, **kw):
+            seen.append(url)
+            return self._resp("1.2.3.4:8080\n")
+        with patch.dict(os.environ, {self._mod.MIRROR_ENV: "http://env-mirror/"}):
+            with patch("src.interfaces.http_client.get", side_effect=fake):
+                self.Fetcher(lists=(self.LIST_HTTP,)).fetch_proxies()
+        self.assertTrue(seen[0].startswith("http://env-mirror/"))
+
+    def test_empty_list_retries_then_succeeds(self):
+        calls = []
+
+        def fake(url, **kw):
+            calls.append(url)
+            return self._resp("") if len(calls) == 1 else self._resp("1.2.3.4:8080\n")
+        with patch("src.interfaces.http_client.get", side_effect=fake):
+            proxies = self.Fetcher(lists=(self.LIST_HTTP,), mirror="", retries=2).fetch_proxies()
+        self.assertEqual(proxies, ["http://1.2.3.4:8080"])
+        self.assertEqual(len(calls), 2)
+
+    def test_parse_line(self):
+        parse = self._mod.parse_line
+        self.assertEqual(parse("1.2.3.4:8080", "http"), "http://1.2.3.4:8080")
+        self.assertEqual(parse("socks5://1.2.3.4:1080", "http"), "socks5://1.2.3.4:1080")
+        self.assertEqual(parse(" 1.2.3.4:8080 ", "http"), "http://1.2.3.4:8080")
+        self.assertEqual(parse("[::1]:1080", "socks5"), "socks5://[::1]:1080")
+        self.assertIsNone(parse("", "http"))
+        self.assertIsNone(parse("# comment", "http"))
+        self.assertIsNone(parse("1.2.3.4", "http"))
+
+    def test_default_lists_cover_all_protocols(self):
+        """默认列表须覆盖三种协议，否则对应分组永远为空"""
+        self.assertEqual({p for _, p in self._mod.LISTS}, {"http", "https", "socks5"})
+
+    def test_create_source(self):
+        source = self._mod.create_source()
+        self.assertTrue(callable(source.fetch_proxies))
+
+
 if __name__ == "__main__":
     unittest.main()

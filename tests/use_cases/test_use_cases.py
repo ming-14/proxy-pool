@@ -365,8 +365,12 @@ class TestFetchProxiesUseCase(unittest.TestCase):
             self.pool.add_to_group("trusted", f"http://{i}.0.0.0:8080")
         with patch("src.interfaces.http_client.get", return_value=mock_proxy_response([f"http://{i}.0.0.0:8080" for i in range(100)])):
             make_fetch(self.pool).execute()
-        dedup_paused = [s for s in self.pool.source_paused if self.pool.source_paused[s].get("ttl") != SOURCES[4]["pause_ttl"]]
-        self.assertEqual(len(dedup_paused), 0)
+        # 暂停表里只应有「配置了主动 pause_ttl」的源：去重率未超阈值，不得产生额外暂停
+        active_pause = {s["name"]: s["pause_ttl"] for s in SOURCES if s["pause_ttl"] is not None}
+        self.assertTrue(active_pause)
+        for source, info in self.pool.source_paused.items():
+            self.assertIn(source, active_pause)
+            self.assertEqual(info["ttl"], active_pause[source])
 
     def test_fetch_proxies_skips_paused_source(self):
         self.pool.pause_source(SCDN_SOURCE)

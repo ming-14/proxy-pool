@@ -55,7 +55,8 @@ proxy-pool/
 │   │       ├── goodips.py         # Goodips 源（JSON 接口）
 │   │       ├── proxy_scdn.py      # ProxyScdn 源（JSON 接口）
 │   │       ├── geonode.py         # Geonode 源（JSON 分页接口）
-│   │       └── freeproxy_world.py # FreeProxy.World 源（多阶段爬取，异步实现）
+│   │       ├── freeproxy_world.py # FreeProxy.World 源（多阶段爬取，异步实现）
+│   │       └── github_lists.py    # GitHub 静态列表源（多仓库列表合并，镜像前缀经 GITHUB_LISTS_MIRROR）
 │   └── framework/                 # 框架与驱动层：具体技术实现
 │       ├── __init__.py
 │       ├── config.py              # 配置加载（config/ 领域拆分多文件，固定节归属）

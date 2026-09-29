@@ -18,6 +18,9 @@ requestable_groups = [
     "freeproxy-world-http",
     "freeproxy-world-https",
     "freeproxy-world-socks5",
+    "github-http",
+    "github-https",
+    "github-socks5",
     "Proxy-pool-standby-queue",
     "trusted",
 ]
@@ -32,6 +35,9 @@ requestable_groups = [
 "freeproxy-world-http" = { ttl = 1800000 }     # FreeProxy.World 的 HTTP 代理
 "freeproxy-world-https" = { ttl = 1800000 }    # FreeProxy.World 的 HTTPS 代理
 "freeproxy-world-socks5" = { ttl = 1800000 }   # FreeProxy.World 的 SOCKS5 代理
+"github-http" = { ttl = "never" }            # GitHub 静态列表的 HTTP 代理，永不过期
+"github-https" = { ttl = "never" }           # GitHub 静态列表的 HTTPS 代理，永不过期
+"github-socks5" = { ttl = "never" }          # GitHub 静态列表的 SOCKS5 代理，永不过期
 "Proxy-pool-standby-queue" = { ttl = "never" }   # serve 代理服务队列（pproxy 上游），由心跳探测维护
 "trusted" = { ttl = "never" }   # 成功使用过的代理，永不过期
 "blacklist" = { ttl = 10800 }                # 失败过多的代理，3 小时后过期可重新入池

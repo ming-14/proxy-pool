@@ -33,7 +33,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   └── sources/                       # 代理源测试
 │       ├── __init__.py
 │       ├── test_freeproxy_world.py    # FPW 多阶段爬取（mock 页面/轮转/限流）
-│       └── test_proxy_fetchers.py     # 四 API 源解析
+│       └── test_proxy_fetchers.py     # 四 API 源解析 + GitHub 静态列表源（多列表合并/协议补全/镜像前缀/单列表失败隔离）
 ├── framework/                         # 框架层测试
 │   ├── __init__.py
 │   ├── test_cli.py                    # argparse 全命令 + setup_logging(debug) 透传

@@ -26,6 +26,9 @@ standby_fill_groups = [
     "default-http",
     "default-https",
     "default-socks5",
+    "github-http",
+    "github-https",
+    "github-socks5",
 ]
 heartbeat_interval = 2            # 心跳间隔秒：定时探测代理服务队列内代理
 heartbeat_lock_interval = 30      # 锁定单一上游时的心跳间隔秒（锁定时代理不淘汰不拉黑，仅测速展示，降低探测频率）

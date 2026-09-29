@@ -34,22 +34,23 @@
    │ consecutive_fails >= 阈值       │
    ▼                    │
 blacklist 黑名单 ◀───────┘
-（10800s 过期后自动解除，可重新入池）
+（ttl 到期后自动解除，可重新入池）
 ```
 
 一条代理的状态机：**普通组 →（请求成功）→ trusted →（连续失败超阈值）→ blacklist →（黑名单过期）→ 可重新被拉取入池**。
 
 ### 2. 分组与 TTL
 
-`PROXY_GROUPS`（见 `config/pool.toml` 的 `[groups]`，组语义由配置决定，代码不硬编码组名）：
+`PROXY_GROUPS`（见 `config/pool.toml` 的 `[groups]`，组名/语义/TTL 全部由配置决定，代码不硬编码组名，此处不重抄配置值）：
 
-| 组 | TTL | 说明 |
-|---|---|---|
-| `default-http` / `default-https` / `default-socks5` | 3600s | API 源的 HTTP/HTTPS/SOCKS5 代理 |
-| `freeproxy-world-http` / `-https` / `-socks5` | 18000s | FreeProxy.World 三类代理，5 小时（与该源暂停时长一致） |
-| `Proxy-pool-standby-queue` | 永不过期 | serve 代理服务队列（pproxy 上游），由心跳探测维护 |
-| `trusted` | 永不过期 | 成功使用过的代理 |
-| `blacklist` | 10800s | 失败过多的代理，3 小时后过期可重新入池 |
+| 组 | 说明 |
+|---|---|
+| `default-http` / `default-https` / `default-socks5` | API 源的 HTTP/HTTPS/SOCKS5 代理 |
+| `freeproxy-world-http` / `-https` / `-socks5` | FreeProxy.World 三类代理 |
+| `github-http` / `-https` / `-socks5` | GitHub 静态列表的 HTTP/HTTPS/SOCKS5 代理 |
+| `Proxy-pool-standby-queue` | serve 代理服务队列（pproxy 上游），由心跳探测维护 |
+| `trusted` | 请求成功晋级的代理 |
+| `blacklist` | 失败淘汰代理的归属，不可请求 |
 
 TTL 规则：代理入组时记录 `joined_at`，`now - joined_at >= ttl` 即过期；`ttl=None` 永不过期。过期条目在 `_cleanup_all_expired()` 统一清理（`get_available_proxies` / `export_state` 时会触发），`find_proxy` 遇到过期代理也即时删除。
 
@@ -59,16 +60,16 @@ TTL 规则：代理入组时记录 `joined_at`，`now - joined_at >= ttl` 即过
 
 - 每次代理请求失败：该代理 `consecutive_fails += 1`（`RecordProxyUseCase.record_fail`）；成功：`consecutive_fails` 清零（`record_success`）。
 - 淘汰规则（`ProxyPool.get_available_proxies`）：
-  - 普通组：`consecutive_fails >= MAX_CONSECUTIVE_FAILS`（2）不再参与可用集合；
-  - `trusted` 组：`consecutive_fails >= TRUSTED_MAX_CONSECUTIVE_FAILS`（3）不再参与（容错更高）；
+  - 普通组：`consecutive_fails >= MAX_CONSECUTIVE_FAILS` 不再参与可用集合；
+  - `trusted` 组：`consecutive_fails >= TRUSTED_MAX_CONSECUTIVE_FAILS` 不再参与（容错更高）；
   - 所有组：超过 TTL 自动移除。
 - `RequestWithRetryUseCase` 中，连续失败次数达到所在组阈值（`should_blacklist`：trusted 组 `TRUSTED_MAX_CONSECUTIVE_FAILS`、其余组 `MAX_CONSECUTIVE_FAILS`）即拉黑（移入 blacklist 组，连续失败计数清零）。
 - 黑名单过期后可被拉取用例重新发现并入池。
 
 ### 4. 源暂停机制
 
-- **主动暂停**：`SOURCES` 中配置 `pause_ttl` 的源，每次拉取完成后强制暂停（freeproxy-world 多阶段爬取较重，拉完统一暂停 5 小时 / 18000s）。
-- **被动暂停**：拉取后计算该源的去重率 `known / total`（known = 已在 trusted 或 blacklist 的代理数），超过 `SOURCE_DEDUP_THRESHOLD`（0.92）即暂停 `SOURCE_PAUSE_TTL`（1200s）。
+- **主动暂停**：`SOURCES` 中配置 `pause_ttl` 的源，每次拉取完成后强制暂停（多阶段爬取较重的源靠它避免高频重复拉取，时长见 `config/sources.toml`）。
+- **被动暂停**：拉取后计算该源的去重率 `known / total`（known = 已在 trusted 或 blacklist 的代理数），超过 `SOURCE_DEDUP_THRESHOLD` 即暂停 `SOURCE_PAUSE_TTL`（两个阈值见 `config/sources.toml` 的 `[fetch]`）。
 - `source_pause_remaining(name)` 一次给出「是否暂停」（返回值非 None）与剩余秒数（未暂停或过期返回 None，过期时自动解除并移除记录）——不做第二次判定重算；手动恢复与过期自动解除都走 `resume_source()`（移除记录与置脏同处发生，漏置脏则增量保存跳过该表、DB 残留已解除的暂停行）。暂停状态持久化于 `source_paused`；`/api/source/pause|resume` 的源名必须在 `config.SOURCES` 内（否则 400——幽灵暂停记录会在快照里永不显示、UI 也解不掉）。
 
 ### 5. 拉取流程（FetchProxiesUseCase）
@@ -202,6 +203,7 @@ for attempt in range(max_retries):
 | `sources/proxy_scdn.py` | ProxyScdn，JSON 接口 `code==200` 时 `data.proxies` 为代理列表 |
 | `sources/geonode.py` | Geonode，JSON 分页接口（每页 limit 条），逐页拉取直到空页 / 不足一页 / 达到总数；只保留 `protocols` 含 http 的代理 |
 | `sources/freeproxy_world.py` | 见下（多阶段爬取） |
+| `sources/github_lists.py` | 见下（GitHub 静态列表，5 仓库 8 条列表合并） |
 
 ### FreeProxy.World 多阶段爬取
 
@@ -217,6 +219,16 @@ for attempt in range(max_retries):
 - 走代理时用 requests（HTTPS 代理需 TLS 到代理）；直连用 `http_client`；
 - 并发/限流/超时/请求头参数：`FPW_MAX_CONCURRENT=16`、`FPW_PROXY_RETRY=1`、`FPW_TASK_INTERVAL=2`、`FPW_REQUEST_TIMEOUT=15`、`FPW_ACCEPT_LANGUAGE="en-US,en;q=0.9"`，均由 `config/sources.toml` 的 `[fetch.freeproxy_world]` 注入；
 - 该源产出的**端口 80 代理是 Cloudflare 假代理**（CONNECT 400），由 `[[fetch_filter]]` 的 `:80$` 规则命中后入黑名单。
+
+### GitHub 静态列表（github_lists）
+
+把各仓库的纯文本列表合并为**一个源**（proxifly 的 socks5 列表与 hookzof 同源同内容，只保留后者避免重复下载）：
+
+1. 逐条列表拉取（每条重试到非空，单条失败只记日志并跳过，不影响其它列表）；
+2. 按行解析：**条目自带 scheme 优先**（proxifly 自带 `http://` / `https://` / `socks5://`），裸 `ip:port` 按所在列表的协议补全（clarketm 的列表无协议字段，按 http 处理）；格式非法的行（表头、注释、无端口、不受支持的 scheme）直接丢弃；
+3. 跨列表去重后合并返回，由拉取用例按 scheme 分拣入 `github-http` / `github-https` / `github-socks5`。
+
+`raw.githubusercontent.com` 直连在部分网络被 SSL 中断，镜像前缀取环境变量 `GITHUB_LISTS_MIRROR`（未设置或为空即直连，代码不内嵌任何镜像地址）——用环境变量而非新增配置节，便于本机配镜像而 CI（GitHub 出口）保持直连。源的暂停时长与承载组的 TTL 见 `config/sources.toml` 与 `config/pool.toml`。
 
 ### 源启用/禁用
 
@@ -272,7 +284,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 
 - `config.toml`：`[paths]` 路径 + `[web]` 面板开关/端口
 - `pool.toml`：`[pool]` 阈值/语义组/可请求组 + `[groups]` 分组定义
-- `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]` + `[[fetch_filter]]` 入池筛选规则
+- `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]` + `[[fetch_filter]]` 入池筛选规则（`github_lists` 源的镜像前缀走环境变量 `GITHUB_LISTS_MIRROR`，未设置即直连）
 - `serve.toml`：`[server]` 端口/队列/心跳/链路门控/metrics/代理类型
 - `panel.toml`：`[geoip]` 归属地图
 - `ippure.toml`：`[ippure]` 纯净度开关/超时/缓存 TTL + `[[plugins]]` 检查源插件模块路径 + `[[proxy_rules]]` 声明式代理规则 + 插件自声明配置节（节名 = 插件 `SOURCE.name`，如 `[abuseipdb]` / `[ipok]`）
