@@ -116,12 +116,13 @@ def test_follow_mode_sticks_to_bottom(probe):
     """跟随模式：始终贴底，且 DOM 行数远小于条目数（虚拟化生效）"""
     p, errors = probe
     p.fill(500)
+    p.wait_follow()
     assert p.state()["follow"] is True, "默认应处于跟随态"
 
     for _ in range(10):
         p.push(50)
         p.wait(120)
-    p.wait(600)
+    p.wait_follow()
     assert p.state()["follow"] is True, "持续追加日志后应仍处于跟随态"
 
     p.wait_at_bottom()

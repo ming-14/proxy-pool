@@ -125,8 +125,8 @@ def test_detent_toggle_keeps_follow_at_bottom(probe_mobile):
     """按钮点按与标题栏点按都能切档，切档后仍贴底且无空白"""
     p, errors = probe_mobile
     p.fill(600)
-    p.wait(400)
     assert p.detent() == "half", "初始应为半屏档"
+    p.wait_follow()  # 跟随态由测高/贴底管线异步维护，等它稳定再切档
     assert p.state()["follow"] is True, "前置条件：应处于跟随态"
 
     p.click_detent()

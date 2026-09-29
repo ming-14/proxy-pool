@@ -92,6 +92,16 @@ class Probe:
             f"() => window.__probe.state().distanceFromEnd <= {GAP_TOL}", timeout=timeout_ms
         )
 
+    def wait_follow(self, timeout_ms: int = 4000) -> None:
+        """等跟随态收敛：跟随同样由测高/贴底管线异步维护，机器繁忙时需要多帧
+
+        跟随被误判成用户上滚而永久关闭时（贴底不再进行、也没有新的滚动事件把它恢复）
+        会超时失败——等待不掩盖该缺陷，只豁免收敛过程中的中间态。
+        """
+        self.page.wait_for_function(
+            "() => window.__probe.state().follow === true", timeout=timeout_ms
+        )
+
     def scroll_to(self, offset: int) -> None:
         self.run("(v) => window.__probe.scrollTo(v)", offset)
 

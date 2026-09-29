@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 import requests
-from playwright.sync_api import Locator, Page
+from playwright.sync_api import Locator, Page, expect
 
 from tests.e2e.web.conftest import BASE_URL, api_status
 
@@ -706,8 +706,9 @@ class TestSources:
         page.route("**/api/status", _stub)
         page.reload()
         full = page.locator('[data-testid="src-fetch"]')
-        page.wait_for_function(
-            "() => document.querySelector('[data-testid=src-fetch]').disabled", timeout=10000)
+        # 自动重试断言：reload 后 SPA 未挂载时元素还不存在，直接在谓词里读 .disabled 会抛
+        # TypeError（而非返回假值），等待被中断
+        expect(full).to_be_disabled(timeout=10000)
         assert "处理中" in full.inner_text()
         row_btn = page.locator('button[data-action="fetch"]').first
         row_btn.wait_for(timeout=8000)
@@ -725,8 +726,7 @@ class TestSources:
         toast.wait_for(timeout=8000)
         assert "拉取失败" in toast.locator(".toast-title").inner_text()
         # 失败即释放本地点击态，按钮可再次点击
-        page.wait_for_function(
-            "() => !document.querySelector('[data-testid=src-fetch]').disabled", timeout=8000)
+        expect(page.locator('[data-testid="src-fetch"]')).to_be_enabled(timeout=8000)
 
 
 # ---------------------------------------------------------------- 控制台日志面板
