@@ -36,7 +36,7 @@ const statsText = ref('');
 let chart: EChartsType | null = null;
 let geoData: GeoMapData | null = null;
 let lastRefresh = 0;
-let resizeHandler: (() => void) | null = null;
+let ro: ResizeObserver | null = null;
 
 function loadWorldMap(): Promise<void> {
   if (!mapPromise) {
@@ -174,20 +174,28 @@ async function refresh(force = false) {
   }
 }
 
+// 状态心跳（2s）驱动节流刷新（与旧版 dashboard onStatus→refresh 等价）；主题变化重绘配色。
+// **必须在 setup 顶层注册**：放在 onMounted 的 await 之后会脱离组件 effect scope，
+// 卸载时不被清理——依赖的是 Pinia 单例 store（永不销毁），watcher 及其闭包里的
+// lastRefresh 会跟着泄漏，进出仪表盘 N 次就等于 N 个常驻 watcher 各发一份 /api/geo/map。
+// （onMounted 内同步调用 watch 仍能正确绑定作用域，触发条件是 await 之后的注册。）
+watch(() => statusStore.status, () => void refresh());
+watch(() => themeStore.theme, () => renderMap());
+
 onMounted(async () => {
   chart = echarts.init(el.value!);
+  // ResizeObserver 紧跟 init 同步建立：不用 window resize 监听——它若写在下面的
+  // await 之后，卸载发生在 await 期间时 listener 会被登记而清理钩子拿不到 handler
+  // （handler 尚未创建），于是残留。RO 在同步阶段建立，必然能被 disconnect 回收。
+  ro = new ResizeObserver(() => chart?.resize());
+  ro.observe(el.value!);
   if (geoData) renderMap();
   await refresh(true);
-  resizeHandler = () => chart?.resize();
-  window.addEventListener('resize', resizeHandler);
-  // 状态心跳（2s）驱动节流刷新（与旧版 dashboard onStatus→refresh 等价）；
-  // 主题变化重绘配色。setup 作用域内 watch 随组件卸载自动停止。
-  watch(() => statusStore.status, () => refresh());
-  watch(() => themeStore.theme, () => renderMap());
 });
 
 onBeforeUnmount(() => {
-  if (resizeHandler) window.removeEventListener('resize', resizeHandler);
+  ro?.disconnect();
+  ro = null;
   chart?.dispose();
   chart = null;
 });

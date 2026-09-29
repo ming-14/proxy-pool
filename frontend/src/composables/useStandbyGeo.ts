@@ -16,7 +16,7 @@ export const standbyGeo = reactive(new Map<string, GeoInfo>());
 let lastFetch = 0;
 
 /** 节流刷新归属地（首次调用立即拉取；失败重置节流窗口，下一拍重试） */
-export async function refreshStandbyGeo(enabled: boolean): Promise<void> {
+export async function refreshStandbyGeo(enabled: boolean, binds: string[]): Promise<void> {
   if (!enabled) return;
   const now = Date.now();
   if (now - lastFetch < GEO_REFRESH_MS) return;
@@ -26,9 +26,27 @@ export async function refreshStandbyGeo(enabled: boolean): Promise<void> {
     for (const [bind, geo] of Object.entries(data.geo)) {
       if (geo) standbyGeo.set(bind, geo);
     }
+    // 只在保留集非空时清理：本函数有 5 分钟节流，误清一次就要空窗到下一拍才恢复。
+    // 进入页面首帧必然带空 binds（displayStandby 尚未填充），若照常清理会清空整个
+    // 归属地缓存，此后 5 分钟内所有行的归属地列都是空的。
+    if (binds.length) pruneStandbyGeo(binds);
   } catch (err) {
     lastFetch = 0;
     console.warn('standby geo refresh failed', err);
+  }
+}
+
+/**
+ * 丢弃已离队代理的归属地。
+ *
+ * 归属地按 bind 累积，代理离队后条目永不再命中，不清理会随驻留时长无界增长
+ * （与 useStandbySeries 的 pruneBuffers 同一口径：由页面按当前队列传入保留集）。
+ * 须由调用方保证 binds 非空——空集代表"队列暂无数据"，不等于"代理都已离队"。
+ */
+export function pruneStandbyGeo(binds: string[]): void {
+  const keep = new Set(binds);
+  for (const bind of standbyGeo.keys()) {
+    if (!keep.has(bind)) standbyGeo.delete(bind);
   }
 }
 

@@ -14,7 +14,7 @@
  */
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
-import { api, ApiError } from '@/api/client';
+import { api, errText } from '@/api/client';
 import type { StandbyHistoryPoint, StatusHistory, StatusSnapshot, TrafficHistoryPoint } from '@/types/api';
 import { useToastStore } from '@/stores/toast';
 
@@ -59,6 +59,16 @@ export const useStatusStore = defineStore('status', () => {
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let firstLoadDone = false;
+  /** 防重入：上一轮轮询仍在途时跳过本轮，避免请求堆积（后端僵死时每 2s 叠一个） */
+  let inFlight = false;
+  /**
+   * 请求序号：只接受最新一次请求的响应。
+   *
+   * 没有它会出现"旧响应覆盖新数据"——写动作后 refreshNow 拿到最新队列，此时一个
+   * 更早发出的轮询才姗姗返回，把 status 覆写回它出发时的旧快照，界面于是显示
+   * 操作前的状态（toast 说已移动、列表没动）。序号按发出顺序取，晚到的旧响应直接丢弃。
+   */
+  let requestSeq = 0;
 
   const lockedProxy = computed(() => status.value?.locked_proxy ?? null);
 
@@ -79,42 +89,63 @@ export const useStatusStore = defineStore('status', () => {
   }
 
   async function fetchStatus() {
+    const seq = ++requestSeq;
     try {
       const data = await api.status();
+      if (seq !== requestSeq) return; // 已有更新的请求发出，丢弃这份过期快照
       status.value = data;
       connected.value = true;
       await refreshHistory();
     } catch (err) {
+      if (seq !== requestSeq) return;
       connected.value = false;
       if (!firstLoadDone) {
         firstLoadDone = true;
-        useToastStore().error('连接失败', err instanceof ApiError ? err.message : String(err));
+        useToastStore().error('连接失败', errText(err));
       }
     }
     firstLoadDone = true;
   }
 
+  /**
+   * 定时轮询走这里：上一轮仍在途时跳过本轮。
+   *
+   * 只为挡住"请求比轮询间隔还慢"造成的无界堆积（后端僵死时每 2s 叠一个请求）。
+   * 用户触发的补拉（切回前台）与写动作后的 refreshNow 不走这个门——它们要的是
+   * "立刻取一次"，被在途请求挡掉会让行为与预期不符。
+   */
   async function tick() {
     // 页面切后台不发请求（与日志面板同一口径）；切回前台由 visibilitychange 立即补一次，
     // 历史走 since 游标增量，期间的点不会丢
     if (paused.value || document.hidden) return;
-    await fetchStatus();
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      await fetchStatus();
+    } finally {
+      inFlight = false;
+    }
   }
 
-  /** 写动作后的即时刷新：忽略暂停（用户显式操作的结果必须立刻反映，不等下一次轮询） */
+  /**
+   * 写动作后的即时刷新：忽略暂停（用户显式操作的结果必须立刻反映，不等下一次轮询），
+   * 也不受在途轮询影响——调用方依赖它返回后读到的 status 就是最新队列，
+   * 被挡掉会让 toast 与列表对不上。
+   */
   async function refreshNow() {
     await fetchStatus();
   }
 
   function onVisibilityChange() {
-    if (!document.hidden) void tick();
+    // 切回前台立即补一次：这是用户可见的"页面活了"，不走 tick 的防重入门
+    if (!document.hidden) void fetchStatus();
   }
 
   function start() {
     if (timer) return;
     document.addEventListener('visibilitychange', onVisibilityChange);
     timer = setInterval(tick, POLL_INTERVAL_MS);
-    tick();
+    void fetchStatus(); // 首帧立即取数
   }
 
   function stop() {
@@ -125,7 +156,8 @@ export const useStatusStore = defineStore('status', () => {
 
   function togglePause() {
     paused.value = !paused.value;
-    if (!paused.value) tick();
+    // 恢复轮询：立即取一次（仍受页面可见性约束——后台标签页不该被唤醒发请求）
+    if (!paused.value && !document.hidden) void fetchStatus();
   }
 
   return {

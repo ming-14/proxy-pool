@@ -8,7 +8,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import { api } from '@/api/client';
+import { api, errText } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
@@ -69,7 +69,7 @@ watch(
     try {
       detail.value = await api.group(g);
     } catch (e) {
-      loadError.value = e instanceof Error ? e.message : String(e);
+      loadError.value = errText(e);
     } finally {
       loading.value = false;
       await nextTick();
@@ -86,7 +86,7 @@ async function reload() {
   try {
     detail.value = await api.group(g);
   } catch (e) {
-    toast.error('加载失败', e instanceof Error ? e.message : String(e));
+    toast.error('加载失败', errText(e));
   } finally {
     loading.value = false;
   }
@@ -225,7 +225,7 @@ async function doMove(proxies: string[], targetGroup: string) {
     selection.clear();
     reload();
   } catch (e) {
-    toast.error('移动失败', e instanceof Error ? e.message : String(e));
+    toast.error('移动失败', errText(e));
   }
 }
 
@@ -236,7 +236,7 @@ async function doBlacklist(proxies: string[]) {
     selection.clear();
     reload();
   } catch (e) {
-    toast.error('拉黑失败', e instanceof Error ? e.message : String(e));
+    toast.error('拉黑失败', errText(e));
   }
 }
 
@@ -247,7 +247,7 @@ async function doDelete(proxies: string[]) {
     selection.clear();
     reload();
   } catch (e) {
-    toast.error('删除失败', e instanceof Error ? e.message : String(e));
+    toast.error('删除失败', errText(e));
   }
 }
 
@@ -278,7 +278,7 @@ async function doRestore(proxies: string[]) {
     selection.clear();
     reload();
   } catch (e) {
-    toast.error('还原失败', e instanceof Error ? e.message : String(e));
+    toast.error('还原失败', errText(e));
   }
 }
 

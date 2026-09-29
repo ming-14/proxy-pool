@@ -7,7 +7,7 @@
  * 禁用全部拉取按钮。
  */
 import { computed, ref } from 'vue';
-import { api } from '@/api/client';
+import { api, errText } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import type { SourceStat } from '@/types/api';
@@ -41,7 +41,7 @@ async function doFetch() {
     if ('status' in d) toast.info('拉取进行中', '已有拉取任务在跑，请稍候');
     else toast.success('拉取完成', `可用代理 ${d.available}`);
   } catch (e) {
-    toast.error('拉取失败', e instanceof Error ? e.message : String(e));
+    toast.error('拉取失败', errText(e));
   } finally {
     pendingAll.value = false;
     await store.refreshNow();
@@ -56,7 +56,7 @@ async function doFetchSource(s: SourceStat) {
     if ('status' in d) toast.info('拉取进行中', '已有拉取任务在跑，请稍候');
     else toast.success('拉取完成', `${s.short_name} · 可用代理 ${d.available}`);
   } catch (e) {
-    toast.error('拉取失败', e instanceof Error ? e.message : String(e));
+    toast.error('拉取失败', errText(e));
   } finally {
     pending.value.delete(s.name);
     await store.refreshNow();
@@ -68,7 +68,7 @@ async function doPause(source: string) {
     await api.pauseSource(source);
     toast.success('已暂停', source);
   } catch (e) {
-    toast.error('暂停失败', e instanceof Error ? e.message : String(e));
+    toast.error('暂停失败', errText(e));
   } finally {
     await store.refreshNow();
   }
@@ -79,7 +79,7 @@ async function doResume(source: string) {
     await api.resumeSource(source);
     toast.success('已恢复', source);
   } catch (e) {
-    toast.error('恢复失败', e instanceof Error ? e.message : String(e));
+    toast.error('恢复失败', errText(e));
   } finally {
     await store.refreshNow();
   }

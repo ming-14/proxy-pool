@@ -99,6 +99,11 @@ export interface SparkOptions {
   log?: boolean;
   /** 上下留白（px），避免峰值贴边 */
   pad?: number;
+  /**
+   * 预先算好的 y 值域（可选）。传入则不再自行遍历求值域——调用方若还要用同一值域
+   * 标注数据值区间，就可只算一次；不传时内部按 sparkDomain 计算（行为不变）。
+   */
+  domain?: SparkDomain | null;
 }
 
 /** 行内趋势图的数据缓冲视图（时间段）——只读首末两点，故只要求时间序 */
@@ -136,7 +141,8 @@ export function seriesTimeWindow(buffers: Iterable<TimeBuffers>, now: number): [
  */
 export function sparkSegments(series: NumericPoint[][], opts: SparkOptions): string[][] {
   const { width, height, window: [t0, t1], log = false, pad = 2 } = opts;
-  const domain = sparkDomain(series);
+  // 调用方可传预算值域（同一值域还要用于标注数据值，避免重复遍历）；缺省自行计算
+  const domain = opts.domain !== undefined ? opts.domain : sparkDomain(series);
   if (!domain) return series.map(() => []);
 
   const span = t1 - t0;

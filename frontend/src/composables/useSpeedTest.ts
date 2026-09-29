@@ -10,7 +10,7 @@
  * 的乐观显示 / 旧会话跨路由保留）。
  */
 import { reactive } from 'vue';
-import { api } from '@/api/client';
+import { api, errText } from '@/api/client';
 import type { SpeedTestResult, SpeedTestStatus } from '@/types/api';
 
 export interface SpeedTestState {
@@ -55,6 +55,20 @@ export function speedTestEntryOf(
   return speedTests.get(bind);
 }
 
+/**
+ * 丢弃已离队代理的测速结果。
+ *
+ * 结果按 bind 累积，代理离队后条目永不再命中，不清理会随驻留时长无界增长
+ * （与 useStandbySeries 的 pruneBuffers 同一口径）。后端 PanelTasks 亦存有任务
+ * 状态并由 /api/status 下发，故丢弃本地副本不丢失结果。
+ */
+export function pruneSpeedTests(binds: string[]): void {
+  const keep = new Set(binds);
+  for (const bind of speedTests.keys()) {
+    if (!keep.has(bind)) speedTests.delete(bind);
+  }
+}
+
 /** 触发测速（幂等：进行中直接返回）。失败就地展示错误文案，不弹 toast（行内可见） */
 export async function runSpeedTest(bind: string): Promise<void> {
   if (speedTests.get(bind)?.status === 'running') return;
@@ -71,7 +85,7 @@ export async function runSpeedTest(bind: string): Promise<void> {
   } catch (e) {
     speedTests.set(bind, {
       status: 'done',
-      error: e instanceof Error ? e.message : String(e),
+      error: errText(e),
       time: fmtClock(Date.now() / 1000),
     });
   }

@@ -4,7 +4,7 @@
  * 未编辑时跟随 status.settings 同步；旧版"焦点在编辑区跳过重绘"补丁不再需要。
  */
 import { computed, reactive, ref, watch } from 'vue';
-import { api } from '@/api/client';
+import { api, errText } from '@/api/client';
 import { useToastStore } from '@/stores/toast';
 import type { ScheduleSettings } from '@/types/api';
 
@@ -101,7 +101,7 @@ async function save() {
       allowed_types: [...d.settings.allowed_types],
     };
   } catch (e) {
-    toast.error('保存失败', e instanceof Error ? e.message : String(e));
+    toast.error('保存失败', errText(e));
   } finally {
     saving.value = false;
   }

@@ -39,23 +39,34 @@ const VIEW_WIDTH = 320;
 
 const drawn = computed(() => props.series.map((s) => downsample(s.pts)));
 
+/**
+ * y 值域：坐标映射与左侧数据值共用同一份。
+ *
+ * 必须只算一次——它要遍历全部点，而队列页每行都有实例、且随 2s 节拍重算；
+ * sparkSegments 内部原本还会再算一遍，等于同样的遍历做两次。
+ * 无任何可绘制点（全 null / 空）时为 null。
+ */
+const domain = computed(() => sparkDomain(drawn.value));
+
 const view = computed(() => {
   const series = drawn.value;
-  if (!series.some((pts) => pts.some((p) => p[1] !== null))) return null;
+  const d = domain.value;
+  if (!d) return null;
   const segments = sparkSegments(series, {
     width: VIEW_WIDTH,
     height: props.height,
     log: props.log,
     window: props.window,
+    domain: d,
   });
   return props.series.map((s, i) => ({ color: s.color, segments: segments[i] }));
 });
 
-/** 左侧数据值区间：与坐标映射同源（sparkDomain），有数据且给了格式化器才显示 */
+/** 左侧数据值区间：与坐标映射同源（复用 domain），有数据且给了格式化器才显示 */
 const scale = computed(() => {
-  if (!props.formatValue || !view.value) return null;
-  const domain = sparkDomain(drawn.value);
-  return domain ? { max: props.formatValue(domain.hi), min: props.formatValue(domain.lo) } : null;
+  const d = domain.value;
+  if (!props.formatValue || !d) return null;
+  return { max: props.formatValue(d.hi), min: props.formatValue(d.lo) };
 });
 </script>
 

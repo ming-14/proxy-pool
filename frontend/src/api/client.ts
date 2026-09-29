@@ -24,9 +24,31 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 把任意抛出物转成可展示文案。
+ *
+ * 全前端唯一的错误取文案入口：ApiError 已带后端下发的中文 message，其余 Error 取
+ * message，非 Error（字符串/undefined）兜底 String()。调用方一律走这里，不各自
+ * 手写三元表达式——否则同一件事在不同页面会漂成不同形态（接入前散落 21 处）。
+ */
+export function errText(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+/**
+ * 请求超时（毫秒）。
+ *
+ * 面板按固定节拍轮询，若不设上限，后端挂起（TCP 连上但不回包）时请求会永远挂着、
+ * 每轮再叠一个，失败也永远不触发重试路径。取值明显大于正常往返（本地/局域网毫秒级），
+ * 只为兜住"后端僵死"这种病态场景。
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     ...init,
   });
   let data: unknown = null;

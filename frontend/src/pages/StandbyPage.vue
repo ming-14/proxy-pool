@@ -22,16 +22,17 @@
  * 其余行灰显且不可交互——不单独开锁定卡片。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { api } from '@/api/client';
+import { api, errText } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
 import {
   checkPurity,
+  prunePurityCache,
   purityEntryOf,
   purityScoreClass,
 } from '@/composables/usePurity';
-import { runSpeedTest, speedTestEntryOf } from '@/composables/useSpeedTest';
+import { pruneSpeedTests, runSpeedTest, speedTestEntryOf } from '@/composables/useSpeedTest';
 import { GEO_REFRESH_MS, geoText, refreshStandbyGeo, standbyGeo } from '@/composables/useStandbyGeo';
 import { refreshStandbySeries, seriesBuffers } from '@/composables/useStandbySeries';
 import ContextMenu from '@/components/ui/ContextMenu.vue';
@@ -128,13 +129,20 @@ watch(hasLock, (locked) => {
 
 // ---------------- 逐代理序列 / 归属地（随 2s 状态节拍刷新） ----------------
 /** 状态对象每轮轮询都是新引用 → 以此节拍驱动序列增量与归属地（内部节流）刷新；
- *  immediate 让进入页面时立刻取一次，不必等下一个 2s 轮询 */
+ *  immediate 让进入页面时立刻取一次，不必等下一个 2s 轮询。
+ *  同时按当前队列清理三个模块级缓存（纯净度/测速/归属地）里已离队的条目——
+ *  它们跨路由保留，不清理会随驻留时长无界增长。 */
 watch(
   status,
   (snap) => {
     if (!snap) return;
-    void refreshStandbySeries(displayStandby.value.map((p) => bindOf(p.proxy)));
-    void refreshStandbyGeo(geoEnabled.value);
+    const binds = displayStandby.value.map((p) => bindOf(p.proxy));
+    if (binds.length) {
+      prunePurityCache(binds);
+      pruneSpeedTests(binds);
+    }
+    void refreshStandbySeries(binds);
+    void refreshStandbyGeo(geoEnabled.value, binds);
   },
   { immediate: true },
 );
@@ -157,7 +165,7 @@ async function doPin(proxy: string) {
     await refreshQueueOrder();
     toast.success('已固定', '代理已移到队列最前');
   } catch (e) {
-    toast.error('固定失败', e instanceof Error ? e.message : String(e));
+    toast.error('固定失败', errText(e));
   }
 }
 
@@ -167,7 +175,7 @@ async function doUnpin(proxy: string) {
     await refreshQueueOrder();
     toast.success('已解固', '代理回到延迟排序');
   } catch (e) {
-    toast.error('解固失败', e instanceof Error ? e.message : String(e));
+    toast.error('解固失败', errText(e));
   }
 }
 
@@ -177,7 +185,7 @@ async function doLock(proxy: string) {
     await refreshQueueOrder();
     toast.success('已锁定', `只使用 ${proxy}`);
   } catch (e) {
-    toast.error('锁定失败', e instanceof Error ? e.message : String(e));
+    toast.error('锁定失败', errText(e));
   }
 }
 
@@ -187,7 +195,7 @@ async function doUnlock() {
     await refreshQueueOrder();
     toast.success('已解锁', '恢复代理服务队列');
   } catch (e) {
-    toast.error('解锁失败', e instanceof Error ? e.message : String(e));
+    toast.error('解锁失败', errText(e));
   }
 }
 
@@ -411,7 +419,7 @@ async function onMenuAction(item: MenuItem) {
       selection.clear();
       await refreshQueueOrder();
     } catch (e) {
-      toast.error('移出失败', e instanceof Error ? e.message : String(e));
+      toast.error('移出失败', errText(e));
     }
     return;
   }
@@ -422,7 +430,7 @@ async function onMenuAction(item: MenuItem) {
       selection.clear();
       await refreshQueueOrder();
     } catch (e) {
-      toast.error('拉黑失败', e instanceof Error ? e.message : String(e));
+      toast.error('拉黑失败', errText(e));
     }
   }
 }

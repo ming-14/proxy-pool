@@ -139,7 +139,7 @@ describe('refreshStandbyGeo / geoText', () => {
         },
       }),
     })));
-    await mod.refreshStandbyGeo(true);
+    await mod.refreshStandbyGeo(true, ['1.2.3.4:8080', '5.6.7.8:8080']);
     expect(mod.geoText(mod.standbyGeo.get('1.2.3.4:8080'))).toBe('美国 · 加州 · 洛杉矶');
     expect(mod.geoText(mod.standbyGeo.get('5.6.7.8:8080'))).toBeNull();
   });
@@ -149,8 +149,23 @@ describe('refreshStandbyGeo / geoText', () => {
     const mod = await import('@/composables/useStandbyGeo');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    await mod.refreshStandbyGeo(false);
+    await mod.refreshStandbyGeo(false, []);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('刷新时丢弃已离队代理的归属地（防无界增长）', async () => {
+    vi.resetModules();
+    const mod = await import('@/composables/useStandbyGeo');
+    mod.standbyGeo.set('9.9.9.9:1080', { country: '德国' } as never);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ geo: { '1.2.3.4:8080': { country: '美国' } } }),
+    })));
+    // 保留集只有在场代理：离队的 9.9.9.9 应被清掉
+    await mod.refreshStandbyGeo(true, ['1.2.3.4:8080']);
+    expect(mod.standbyGeo.has('1.2.3.4:8080')).toBe(true);
+    expect(mod.standbyGeo.has('9.9.9.9:1080')).toBe(false);
   });
 });
 
