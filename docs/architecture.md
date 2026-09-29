@@ -78,7 +78,7 @@ TTL 规则：代理入组时记录 `joined_at`，`now - joined_at >= ttl` 即过
 1. **逐源拉取**：遍历启用的源（跳过暂停中的源），`fetch_proxies(retries=FETCH_PROXY_RETRIES=3)`；源异常只记日志不中断整体，该源在 `collect` 里以 `None` 返回（区别于「成功但无代理」的 `[]`），**全部源都异常**时按拉取失败上报（HTTP 500），不报成「拉取完成 0 个」。带 `pause_ttl` 的源不论成败都暂停（统一在 `apply` 入池时落地，暂停集合与时长不变）。`plan(source_name)` 传源名时只拉该源（面板单源拉取按钮）；源名不在配置里或未启用则抛 `ValueError`（面板转 400——不能返回 200「拉取完成」而一个源都没拉，也不能与「源存在但暂停中所以本轮无事可做」混同），三阶段与暂停规则不变。
 2. **跨源去重入组**：
    - 跳过：已在本次拉取中出现过的（跨源重复）、已存在于池中任一组的、黑名单中的；
-   - 禁用代理（端口 80，FreeProxy.World 大量 Cloudflare 假代理）直接入黑名单，不进入可用池（`DISABLED_PORTS = {80}`）；
+   - 命中 `config/sources.toml` 的 `[[fetch_filter]]` 声明式规则的代理直接入黑名单，不进入可用池（如端口 80 的 Cloudflare 假代理）；规则按书写顺序取首个命中，`match` 可限定生效的源；
    - 入组名由 `_resolve_group` 计算：`group_by_protocol` 源按代理 scheme 前缀分拣为 `group-scheme`（如 `default` → `default-http`/`-https`/`-socks5`，无 scheme 前缀按 http），否则固定入 `group`；入组时按 `domain.SUPPORTED_SCHEMES`（池支持的出站协议，当前 http/https/socks5）校验，不受支持或目标组未定义则拒入并记日志。
 3. **去重率检查**：见「源暂停机制」。
 
@@ -216,7 +216,7 @@ for attempt in range(max_retries):
 - 页面有效性校验：含 `<td style="font-weight: 500;">` 才算有效页（CF 墙/空页返回失败）；
 - 走代理时用 requests（HTTPS 代理需 TLS 到代理）；直连用 `http_client`；
 - 并发/限流/超时/请求头参数：`FPW_MAX_CONCURRENT=16`、`FPW_PROXY_RETRY=1`、`FPW_TASK_INTERVAL=2`、`FPW_REQUEST_TIMEOUT=15`、`FPW_ACCEPT_LANGUAGE="en-US,en;q=0.9"`，均由 `config/sources.toml` 的 `[fetch.freeproxy_world]` 注入；
-- 该源产出的**端口 80 代理是 Cloudflare 假代理**（CONNECT 400），拉取时直接入黑名单（`DISABLED_PORTS={80}`）。
+- 该源产出的**端口 80 代理是 Cloudflare 假代理**（CONNECT 400），由 `[[fetch_filter]]` 的 `:80$` 规则命中后入黑名单。
 
 ### 源启用/禁用
 
@@ -272,7 +272,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 
 - `config.toml`：`[paths]` 路径 + `[web]` 面板开关/端口
 - `pool.toml`：`[pool]` 阈值/语义组/可请求组 + `[groups]` 分组定义
-- `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]`
+- `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]` + `[[fetch_filter]]` 入池筛选规则
 - `serve.toml`：`[server]` 端口/队列/心跳/链路门控/metrics/代理类型
 - `panel.toml`：`[geoip]` 归属地图
 - `ippure.toml`：`[ippure]` 纯净度开关/超时/缓存 TTL + `[[plugins]]` 检查源插件模块路径 + `[[proxy_rules]]` 声明式代理规则 + 插件自声明配置节（节名 = 插件 `SOURCE.name`，如 `[abuseipdb]` / `[ipok]`）
@@ -303,6 +303,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 | `SOURCE_PAUSE_TTL` | 1200 | 去重率过高时的源暂停时长 |
 | `SOURCE_DEDUP_THRESHOLD` | 0.92 | 源去重率阈值 |
 | `FETCH_PROXY_RETRIES` | 3 | 每源拉取重试次数 |
+| `FETCH_FILTER_RULES` | `sources.toml` 的 `[[fetch_filter]]` | 入池筛选规则（`pattern` 正则命中完整代理 URL 即拉黑，`match` 为源名 glob，按声明顺序取首个命中） |
 | `STANDBY_QUEUE_CAPACITY` | 30 | serve 代理服务队列容量 |
 | `STANDBY_FILL_GROUPS` | trusted 排最前 + 各可请求组 | 代理服务队列填充候选组（按优先级顺序，靠前优先） |
 | `STANDBY_FILL_PROBE_MULTIPLIER` / `STANDBY_FILL_PROBE_MIN_EXTRA` | 2 / 5 | 填充候选数 = 缺口 × 倍率，至少 缺口 + 增量 |

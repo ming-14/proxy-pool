@@ -2,7 +2,7 @@
 
     config.toml   [paths] [web]               路径与面板开关
     pool.toml     [pool] [groups]             池策略与分组定义
-    sources.toml  [fetch] [[sources]]         代理源与拉取调度
+    sources.toml  [fetch] [[sources]] [[fetch_filter]]   代理源、拉取调度与入池筛选规则
     serve.toml    [server]                    serve 端口/队列/心跳/链路门控/metrics
     panel.toml    [geoip]                     面板功能（IP 归属地图）
     ippure.toml   [ippure] [[plugins]] ...    IP 纯净度检查（插件节名由插件自声明）
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 from src.domain.models import SUPPORTED_SCHEMES  # noqa: E402
 from src.domain.purity import ProxyRule  # noqa: E402  (tomllib 分支之后，保持导入分组清晰)
+from src.domain.source_filter import FilterRule  # noqa: E402
 
 # config.py 位于 src/framework/，上溯 3 级到项目根
 _PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -78,7 +80,7 @@ _PLUGIN_SECTIONS = object()
 _SECTION_OWNERSHIP: dict[str, set] = {
     "config.toml": {"paths", "web"},
     "pool.toml": {"pool", "groups"},
-    "sources.toml": {"fetch", "sources"},
+    "sources.toml": {"fetch", "sources", "fetch_filter"},
     "serve.toml": {"server"},
     "panel.toml": {"geoip"},
     "ippure.toml": {"ippure", "plugins", "proxy_rules", _PLUGIN_SECTIONS},
@@ -175,6 +177,32 @@ SOURCES = [
 SOURCE_PAUSE_TTL = int(_toml["fetch"]["source_pause_ttl"])      # 源暂停默认时长（去重率过高时使用）
 SOURCE_DEDUP_THRESHOLD = float(_toml["fetch"]["source_dedup_threshold"])  # 源去重率阈值，超过则暂停该源
 FETCH_PROXY_RETRIES = int(_toml["fetch"]["fetch_proxy_retries"])  # 每个代理源拉取时的最大重试次数
+
+
+# ---------------------------------------------------------------- 入池筛选规则
+def _parse_filter_rule(raw: dict, index: int) -> FilterRule:
+    """校验单条筛选规则（键/正则非法直接报错，避免错误规则静默失效）"""
+    label = f"sources.toml [[fetch_filter]] 第 {index + 1} 条"
+    unknown = set(raw) - {"pattern", "reason", "match"}
+    if unknown:
+        raise ValueError(f"{label} 含未知键 {sorted(unknown)}（可选 pattern/reason/match）")
+    pattern = str(raw.get("pattern", "")).strip()
+    if not pattern:
+        raise ValueError(f"{label} 缺少 pattern（代理 URL 正则）")
+    reason = str(raw.get("reason", "")).strip()
+    if not reason:
+        raise ValueError(f"{label} 缺少 reason（命中原因，用于日志）")
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"{label} pattern 非法 {pattern!r}: {exc}") from exc
+    return FilterRule(pattern=compiled, reason=reason,
+                      source_glob=str(raw.get("match", "")).strip() or "*")
+
+
+FETCH_FILTER_RULES: tuple[FilterRule, ...] = tuple(
+    _parse_filter_rule(rule, i) for i, rule in enumerate(_toml.get("fetch_filter") or [])
+)
 
 # ---------------------------------------------------------------- FreeProxy.World 源专属参数
 # 多阶段爬取的并发/限流/超时/请求头，仅该源使用（置于 sources.toml，遵循领域配置归属）。

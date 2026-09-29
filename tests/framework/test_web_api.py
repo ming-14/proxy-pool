@@ -273,7 +273,7 @@ class FetchRouteIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         self.ctx.fetch = FetchProxiesUseCase(
             pool=self.pool, sources=[self.spec], loader=loader,
-            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD)
+            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD, filter_rules=())
         self.client = TestClient(TestServer(build_app(self.ctx)))
         await self.client.start_server()
 
@@ -309,7 +309,7 @@ class FetchRouteIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         self.ctx.fetch = FetchProxiesUseCase(
             pool=self.pool, sources=[self.spec], loader=loader,
-            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD)
+            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD, filter_rules=())
         resp = await self.client.post("/api/fetch", json={"source": self.spec.name})
         assert resp.status == 500
         assert "全部代理源拉取失败" in (await resp.json())["error"]
@@ -349,7 +349,7 @@ class FetchRouteIntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         self.ctx.fetch = FetchProxiesUseCase(
             pool=self.pool, sources=[self.spec], loader=slow_loader,
-            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD)
+            fetch_retries=1, dedup_threshold=SOURCE_DEDUP_THRESHOLD, filter_rules=())
         handler = asyncio.ensure_future(_do_fetch(_FakeRequest(self.client.server.app, {})))
         await asyncio.sleep(0.05)  # 已过闸门、拉取正挂在 executor 里
         assert self.ctx.tasks.fetching_all() is True

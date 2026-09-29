@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import logging
 from typing import Callable
-from urllib.parse import urlsplit
 
 from src.domain.models import SourceSpec
 from src.domain.ports import ProxySource
 from src.domain.proxy_pool import ProxyPool
+from src.domain.source_filter import FilterRule, match_rule
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class FetchProxiesUseCase:
         loader: Callable[[str], ProxySource],
         fetch_retries: int,
         dedup_threshold: float,
+        filter_rules: tuple[FilterRule, ...],
     ) -> None:
         """
         Args:
@@ -40,12 +41,14 @@ class FetchProxiesUseCase:
             loader:          按源名加载源对象（组合根提供 importlib 实现）
             fetch_retries:   每个源拉取时的重试次数
             dedup_threshold: 源去重率阈值，超过则暂停该源
+            filter_rules:    入池筛选规则（命中即拉黑），见 config/sources.toml [[fetch_filter]]
         """
         self._pool = pool
         self._sources = sources
         self._loader = loader
         self._fetch_retries = fetch_retries
         self._dedup_threshold = dedup_threshold
+        self._filter_rules = filter_rules
 
     def execute(self, source_name: str | None = None) -> None:
         """同步执行三段（CLI / 池空自动拉取：单线程调用，无线程约束）"""
@@ -110,6 +113,7 @@ class FetchProxiesUseCase:
 
         new_count = 0
         seen = set()
+        filtered: dict[str, int] = {}  # 命中规则的 reason → 拉黑数量
         for src, proxy_list in results:
             if not proxy_list:  # None（拉取失败）与 []（成功但无代理）都不入池
                 continue
@@ -117,9 +121,10 @@ class FetchProxiesUseCase:
                 if p in seen or self._pool.find_proxy(p)[0] is not None or self._pool.is_blacklisted(p):
                     continue
                 seen.add(p)
-                if _is_disabled_proxy(p):
-                    # 禁用的代理（如端口 80 的假代理）直接入黑名单组，不进入可用池
+                rule = match_rule(self._filter_rules, src.name, p)
+                if rule is not None:
                     self._pool.add_to_group(self._pool.blacklist_group, p)
+                    filtered[rule.reason] = filtered.get(rule.reason, 0) + 1
                     continue
                 group = _resolve_group(src, p)
                 if not self._pool.add_to_group(group, p):
@@ -127,6 +132,9 @@ class FetchProxiesUseCase:
                     logger.warning("代理 %s 未入池（组 %s 未定义或协议不受支持）", p, group)
                     continue
                 new_count += 1
+        # 命中是批量事件（FPW 一次常上百个），逐条记会刷屏，按规则汇总
+        for reason, count in filtered.items():
+            logger.info("入池筛选拉黑 %d 个代理 (%s)", count, reason)
         available = self._pool.get_available_proxies()
         logger.info("去重后新增 %d 个代理 (可请求 %d, 信任池 %d, 黑名单 %d)",
                     new_count, len(available),
@@ -150,17 +158,3 @@ def _resolve_group(src: SourceSpec, proxy: str) -> str:
     if src.group_by_protocol and "://" in proxy:
         return f"{src.group}-{proxy.split('://', 1)[0]}"
     return src.group
-
-
-# 禁用的代理端口：freeproxy-world 大量端口 80 的代理是 Cloudflare 假代理（CONNECT 400），
-# 实测对外网不可用，拉取时直接入黑名单。
-DISABLED_PORTS = {80}
-
-
-def _is_disabled_proxy(proxy: str) -> bool:
-    """判断代理是否命中禁用规则（端口在黑名单内）"""
-    try:
-        port = urlsplit(proxy if "://" in proxy else f"//{proxy}").port
-    except ValueError:
-        return False
-    return port in DISABLED_PORTS

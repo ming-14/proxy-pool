@@ -48,6 +48,7 @@ def _ippure_toml(
 def _run_config(tmp_path: Path, *, env_file: str | None = None,
                 ippure: str | None = None, panel: str | None = None,
                 listen_protocols: tuple[str, ...] | None = None,
+                fetch_filter: str | None = None,
                 extra_env: dict | None = None,
                 drop_ippure: bool = False) -> subprocess.CompletedProcess:
     """复制真实配置目录 → 覆写指定文件 → 子进程 import config"""
@@ -62,6 +63,14 @@ def _run_config(tmp_path: Path, *, env_file: str | None = None,
         (cfg_dir / "ippure.toml").write_text(ippure, encoding="utf-8")
     if panel is not None:
         (cfg_dir / "panel.toml").write_text(panel, encoding="utf-8")
+    if fetch_filter is not None:
+        # 只替换 [[fetch_filter]] 段（sources.toml 的 [fetch]/[[sources]] 是合法结构脚手架）
+        src_path = cfg_dir / "sources.toml"
+        patched, hits = re.subn(r"\[\[fetch_filter\]\][\s\S]*$",
+                                fetch_filter.strip() + "\n",
+                                src_path.read_text(encoding="utf-8"))
+        assert hits == 1, f"sources.toml 的 [[fetch_filter]] 段命中 {hits} 次（应为 1 次）"
+        src_path.write_text(patched, encoding="utf-8")
     if listen_protocols is not None:
         # 只替换 listen_protocols 一行（serve.toml 其余键是合法 [server] 结构的脚手架）
         serve_path = cfg_dir / "serve.toml"
@@ -78,6 +87,7 @@ def _run_config(tmp_path: Path, *, env_file: str | None = None,
         "print('RULES', [(r.match, r.use) for r in c.IPPURE_PROXY_RULES]);"
         "print('SECTIONS', sorted(c.IPPURE_SECTIONS));"
         "print('LISTEN', c.SERVER_LISTEN_PROTOCOLS);"
+        "print('FILTER', [(r.source_glob, r.pattern.pattern, r.reason) for r in c.FETCH_FILTER_RULES]);"
         f"print('KEY', repr(__import__('os').environ.get({_ENV_KEY!r})))"
     )
     env = dict(os.environ, PROXY_POOL_CONFIG=str(cfg_dir))
@@ -245,6 +255,65 @@ def test_missing_ippure_toml_fails_fast(tmp_path) -> None:
     r = _run_config(tmp_path, drop_ippure=True)
     assert r.returncode != 0
     assert "ippure.toml" in r.stderr
+
+
+# ---------------------------------------------------------------- 入池筛选规则
+def test_fetch_filter_real_config_parsed(tmp_path) -> None:
+    """真实 sources.toml 的端口 80 规则被解析：pattern 编译为对象、reason 保留"""
+    r = _run_config(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "FILTER [('*', ':80$', " in r.stdout
+
+
+def test_fetch_filter_parsed_in_order_with_glob(tmp_path) -> None:
+    """规则按书写顺序解析，match 省略时归一为 "*"（用例自带内容，不读真实配置）"""
+    r = _run_config(tmp_path, fetch_filter=(
+        "[[fetch_filter]]\n"
+        'match = "src.interfaces.sources.geonode"\n'
+        'pattern = "^http://"\n'
+        'reason = "自家规则"\n'
+        "\n"
+        "[[fetch_filter]]\n"
+        'pattern = ":1080$"\n'
+        'reason = "通用规则"\n'
+    ))
+    assert r.returncode == 0, r.stderr
+    assert ("FILTER [('src.interfaces.sources.geonode', '^http://', '自家规则'), "
+            "('*', ':1080$', '通用规则')]") in r.stdout
+
+
+def test_fetch_filter_empty_allowed(tmp_path) -> None:
+    """无 [[fetch_filter]] 合法（不做任何入池筛选）"""
+    r = _run_config(tmp_path, fetch_filter="")
+    assert r.returncode == 0, r.stderr
+    assert "FILTER []" in r.stdout
+
+
+def test_fetch_filter_missing_pattern_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, fetch_filter='[[fetch_filter]]\nreason = "只给原因"\n')
+    assert r.returncode != 0
+    assert "缺少 pattern" in r.stderr
+
+
+def test_fetch_filter_missing_reason_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, fetch_filter='[[fetch_filter]]\npattern = ":80$"\n')
+    assert r.returncode != 0
+    assert "缺少 reason" in r.stderr
+
+
+def test_fetch_filter_bad_regex_fails_fast(tmp_path) -> None:
+    """正则编译失败启动报错（否则该规则静默失效）"""
+    r = _run_config(tmp_path, fetch_filter='[[fetch_filter]]\npattern = "([unclosed"\nreason = "r"\n')
+    assert r.returncode != 0
+    assert "pattern 非法" in r.stderr
+
+
+def test_fetch_filter_unknown_key_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, fetch_filter=(
+        '[[fetch_filter]]\npattern = ":80$"\nreason = "r"\naction = "drop"\n'
+    ))
+    assert r.returncode != 0
+    assert "未知键" in r.stderr and "action" in r.stderr
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ proxy-pool/
 ├── config/                        # 配置文件目录（按领域拆分，节固定归属单文件，见 src/framework/config.py）
 │   ├── config.toml                # [paths] 路径 + [web] 面板开关/端口
 │   ├── pool.toml                  # [pool] 阈值/语义组/可请求组 + [groups] 分组定义
-│   ├── sources.toml               # [fetch] 拉取调度（含 freeproxy_world）+ [[sources]] 源列表
+│   ├── sources.toml               # [fetch] 拉取调度（含 freeproxy_world）+ [[sources]] 源列表 + [[fetch_filter]] 入池筛选规则
 │   ├── serve.toml                 # [server] serve 端口/队列/心跳/链路门控/metrics
 │   ├── panel.toml                 # [geoip] IP 归属地图
 │   ├── ippure.toml                # IP 纯净度检查：[ippure] 开关/超时/缓存 + [[plugins]] 检查源插件 + [[proxy_rules]] 声明式代理
@@ -24,6 +24,7 @@ proxy-pool/
 │   │   ├── proxy_pool.py          # ProxyPool（分组/TTL/晋级/淘汰/源暂停/序列化）
 │   │   ├── models.py              # 值对象：SourceSpec/FpwConfig、normalize_proxy/to_proxy_dict
 │   │   ├── purity.py              # 纯净度契约：UsageType 枚举、插件元数据/注入配置、ProxyRule + resolve_proxy、normalize_result
+│   │   ├── source_filter.py       # 入池筛选规则：FilterRule + match_rule（正则命中完整代理 URL 即拉黑，纯匹配无 IO）
 │   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/TaskScheduler/IpPurityChecker/PurityCacheStore
 │   ├── use_cases/                 # 用例层：应用业务逻辑，构造注入
 │   │   ├── __init__.py

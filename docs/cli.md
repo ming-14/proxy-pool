@@ -90,6 +90,16 @@ python cli.py fetch [--json]
 
 从启用的代理源拉取代理，按组写入，并检查源去重率决定是否暂停。
 
+入池前先过 `config/sources.toml` 的 `[[fetch_filter]]` 声明式筛选规则——命中即拉黑（进黑名单组，ttl 内不再入池）：
+
+```toml
+[[fetch_filter]]
+pattern = ":80$"
+reason = "端口 80 为 Cloudflare 假代理（CONNECT 400）"
+```
+
+对完整代理 URL（含 scheme）做 `re.search`，IP / 端口 / scheme 均由正则自行表达；多条规则按书写顺序取首个命中，`match` 可限定生效的源（glob，省略 = 全部源）。
+
 ## list / ls — 列出可用代理
 
 ```bash

@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -15,6 +16,7 @@ logging.disable(logging.WARNING)
 
 from src.domain.models import SourceSpec
 from src.domain.proxy_pool import ProxyPool
+from src.domain.source_filter import FilterRule
 from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.scheduler import ProxyScheduler
 from src.interfaces.proxy_scheme import verify_target
@@ -31,6 +33,7 @@ from src.framework.config import (
     SOURCES as _SOURCES,
     SOURCE_DEDUP_THRESHOLD,
     FETCH_PROXY_RETRIES,
+    FETCH_FILTER_RULES,
     TRUSTED_GROUP,
     BLACKLIST_GROUP,
     STANDBY_GROUP,
@@ -62,13 +65,14 @@ def default_loader(name):
     return importlib.import_module(name).create_source()
 
 
-def make_fetch(pool, loader=None):
+def make_fetch(pool, loader=None, filter_rules=None):
     return FetchProxiesUseCase(
         pool=pool,
         sources=SOURCE_SPECS,
         loader=loader or default_loader,
         fetch_retries=FETCH_PROXY_RETRIES,
         dedup_threshold=SOURCE_DEDUP_THRESHOLD,
+        filter_rules=filter_rules if filter_rules is not None else FETCH_FILTER_RULES,
     )
 
 
@@ -302,6 +306,38 @@ class TestFetchProxiesUseCase(unittest.TestCase):
         with patch("src.interfaces.http_client.get", side_effect=Exception("fail")):
             make_fetch(self.pool).execute()
         self.assertIsNotNone(self.pool.source_pause_remaining(FPW_SOURCE))
+
+    def test_fetch_filter_blacklists_port_80(self):
+        """真实配置 :80$ 规则命中即拉黑（回归原端口 80 硬编码行为）"""
+        with patch("src.interfaces.http_client.get",
+                   return_value=mock_proxy_response(["http://1.2.3.4:80", "http://5.6.7.8:3128"])):
+            make_fetch(self.pool).execute()
+        self.assertIn("http://1.2.3.4:80", self.pool.proxy_groups["blacklist"]["proxies"])
+        self.assertNotIn("http://1.2.3.4:80", self.pool.proxy_groups["default-http"]["proxies"])
+        self.assertIn("http://5.6.7.8:3128", self.pool.proxy_groups["default-http"]["proxies"])
+
+    def test_fetch_filter_does_not_touch_port_8080(self):
+        """:80$ 不误伤 :8080"""
+        with patch("src.interfaces.http_client.get",
+                   return_value=mock_proxy_response(["http://1.2.3.4:8080"])):
+            make_fetch(self.pool).execute()
+        self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups["default-http"]["proxies"])
+
+    def test_custom_filter_rule_applies_to_matching_source_only(self):
+        """match 限定源：只对指定源生效，其它源的同类代理正常入池"""
+        rule = FilterRule(pattern=re.compile("^http://"), reason="专用", source_glob=SCDN_SOURCE)
+        with patch("src.interfaces.http_client.get",
+                   return_value=mock_proxy_response(["http://1.2.3.4:3128", "https://5.6.7.8:3128"])):
+            make_fetch(self.pool, filter_rules=(rule,)).execute(SCDN_SOURCE)
+        self.assertIn("http://1.2.3.4:3128", self.pool.proxy_groups["blacklist"]["proxies"])
+        self.assertIn("https://5.6.7.8:3128", self.pool.proxy_groups["default-https"]["proxies"])
+
+    def test_no_filter_rules_keeps_everything(self):
+        with patch("src.interfaces.http_client.get",
+                   return_value=mock_proxy_response(["http://1.2.3.4:80"])):
+            make_fetch(self.pool, filter_rules=()).execute()
+        self.assertIn("http://1.2.3.4:80", self.pool.proxy_groups["default-http"]["proxies"])
+        self.assertEqual(len(self.pool.proxy_groups["blacklist"]["proxies"]), 0)
 
     def test_freeproxy_world_proxies_in_own_group(self):
         mock_mod = MagicMock()

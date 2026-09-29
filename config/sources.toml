@@ -52,3 +52,22 @@ group = "freeproxy-world"
 enabled = true
 pause_ttl = 1800000
 group_by_protocol = true
+
+# ---------------------------------------------------------------- 入池筛选规则
+# 命中即拉黑（进黑名单组，ttl 内不再入池）。对完整代理 URL（含 scheme）做正则匹配，
+# 按书写顺序取首个命中，无命中即正常入池。
+#   pattern: 正则（re.search 语义，要全串锚定自己写 ^...$）
+#   reason:  命中原因（日志展示）
+#   match:   源名 glob，省略 = 全部源
+[[fetch_filter]]
+pattern = ":80$"
+reason = "端口 80 为 Cloudflare 假代理（CONNECT 400）"
+
+# [[fetch_filter]]
+# match = "src.interfaces.sources.geonode"
+# pattern = "^http://"
+# reason = "本源不需要 http"
+
+# [[fetch_filter]]
+# pattern = '://(10|127|192\.168)\.'
+# reason = "内网地址"

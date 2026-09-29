@@ -6,7 +6,8 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 ├── domain/                            # 领域规则测试
 │   ├── __init__.py
 │   ├── test_domain_proxy_pool.py      # ProxyPool（分组/TTL/晋级/淘汰/pin/锁定/序列化）
-│   └── test_purity.py                 # 纯净度契约（代理规则 glob 匹配 / 结果归一化）
+│   ├── test_purity.py                 # 纯净度契约（代理规则 glob 匹配 / 结果归一化）
+│   └── test_source_filter.py          # 入池筛选规则（正则匹配 / 源 glob / 首个命中）
 ├── use_cases/                         # 用例测试
 │   ├── __init__.py
 │   ├── test_autoload.py               # autoload 清单入队

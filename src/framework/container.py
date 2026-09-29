@@ -194,6 +194,7 @@ def build_container(cache_db: str | None = None) -> Container:
         loader=_source_loader,
         fetch_retries=config.FETCH_PROXY_RETRIES,
         dedup_threshold=config.SOURCE_DEDUP_THRESHOLD,
+        filter_rules=config.FETCH_FILTER_RULES,
     )
     get_proxies = GetProxiesUseCase(pool=pool, fetch=fetch.execute)
     record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
