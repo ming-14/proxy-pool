@@ -16,6 +16,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import type { LogPanelHooks, LogPanelKey, LogPanelRules } from '../types';
 import type { Matcher } from '../utils/filter';
+import { followStep, type FollowState } from '../utils/follow';
 import LogLine from './LogLine.vue';
 
 /** 未量行的初始兜底行高（px）：量到行后改用已量行的累计均值 */
@@ -31,6 +32,8 @@ const COMPACT_MAX_WIDTH = 520;
 const OVERSCAN = 4;
 /** 贴底判定阈值（px） */
 const END_THRESHOLD = 5;
+/** 跟随复核允许连续「位置未推进」的帧数：给程序侧贴底与测高修正留出追赶时间 */
+const VERIFY_MAX_STAGNANT_CHECKS = 5;
 /** 单批测高行数：一批只触发一次布局 */
 const MEASURE_BATCH = 64;
 /** 单批取行的时间预算（ms），以及单帧推进测高的总预算（ms） */
@@ -112,20 +115,32 @@ function onScroll(): void {
   // 直接量 DOM：库内 scrollOffset 由其自身的滚动监听更新，与本监听器的执行顺序不确定
   const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= END_THRESHOLD;
   if (follow.value && !atEnd) {
-    // 内容刚增长时位置还没跟上（程序侧贴底在同帧稍后才写），此时"不在末尾"不代表用户上滚；
-    // 隔一帧复核：真上滚会保持不在末尾，而增长触发的贴底已经把位置带到末尾。
-    if (!verifyFrame) verifyFrame = requestAnimationFrame(verifyFollow);
+    // 内容刚增长时位置还没跟上（程序侧贴底与测高修正要到后续帧才落定），此时"不在末尾"
+    // 不代表用户上滚；隔帧复核，由 followStep 判定何时才算真的上滚。
+    if (!verifyFrame) {
+      followCheck = { prevTop: el.scrollTop, stagnantChecks: 0 };
+      verifyFrame = requestAnimationFrame(verifyFollow);
+    }
     return;
   }
   if (!follow.value && atEnd) follow.value = true;
 }
 
-/** 复核跟随意图：一帧后仍不在末尾才判定用户上滚 */
+/** 复核跟随意图：位置停住且仍不在末尾（或视口上移）才判定用户上滚 */
 function verifyFollow(): void {
   verifyFrame = 0;
   const el = scrollEl.value;
   if (!el || !follow.value) return;
-  if (el.scrollHeight - el.scrollTop - el.clientHeight > END_THRESHOLD) follow.value = false;
+  const lag = el.scrollHeight - el.scrollTop - el.clientHeight;
+  const { verdict, state } = followStep(
+    followCheck, lag, el.scrollTop, END_THRESHOLD, VERIFY_MAX_STAGNANT_CHECKS,
+  );
+  followCheck = state;
+  if (verdict === 'drop') {
+    follow.value = false;
+    return;
+  }
+  if (lag > END_THRESHOLD) verifyFrame = requestAnimationFrame(verifyFollow); // 仍在追赶：继续复核
 }
 
 /**
@@ -152,6 +167,8 @@ const measuredIds = new Set<string>();
 let measureCursor = 0;
 let measureFrame = 0;
 let verifyFrame = 0;
+/** 跟随复核状态：上次复核位置 + 连续未推进次数 */
+let followCheck: FollowState = { prevTop: 0, stagnantChecks: 0 };
 let measuring = false;
 let disposed = false;
 
