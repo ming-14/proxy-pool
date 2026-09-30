@@ -7,14 +7,13 @@
  * 禁用全部拉取按钮。
  */
 import { computed, ref } from 'vue';
-import { api, errText } from '@/api/client';
+import { api } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
-import { useToastStore } from '@/stores/toast';
+import { runAction, type ActionToast } from '@/composables/runAction';
 import type { SourceStat } from '@/types/api';
 import { fmtDuration } from '@/utils/format';
 
 const store = useStatusStore();
-const toast = useToastStore();
 
 const sources = computed(() => store.status?.sources ?? []);
 /** 本地即时反馈（后端状态要等下一次轮询才可见） */
@@ -33,56 +32,54 @@ function rowFetching(s: SourceStat): boolean {
   return s.fetching || pending.value.has(s.name);
 }
 
+/** 拉取响应 → toast：后端幂等拒绝时按「进行中」提示，不谎报完成 */
+function fetchToast(
+  d: Awaited<ReturnType<typeof api.fetch>>,
+  done: (available: number) => string,
+): ActionToast {
+  if ('status' in d) return { type: 'info', title: '拉取进行中', message: '已有拉取任务在跑，请稍候' };
+  return { title: '拉取完成', message: done(d.available) };
+}
+
 async function doFetch() {
   pendingAll.value = true;
-  try {
-    const d = await api.fetch();
-    // 后端已有拉取在跑时幂等拒绝，按「进行中」提示，不谎报完成
-    if ('status' in d) toast.info('拉取进行中', '已有拉取任务在跑，请稍候');
-    else toast.success('拉取完成', `可用代理 ${d.available}`);
-  } catch (e) {
-    toast.error('拉取失败', errText(e));
-  } finally {
-    pendingAll.value = false;
-    await store.refreshNow();
-  }
+  await runAction(() => api.fetch(), {
+    ok: (d) => fetchToast(d, (n) => `可用代理 ${n}`),
+    failTitle: '拉取失败',
+    after: async () => {
+      pendingAll.value = false;
+      await store.refreshNow();
+    },
+  });
 }
 
 /** 单源拉取：拉取可能触发去重率暂停，完成后立即刷新以同步暂停态与按钮可见性 */
 async function doFetchSource(s: SourceStat) {
   pending.value.add(s.name);
-  try {
-    const d = await api.fetch(s.name);
-    if ('status' in d) toast.info('拉取进行中', '已有拉取任务在跑，请稍候');
-    else toast.success('拉取完成', `${s.short_name} · 可用代理 ${d.available}`);
-  } catch (e) {
-    toast.error('拉取失败', errText(e));
-  } finally {
-    pending.value.delete(s.name);
-    await store.refreshNow();
-  }
+  await runAction(() => api.fetch(s.name), {
+    ok: (d) => fetchToast(d, (n) => `${s.short_name} · 可用代理 ${n}`),
+    failTitle: '拉取失败',
+    after: async () => {
+      pending.value.delete(s.name);
+      await store.refreshNow();
+    },
+  });
 }
 
 async function doPause(source: string) {
-  try {
-    await api.pauseSource(source);
-    toast.success('已暂停', source);
-  } catch (e) {
-    toast.error('暂停失败', errText(e));
-  } finally {
-    await store.refreshNow();
-  }
+  await runAction(() => api.pauseSource(source), {
+    ok: { title: '已暂停', message: source },
+    failTitle: '暂停失败',
+    after: () => store.refreshNow(),
+  });
 }
 
 async function doResume(source: string) {
-  try {
-    await api.resumeSource(source);
-    toast.success('已恢复', source);
-  } catch (e) {
-    toast.error('恢复失败', errText(e));
-  } finally {
-    await store.refreshNow();
-  }
+  await runAction(() => api.resumeSource(source), {
+    ok: { title: '已恢复', message: source },
+    failTitle: '恢复失败',
+    after: () => store.refreshNow(),
+  });
 }
 </script>
 

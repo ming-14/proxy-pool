@@ -26,6 +26,7 @@ import { api, errText } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
+import { runAction } from '@/composables/runAction';
 import {
   checkPurity,
   prunePurityCache,
@@ -160,43 +161,35 @@ async function refreshQueueOrder() {
 }
 
 async function doPin(proxy: string) {
-  try {
-    await api.pin(proxy);
-    await refreshQueueOrder();
-    toast.success('已固定', '代理已移到队列最前');
-  } catch (e) {
-    toast.error('固定失败', errText(e));
-  }
+  await runAction(() => api.pin(proxy), {
+    ok: { title: '已固定', message: '代理已移到队列最前' },
+    failTitle: '固定失败',
+    after: refreshQueueOrder,
+  });
 }
 
 async function doUnpin(proxy: string) {
-  try {
-    await api.unpin(proxy);
-    await refreshQueueOrder();
-    toast.success('已解固', '代理回到延迟排序');
-  } catch (e) {
-    toast.error('解固失败', errText(e));
-  }
+  await runAction(() => api.unpin(proxy), {
+    ok: { title: '已解固', message: '代理回到延迟排序' },
+    failTitle: '解固失败',
+    after: refreshQueueOrder,
+  });
 }
 
 async function doLock(proxy: string) {
-  try {
-    await api.lock(proxy);
-    await refreshQueueOrder();
-    toast.success('已锁定', `只使用 ${proxy}`);
-  } catch (e) {
-    toast.error('锁定失败', errText(e));
-  }
+  await runAction(() => api.lock(proxy), {
+    ok: { title: '已锁定', message: `只使用 ${proxy}` },
+    failTitle: '锁定失败',
+    after: refreshQueueOrder,
+  });
 }
 
 async function doUnlock() {
-  try {
-    await api.unlock();
-    await refreshQueueOrder();
-    toast.success('已解锁', '恢复代理服务队列');
-  } catch (e) {
-    toast.error('解锁失败', errText(e));
-  }
+  await runAction(() => api.unlock(), {
+    ok: { title: '已解锁', message: '恢复代理服务队列' },
+    failTitle: '解锁失败',
+    after: refreshQueueOrder,
+  });
 }
 
 // ---------------- 每块的质量视图（一次算好，模板直接取） ----------------

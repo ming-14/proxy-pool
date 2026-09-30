@@ -12,6 +12,7 @@ import { api, errText } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
+import { runAction } from '@/composables/runAction';
 import ContextMenu from '@/components/ui/ContextMenu.vue';
 import Icon from '@/components/ui/Icon.vue';
 import type { IconName } from '@/components/ui/icons';
@@ -218,37 +219,37 @@ function buildMenuItems(): MenuItem[] {
 }
 
 // ---------------- 批量动作 ----------------
+/** 写动作收尾：清空选中 + 重载当前组 */
+function resetAndReload(): void {
+  selection.clear();
+  void reload();
+}
+
 async function doMove(proxies: string[], targetGroup: string) {
-  try {
-    const d = await api.moveProxy(proxies, targetGroup);
-    toast.success('已移动', `已将 ${d.count} 个代理移到 ${groups.value[targetGroup]?.label ?? targetGroup}`);
-    selection.clear();
-    reload();
-  } catch (e) {
-    toast.error('移动失败', errText(e));
-  }
+  await runAction(() => api.moveProxy(proxies, targetGroup), {
+    ok: (d) => ({
+      title: '已移动',
+      message: `已将 ${d.count} 个代理移到 ${groups.value[targetGroup]?.label ?? targetGroup}`,
+    }),
+    failTitle: '移动失败',
+    after: resetAndReload,
+  });
 }
 
 async function doBlacklist(proxies: string[]) {
-  try {
-    const d = await api.blacklist(proxies);
-    toast.success('已拉黑', `已将 ${d.count} 个代理加入黑名单`);
-    selection.clear();
-    reload();
-  } catch (e) {
-    toast.error('拉黑失败', errText(e));
-  }
+  await runAction(() => api.blacklist(proxies), {
+    ok: (d) => ({ title: '已拉黑', message: `已将 ${d.count} 个代理加入黑名单` }),
+    failTitle: '拉黑失败',
+    after: resetAndReload,
+  });
 }
 
 async function doDelete(proxies: string[]) {
-  try {
-    const d = await api.removeProxy(proxies, currentGroup.value!);
-    toast.success('已删除', `已从当前组移除 ${d.count} 个代理`);
-    selection.clear();
-    reload();
-  } catch (e) {
-    toast.error('删除失败', errText(e));
-  }
+  await runAction(() => api.removeProxy(proxies, currentGroup.value!), {
+    ok: (d) => ({ title: '已删除', message: `已从当前组移除 ${d.count} 个代理` }),
+    failTitle: '删除失败',
+    after: resetAndReload,
+  });
 }
 
 /** 还原：按 source_group 分组各自回来源组；无来源组记录的跳过并提示 */
@@ -267,19 +268,23 @@ async function doRestore(proxies: string[]) {
     toast.error('还原失败', '所选代理均无来源组记录，无法还原');
     return;
   }
-  try {
-    let total = 0;
-    for (const [target, list] of Object.entries(byTarget)) {
-      const d = await api.moveProxy(list, target);
-      total += d.count;
-    }
-    const skippedText = skipped ? `，${skipped} 个无来源组被跳过` : '';
-    toast.success('已还原', `已还原 ${total} 个代理${skippedText}`);
-    selection.clear();
-    reload();
-  } catch (e) {
-    toast.error('还原失败', errText(e));
-  }
+  await runAction(
+    async () => {
+      let total = 0;
+      for (const [target, list] of Object.entries(byTarget)) {
+        total += (await api.moveProxy(list, target)).count;
+      }
+      return { total };
+    },
+    {
+      ok: ({ total }) => ({
+        title: '已还原',
+        message: `已还原 ${total} 个代理${skipped ? `，${skipped} 个无来源组被跳过` : ''}`,
+      }),
+      failTitle: '还原失败',
+      after: resetAndReload,
+    },
+  );
 }
 
 function onMenuAction(item: MenuItem, fallbackProxy: string) {
