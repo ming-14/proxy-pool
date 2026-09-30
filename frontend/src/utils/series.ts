@@ -232,9 +232,14 @@ export function matchPrevAvg(
   });
 }
 
-/** 按时间窗口裁剪（早于 cutoff 的点丢弃） */
-export function trimBefore<T extends [number, unknown]>(points: T[], cutoff: number): T[] {
+/** 按时间窗口裁剪：早于 cutoff 的点丢弃（key 取该点时间戳；无需裁剪返回原引用） */
+export function trimWith<T>(points: T[], cutoff: number, key: (p: T) => number): T[] {
   let i = 0;
-  while (i < points.length && points[i][0] < cutoff) i++;
+  while (i < points.length && key(points[i]) < cutoff) i++;
   return i === 0 ? points : points.slice(i);
+}
+
+/** 按时间窗口裁剪（点形如 [ts, value]） */
+export function trimBefore<T extends [number, unknown]>(points: T[], cutoff: number): T[] {
+  return trimWith(points, cutoff, (p) => p[0]);
 }

@@ -17,6 +17,7 @@ import { computed, ref } from 'vue';
 import { api, errText } from '@/api/client';
 import type { StandbyHistoryPoint, StatusHistory, StatusSnapshot, TrafficHistoryPoint } from '@/types/api';
 import { useToastStore } from '@/stores/toast';
+import { trimWith } from '@/utils/series';
 
 /** /api/status 轮询间隔（固定值，面板无运行时调节项） */
 const POLL_INTERVAL_MS = 2000;
@@ -37,9 +38,7 @@ export function mergePoints<T extends { ts: number }>(
   if (!incoming.length) return existing;
   const merged = existing.concat(incoming);
   const cutoff = merged[merged.length - 1].ts - windowS;
-  let i = 0;
-  while (i < merged.length && merged[i].ts < cutoff) i++;
-  return i === 0 ? merged : merged.slice(i);
+  return trimWith(merged, cutoff, (p) => p.ts);
 }
 
 /** 纯函数：增量游标 = 两序列最后点的最大 ts。可单测。 */

@@ -11,6 +11,7 @@ import {
   sparkStats,
   toRates,
   trimBefore,
+  trimWith,
   type NumericPoint,
 } from '@/utils/series';
 
@@ -199,6 +200,19 @@ describe('trimBefore', () => {
   it('无需裁剪时返回原数组引用（避免无谓重建）', () => {
     const pts: [number, number][] = [[10, 0]];
     expect(trimBefore(pts, 5)).toBe(pts);
+  });
+});
+
+describe('trimWith', () => {
+  it('按 key 取时间戳裁剪（对象元素：历史合并复用）', () => {
+    const pts = [{ ts: 1 }, { ts: 5 }, { ts: 9 }];
+    expect(trimWith(pts, 5, (p) => p.ts)).toEqual([{ ts: 5 }, { ts: 9 }]);
+    expect(trimWith(pts, 100, (p) => p.ts)).toEqual([]);
+  });
+
+  it('无需裁剪时返回原数组引用（与 trimBefore 同一语义）', () => {
+    const pts = [{ ts: 10 }];
+    expect(trimWith(pts, 5, (p) => p.ts)).toBe(pts);
   });
 });
 
