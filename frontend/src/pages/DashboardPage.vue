@@ -11,7 +11,7 @@ import { lineChartOption } from '@/components/charts/chartOptions';
 import { useLineTheme } from '@/components/charts/useLineTheme';
 import { useStatusStore } from '@/stores/status';
 import { fmtBytesSpaced, fmtTime } from '@/utils/format';
-import { matchPrevAvg } from '@/utils/series';
+import { diffRates, matchPrevAvg } from '@/utils/series';
 import type { TrafficHistoryPoint } from '@/types/api';
 
 const store = useStatusStore();
@@ -75,19 +75,10 @@ const healthOption = computed(() => {
 
 /** 累计字节序列 → 相邻差分速率（与旧 renderTraffic 语义一致：首点无差分被跳过） */
 function trafficRates(th: TrafficHistoryPoint[]) {
-  const labels: string[] = [];
-  const ts: number[] = [];
-  const up: number[] = [];
-  const down: number[] = [];
-  for (let i = 1; i < th.length; i++) {
-    const dt = th[i].ts - th[i - 1].ts;
-    if (dt <= 0) continue;
-    ts.push(th[i].ts);
-    labels.push(fmtTime(th[i].ts));
-    up.push((th[i].total_upload - th[i - 1].total_upload) / dt);
-    down.push((th[i].total_download - th[i - 1].total_download) / dt);
-  }
-  return { ts, labels, up, down };
+  const up = diffRates(th, (p) => [p.ts, p.total_upload]);
+  const down = diffRates(th, (p) => [p.ts, p.total_download]);
+  const ts = up.map(([t]) => t);
+  return { ts, labels: ts.map(fmtTime), up: up.map(([, v]) => v), down: down.map(([, v]) => v) };
 }
 
 const trafficOption = computed(() => {

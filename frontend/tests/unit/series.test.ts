@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_SPARK_POINTS,
   dedupeByTs,
+  diffRates,
   downsample,
   matchPrevAvg,
   seriesTimeWindow,
@@ -31,6 +32,38 @@ describe('downsample', () => {
   it('默认上限为 MAX_SPARK_POINTS', () => {
     const pts: NumericPoint[] = Array.from({ length: 500 }, (_, i) => [i, i]);
     expect(downsample(pts)).toHaveLength(MAX_SPARK_POINTS);
+  });
+});
+
+describe('diffRates', () => {
+  it('按取值器差分（对象元素：仪表盘流量图复用）', () => {
+    const th = [
+      { ts: 0, up: 0, down: 100 },
+      { ts: 0, up: 5, down: 0 },      // 与上一点同 ts → 该间隔跳过
+      { ts: 2, up: 15, down: 8 },
+      { ts: 4, up: 35, down: 20 },
+    ];
+    expect(diffRates(th, (p) => [p.ts, p.up])).toEqual([[2, 5], [4, 10]]);
+    expect(diffRates(th, (p) => [p.ts, p.down])).toEqual([[2, 4], [4, 6]]);
+  });
+
+  it('两条序列在同一序列上跳过同一批间隔（仪表盘上下行 ts 对齐）', () => {
+    const th = [{ ts: 0, up: 0, down: 9 }, { ts: 1, up: 1, down: 9 }, { ts: 1, up: 2, down: 9 }];
+    const up = diffRates(th, (p) => [p.ts, p.up]);
+    const down = diffRates(th, (p) => [p.ts, p.down]);
+    expect(up.map(([t]) => t)).toEqual(down.map(([t]) => t));
+  });
+
+  it('首点无参照不产点；单点/空序列为空', () => {
+    const one: [number, number][] = [[0, 5]];
+    const none: [number, number][] = [];
+    expect(diffRates(one, (s) => s)).toEqual([]);
+    expect(diffRates(none, (s) => s)).toEqual([]);
+  });
+
+  it('非正速率原样保留（是否置 null 由调用方决定：sparkline 断线 / KPI 显示 0）', () => {
+    const pts: [number, number][] = [[0, 10], [2, 10], [4, 5]];
+    expect(diffRates(pts, (s) => s)).toEqual([[2, 0], [4, -2.5]]);
   });
 });
 

@@ -34,21 +34,29 @@ export function downsample(points: NumericPoint[], max = MAX_SPARK_POINTS): Nume
 }
 
 /**
- * 累计值序列 → 速率序列（字节/秒）：相邻点差分除以时间间隔；时间不前进的点丢弃。
- *
- * 非正速率（该间隔没有流量）一律置 null：**不绘制、也不参与 y 值域**。
- * 不这样做时，"零流量"会画成一条平线（全零时值域退化、线落在中间），看着像有数据，
- * 还会把真正有流量的尖峰压平；与仪表盘流量图的规则保持一致。
+ * 相邻点差分（累计值 → 速率）：首点无参照不产点，时间不前进（dt<=0）的间隔跳过。
+ * 只做差分，不决定"非正值怎么处理"——是否置 null 由调用方按各自渲染需要决定。
  */
-export function toRates(samples: [number, number][]): NumericPoint[] {
-  const out: NumericPoint[] = [];
-  for (let i = 1; i < samples.length; i++) {
-    const dt = samples[i][0] - samples[i - 1][0];
+export function diffRates<T>(points: T[], pick: (p: T) => [ts: number, value: number]): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 1; i < points.length; i++) {
+    const [t0, v0] = pick(points[i - 1]);
+    const [t1, v1] = pick(points[i]);
+    const dt = t1 - t0;
     if (dt <= 0) continue;
-    const rate = (samples[i][1] - samples[i - 1][1]) / dt;
-    out.push([samples[i][0], rate > 0 ? rate : null]);
+    out.push([t1, (v1 - v0) / dt]);
   }
   return out;
+}
+
+/**
+ * 累计值序列 → 速率序列（字节/秒）：diffRates 差分后，非正速率（该间隔没有流量）一律
+ * 置 null：**不绘制、也不参与 y 值域**。不这样做时，"零流量"会画成一条平线（全零时
+ * 值域退化、线落在中间），看着像有数据，还会把真正有流量的尖峰压平。
+ * （仪表盘流量图的同类效果由对数轴的 logAxisSafe 承担，换成线性轴就会分叉。）
+ */
+export function toRates(samples: [number, number][]): NumericPoint[] {
+  return diffRates(samples, (s) => s).map(([ts, rate]) => [ts, rate > 0 ? rate : null]);
 }
 
 export interface SparkDomain {
