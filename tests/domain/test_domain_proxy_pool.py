@@ -109,6 +109,32 @@ class TestProxyPool(unittest.TestCase):
         group, info = self.pool.find_proxy("http://1.2.3.4:8080")
         self.assertEqual(group, "trusted")
 
+    def test_find_proxy_expired_copy_does_not_mask_active_copy(self):
+        """回归：早序组的过期副本曾使 find_proxy 直接返回 None，掩盖后序组的活跃副本"""
+        self.pool.add_to_group("github-http", "http://1.2.3.4:8080")     # 活跃副本（never，组序靠后）
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")    # 过期副本（3600s，组序靠前）
+        self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["joined_at"] = (
+            time.time() - PROXY_GROUPS["default-http"] - 1
+        )
+        self.pool.clear_dirty()
+        group, info = self.pool.find_proxy("http://1.2.3.4:8080")
+        self.assertEqual(group, "github-http")
+        self.assertIsNotNone(info)
+        # 过期副本顺路清除并置脏（增量保存要同步这次删除）
+        self.assertNotIn("http://1.2.3.4:8080", self.pool.proxy_groups["default-http"]["proxies"])
+        self.assertIn("default-http", self.pool.dirty_groups())
+
+    def test_find_proxy_expired_copy_does_not_mask_active_blacklist_copy(self):
+        """真实配置形态：default-http(3600s) 过期副本 + blacklist(10800s) 活跃副本 → 命中黑名单组"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["joined_at"] = (
+            time.time() - PROXY_GROUPS["default-http"] - 1
+        )
+        self.pool.add_to_group("blacklist", "http://1.2.3.4:8080")
+        group, _ = self.pool.find_proxy("http://1.2.3.4:8080")
+        self.assertEqual(group, "blacklist")
+        self.assertTrue(self.pool.is_blacklisted("http://1.2.3.4:8080"))
+
     def test_move_proxy(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=1)
         self.pool.move_proxy("http://1.2.3.4:8080", "trusted", consecutive_fails=0)

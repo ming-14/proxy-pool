@@ -121,7 +121,7 @@ class ProxyPool:
             if self._is_active(name, proxy):
                 return name, group["proxies"][proxy]
             del group["proxies"][proxy]
-            return None, None
+            self._dirty_groups.add(name)
         return None, None
 
     def add_to_group(self, group_name: str, proxy: str, consecutive_fails: int = 0,

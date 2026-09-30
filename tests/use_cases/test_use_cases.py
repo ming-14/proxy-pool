@@ -119,6 +119,28 @@ class TestRecordProxyUseCase(unittest.TestCase):
         # 连续语义：成功清零队列副本的连续失败计数（不保留旧累计值）
         self.assertEqual(self.pool.proxy_groups[STANDBY_GROUP]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 0)
 
+    def test_record_fail_lands_on_active_copy_behind_expired_copy(self):
+        """回归：早序组过期副本曾使 find_proxy 返回 None，失败计数被静默丢弃（死代理永不淘汰）"""
+        self.pool.add_to_group("github-http", "http://1.2.3.4:8080")
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["joined_at"] = (
+            time.time() - PROXY_GROUPS["default-http"] - 1
+        )
+        self.record.record_fail("http://1.2.3.4:8080")
+        self.assertEqual(
+            self.pool.proxy_groups["github-http"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 1)
+        self.assertEqual(self.record.get_consecutive_fail_count("http://1.2.3.4:8080"), 1)
+
+    def test_record_success_promotes_behind_expired_copy(self):
+        """回归：同状态下成功必须晋级 trusted（旧实现 group_name=None → 静默不晋级）"""
+        self.pool.add_to_group("github-http", "http://1.2.3.4:8080")
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["joined_at"] = (
+            time.time() - PROXY_GROUPS["default-http"] - 1
+        )
+        self.record.record_success("http://1.2.3.4:8080")
+        self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups["trusted"]["proxies"])
+
     def test_remove_clears_all_copies(self):
         """拉黑时清理所有组副本（standby 复制进 trusted 的残留副本一并清除）"""
         self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080")

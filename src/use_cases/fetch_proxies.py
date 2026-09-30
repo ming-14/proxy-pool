@@ -118,7 +118,7 @@ class FetchProxiesUseCase:
             if not proxy_list:  # None（拉取失败）与 []（成功但无代理）都不入池
                 continue
             for p in proxy_list:
-                if p in seen or self._pool.find_proxy(p)[0] is not None or self._pool.is_blacklisted(p):
+                if p in seen or self._pool.find_proxy(p)[0] is not None:
                     continue
                 seen.add(p)
                 rule = match_rule(self._filter_rules, src.name, p)
