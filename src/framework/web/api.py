@@ -111,6 +111,24 @@ def _geo_payload(geo: dict | None) -> dict | None:
     }
 
 
+async def _resolve_geo(ctx: PanelContext, ips: list[str]) -> dict[str, dict]:
+    """归属查询三步编排（SQLite 线程绑定）：主线程读缓存 → executor 定位缺失（纯 mmdb）→ 主线程写缓存
+
+    组明细/队列页/地图共用；查询失败只记日志并降级为「无归属」，不阻断页面。
+    调用方须先确认 ctx.geo 非 None（geoip 关闭时不构造）。
+    """
+    try:
+        cached, missing = ctx.geo.query_cache(ips)
+        located: dict[str, dict] = {}
+        if missing:
+            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
+            ctx.geo.save_cache(located)
+        return {**cached, **located}
+    except Exception:
+        logger.exception("IP 归属查询失败: %d 个 IP", len(ips))
+        return {}
+
+
 def _status_snapshot(ctx: PanelContext) -> dict:
     """全量状态快照：组统计 / 可用数 / 代理服务队列（含锁定行）/ 待补测 / 源暂停 / 调度参数"""
     pool = ctx.pool
@@ -259,8 +277,6 @@ def _standby_series(ctx: PanelContext, since: float | None) -> dict:
 async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
     """单组代理明细（地址/加入时间/连续失败数/latency/过期倒计时/来源组/IP 归属）
 
-    IP 归属复用 IpGeoUseCase 三步编排（SQLite 线程绑定）：
-    主线程读缓存 → executor 定位缺失 IP（纯 mmdb）→ 主线程写缓存。
     首次打开组页面会补齐该组新增 IP 的归属缓存，之后纯读缓存。
     """
     pool = ctx.pool
@@ -280,20 +296,10 @@ async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
             "expires_in": expires_in,
             "source_group": info.get("source_group"),
         })
-    # IP 归属：批量查缓存（主线程），缺失的批量定位（executor）+ 写缓存（主线程）
-    # geoip.enabled=false 时 geo 为 None，跳过归属查询（proxies 不带 geo 字段）
+    # geoip.enabled=false 时 geo 为 None，proxies 不带 geo 字段
     geo_map: dict[str, dict] = {}
     if ctx.geo is not None:
-        ips = [proxy_to_ip(x["proxy"]) for x in proxies]
-        try:
-            cached, missing = ctx.geo.query_cache(ips)
-            located: dict[str, dict] = {}
-            if missing:
-                located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
-                ctx.geo.save_cache(located)
-            geo_map = {**cached, **located}
-        except Exception:
-            logger.exception("代理组 IP 归属查询失败 group=%s", name)
+        geo_map = await _resolve_geo(ctx, [proxy_to_ip(x["proxy"]) for x in proxies])
     for x in proxies:
         x["geo"] = _geo_payload(geo_map.get(proxy_to_ip(x["proxy"])))
     return {"group": name, "ttl": ttl, "count": len(proxies), "proxies": proxies}
@@ -384,23 +390,12 @@ async def _standby_series_route(request: web.Request) -> web.Response:
 async def _standby_geo(request: web.Request) -> web.Response:
     """代理服务队列的 IP 归属（bind → {country, country_code, province, city}）
 
-    与 _group_detail 同一套三步编排（SQLite 连接线程绑定）：主线程读缓存 → executor
-    定位缺失 IP（纯 mmdb）→ 主线程写缓存。归属变化以月计，前端 5 分钟拉一次，不进
-    /api/status 的 2s 热路径；geoip 关闭时不注册本路由（前端按 geo_enabled 跳过）。
+    归属变化以月计，前端 5 分钟拉一次，不进 /api/status 的 2s 热路径；
+    geoip 关闭时不注册本路由（前端按 geo_enabled 跳过）。
     """
     ctx = request.app[_PANEL_KEY]
     proxies = _standby_rows(ctx)
-    ips = [proxy_to_ip(p) for p in proxies]
-    cached: dict[str, dict] = {}
-    located: dict[str, dict] = {}
-    try:
-        cached, missing = ctx.geo.query_cache(ips)
-        if missing:
-            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
-            ctx.geo.save_cache(located)
-    except Exception:
-        logger.exception("代理服务队列 IP 归属查询失败")
-    geo_map = {**cached, **located}
+    geo_map = await _resolve_geo(ctx, [proxy_to_ip(p) for p in proxies])
     return web.json_response({
         "geo": {bind_of(p): _geo_payload(geo_map.get(proxy_to_ip(p))) for p in proxies},
     })
@@ -596,28 +591,11 @@ async def _json_body(request: web.Request) -> dict:
 async def _geo_map(request: web.Request) -> web.Response:
     """IP 归属地图：池中全部 IP 定位后聚合为城市级散点 + 国家级汇总
 
-    线程安全（SQLite 连接线程绑定）三步编排：
-      1. collect_ips + query_cache 在事件循环线程（主线程 SQLite 读）
-      2. locate 在 executor 线程（纯 mmdb 磁盘读，不碰 SQLite）
-      3. save_cache 在事件循环线程（主线程 SQLite 写）
     首次请求全量定位并落缓存，之后纯读缓存（毫秒级）。
     """
     ctx = request.app[_PANEL_KEY]
-    # 1. 收集池中全部 IP + 查缓存（主线程）
     ips = ctx.geo.collect_ips(ctx.pool)
-    cached, missing = ctx.geo.query_cache(ips)
-    # 2. 缺失 IP 批量定位（executor 线程，纯 mmdb 查询）
-    located: dict[str, dict] = {}
-    if missing:
-        try:
-            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
-        except Exception:
-            logger.exception("IP 归属批量定位失败: %d 个", len(missing))
-            located = {}
-        # 3. 写缓存（主线程 SQLite 写）
-        ctx.geo.save_cache(located)
-    # 4. 聚合（纯计算）
-    geo_map = {**cached, **located}
+    geo_map = await _resolve_geo(ctx, ips)
     agg = ctx.geo.aggregate(geo_map)
     return web.json_response({
         "total_ips": len(ips),
