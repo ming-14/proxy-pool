@@ -9,6 +9,7 @@ vs 旧 JSON 全量序列化 706KB / 0.3s。复合主键 (proxy, group_name)
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -92,6 +93,17 @@ class SqliteProxyStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
 
+    @contextlib.contextmanager
+    def _tx(self):
+        """显式事务（isolation_level=None，须手动 BEGIN/COMMIT）：异常回滚后重抛"""
+        self._conn.execute("BEGIN")
+        try:
+            yield
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
     def load(self) -> dict:
         """加载全量状态（启动时调用，返回 export_state 兼容格式）
 
@@ -137,21 +149,13 @@ class SqliteProxyStore:
         return {"proxy_groups": proxy_groups, "source_paused": source_paused}
 
     def save_full(self, state: dict) -> None:
-        """全量替换（CLI 命令退出 / serve 退出，确保一致性）
-
-        事务内 DELETE 三表 + INSERT 全部。
-        """
-        self._conn.execute("BEGIN")
-        try:
+        """全量替换（CLI 命令退出 / serve 退出，确保一致性）：事务内 DELETE 三表 + INSERT 全部"""
+        with self._tx():
             self._conn.execute("DELETE FROM proxies")
             self._conn.execute("DELETE FROM source_paused")
             self._conn.execute("DELETE FROM group_meta")
             self._insert_groups(state.get("proxy_groups", {}))
             self._insert_source_paused(state.get("source_paused", {}))
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def save_group(self, group_name: str, group_data: dict) -> None:
         """增量保存单个组（事务内 DELETE 该组旧行 + INSERT 新行）
@@ -159,26 +163,16 @@ class SqliteProxyStore:
         Args:
             group_data: {"ttl": ..., "proxies": [{"proxy", "joined_at", ...}]}
         """
-        self._conn.execute("BEGIN")
-        try:
+        with self._tx():
             self._conn.execute("DELETE FROM proxies WHERE group_name=?", (group_name,))
             self._conn.execute("DELETE FROM group_meta WHERE group_name=?", (group_name,))
             self._insert_one_group(group_name, group_data)
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def save_source_paused(self, source_paused: dict) -> None:
         """增量保存源暂停状态（全量替换 source_paused 表）"""
-        self._conn.execute("BEGIN")
-        try:
+        with self._tx():
             self._conn.execute("DELETE FROM source_paused")
             self._insert_source_paused(source_paused)
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def _insert_groups(self, proxy_groups: dict) -> None:
         """批量插入所有组（proxies + group_meta）"""
