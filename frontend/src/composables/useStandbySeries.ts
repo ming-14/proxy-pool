@@ -9,6 +9,7 @@
  */
 import { reactive, ref } from 'vue';
 import { api } from '@/api/client';
+import { pruneMap } from '@/utils/prune';
 import { dedupeByTs, trimBefore } from '@/utils/series';
 import type { SeriesPoint, StandbySeriesEntry } from '@/types/api';
 
@@ -40,20 +41,16 @@ function mergeEntry(buf: SeriesBuffer, entry: StandbySeriesEntry): void {
 
 /** 丢弃离队代理的缓冲 + 裁剪窗口外的点；缓冲一旦全空，游标归零（下次必须全量拉取） */
 function pruneBuffers(binds: string[]): void {
-  const keep = new Set(binds);
-  const win = windowS;
-  for (const [bind, buf] of seriesBuffers) {
-    if (!keep.has(bind)) {
-      seriesBuffers.delete(bind);
-      continue;
+  pruneMap(seriesBuffers, binds);
+  if (windowS !== null) {
+    const cutoff = Date.now() / 1000 - windowS;
+    for (const buf of seriesBuffers.values()) {
+      buf.lat = trimBefore(buf.lat, cutoff);
+      buf.up = trimBefore(buf.up, cutoff);
+      buf.down = trimBefore(buf.down, cutoff);
     }
-    if (win === null) continue;
-    const cutoff = Date.now() / 1000 - win;
-    buf.lat = trimBefore(buf.lat, cutoff);
-    buf.up = trimBefore(buf.up, cutoff);
-    buf.down = trimBefore(buf.down, cutoff);
   }
-  // 队列清空后再填充时，若保留旧游标会只拿到增量点、图表从空白开始
+  // 队列清空后再填充时，保留旧游标会只拿到增量点、图表从空白开始
   if (seriesBuffers.size === 0) cursor.value = 0;
 }
 

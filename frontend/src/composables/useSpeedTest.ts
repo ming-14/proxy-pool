@@ -11,6 +11,7 @@
  */
 import { reactive } from 'vue';
 import { api, errText } from '@/api/client';
+import { pruneMap } from '@/utils/prune';
 import type { SpeedTestResult, SpeedTestStatus } from '@/types/api';
 
 export interface SpeedTestState {
@@ -55,18 +56,9 @@ export function speedTestEntryOf(
   return speedTests.get(bind);
 }
 
-/**
- * 丢弃已离队代理的测速结果。
- *
- * 结果按 bind 累积，代理离队后条目永不再命中，不清理会随驻留时长无界增长
- * （与 useStandbySeries 的 pruneBuffers 同一口径）。后端 PanelTasks 亦存有任务
- * 状态并由 /api/status 下发，故丢弃本地副本不丢失结果。
- */
+/** 丢弃已离队代理的测速结果（后端 PanelTasks 仍持有任务状态，不丢失） */
 export function pruneSpeedTests(binds: string[]): void {
-  const keep = new Set(binds);
-  for (const bind of speedTests.keys()) {
-    if (!keep.has(bind)) speedTests.delete(bind);
-  }
+  pruneMap(speedTests, binds);
 }
 
 /** 触发测速（幂等：进行中直接返回）。失败就地展示错误文案，不弹 toast（行内可见） */

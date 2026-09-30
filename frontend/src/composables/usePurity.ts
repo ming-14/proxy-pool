@@ -14,6 +14,7 @@ import { reactive } from 'vue';
 import { api, errText } from '@/api/client';
 import { useToastStore } from '@/stores/toast';
 import { bindOf } from '@/utils/format';
+import { pruneMap } from '@/utils/prune';
 import type { PurityInfo, PurityState } from '@/types/api';
 
 export interface PurityEntry extends PurityInfo {
@@ -74,19 +75,9 @@ export function purityEntryOf(
   return purityCache.get(bind) ?? null;
 }
 
-/**
- * 丢弃已离队代理的纯净度缓存。
- *
- * 缓存按 bind 累积，代理离队后条目永不再命中，不清理会随驻留时长无界增长
- * （与 useStandbySeries 的 pruneBuffers 同一口径）。已完成的检查结果同时由后端
- * SQLite 缓存承载（/api/status 每行下发 purity），故丢弃本地副本不会丢失结果——
- * 代理重新入队时由 purityEntryOf 的 cached 分支恢复。
- */
+/** 丢弃已离队代理的缓存（结果由后端 SQLite 缓存承载，重新入队时自动恢复） */
 export function prunePurityCache(binds: string[]): void {
-  const keep = new Set(binds);
-  for (const bind of purityCache.keys()) {
-    if (!keep.has(bind)) purityCache.delete(bind);
-  }
+  pruneMap(purityCache, binds);
 }
 
 /** 触发检查（幂等：checking 中直接返回）。结果写缓存，tag 由响应式缓存驱动更新。 */

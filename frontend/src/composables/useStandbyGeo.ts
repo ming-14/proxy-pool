@@ -7,6 +7,7 @@
  */
 import { reactive } from 'vue';
 import { api } from '@/api/client';
+import { pruneMap } from '@/utils/prune';
 import type { GeoInfo } from '@/types/api';
 
 export const GEO_REFRESH_MS = 5 * 60 * 1000;
@@ -26,9 +27,7 @@ export async function refreshStandbyGeo(enabled: boolean, binds: string[]): Prom
     for (const [bind, geo] of Object.entries(data.geo)) {
       if (geo) standbyGeo.set(bind, geo);
     }
-    // 只在保留集非空时清理：本函数有 5 分钟节流，误清一次就要空窗到下一拍才恢复。
-    // 进入页面首帧必然带空 binds（displayStandby 尚未填充），若照常清理会清空整个
-    // 归属地缓存，此后 5 分钟内所有行的归属地列都是空的。
+    // 保留集非空才清理：首帧 binds 必为空（displayStandby 尚未填充），误清一次要空窗到下一拍
     if (binds.length) pruneStandbyGeo(binds);
   } catch (err) {
     lastFetch = 0;
@@ -36,18 +35,9 @@ export async function refreshStandbyGeo(enabled: boolean, binds: string[]): Prom
   }
 }
 
-/**
- * 丢弃已离队代理的归属地。
- *
- * 归属地按 bind 累积，代理离队后条目永不再命中，不清理会随驻留时长无界增长
- * （与 useStandbySeries 的 pruneBuffers 同一口径：由页面按当前队列传入保留集）。
- * 须由调用方保证 binds 非空——空集代表"队列暂无数据"，不等于"代理都已离队"。
- */
+/** 丢弃已离队代理的归属地（binds 须非空：空集代表"队列暂无数据"，不等于都已离队） */
 export function pruneStandbyGeo(binds: string[]): void {
-  const keep = new Set(binds);
-  for (const bind of standbyGeo.keys()) {
-    if (!keep.has(bind)) standbyGeo.delete(bind);
-  }
+  pruneMap(standbyGeo, binds);
 }
 
 /** 展示用归属地文本：国有/省市缺失时逐级退化（无归属返回 null） */
