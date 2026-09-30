@@ -9,6 +9,7 @@ import {
   fmtBytesSpaced,
   fmtDuration,
   fmtLatency,
+  fmtTime,
   speedAllFailed,
   speedSummary,
   speedSummaryTitle,
@@ -69,6 +70,17 @@ describe('fmtLatency / bindOf', () => {
   it('bindOf 去 scheme', () => {
     expect(bindOf('http://1.2.3.4:8080')).toBe('1.2.3.4:8080');
     expect(bindOf('1.2.3.4:8080')).toBe('1.2.3.4:8080');
+  });
+});
+
+describe('fmtTime', () => {
+  it('秒级时间戳 → HH:MM:SS（24h 制，无 AM/PM）', () => {
+    expect(fmtTime(1700000000)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect(fmtTime(1700000000)).not.toMatch(/[AP]M/i);
+  });
+
+  it('接受小数秒（Date.now()/1000 这类本地完成时刻）', () => {
+    expect(fmtTime(Date.now() / 1000)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
   });
 });
 

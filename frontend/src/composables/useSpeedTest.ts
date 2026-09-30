@@ -11,6 +11,7 @@
  */
 import { reactive } from 'vue';
 import { api, errText } from '@/api/client';
+import { fmtTime } from '@/utils/format';
 import { pruneMap } from '@/utils/prune';
 import type { SpeedTestResult, SpeedTestStatus } from '@/types/api';
 
@@ -29,11 +30,6 @@ export function speedTestOf(bind: string): SpeedTestState | undefined {
   return speedTests.get(bind);
 }
 
-/** epoch 秒 → HH:MM:SS（后端完成时间戳与本地完成时刻统一格式） */
-function fmtClock(epochSec: number): string {
-  return new Date(epochSec * 1000).toLocaleTimeString('zh-CN', { hour12: false });
-}
-
 /**
  * 行内测速状态解析（纯函数，可单测）：后端状态权威，本地 Map 兜底。
  * - server running → 测速中（刷新后恢复；本地旧终态让位，后端正在新任务）
@@ -50,7 +46,7 @@ export function speedTestEntryOf(
       status: 'done',
       result: server.result ?? undefined,
       error: server.error ?? undefined,
-      time: server.ts != null ? fmtClock(server.ts) : undefined,
+      time: server.ts != null ? fmtTime(server.ts) : undefined,
     };
   }
   return speedTests.get(bind);
@@ -73,12 +69,12 @@ export async function runSpeedTest(bind: string): Promise<void> {
       speedTests.set(bind, { status: 'running' });
       return;
     }
-    speedTests.set(bind, { status: 'done', result, time: fmtClock(Date.now() / 1000) });
+    speedTests.set(bind, { status: 'done', result, time: fmtTime(Date.now() / 1000) });
   } catch (e) {
     speedTests.set(bind, {
       status: 'done',
       error: errText(e),
-      time: fmtClock(Date.now() / 1000),
+      time: fmtTime(Date.now() / 1000),
     });
   }
 }

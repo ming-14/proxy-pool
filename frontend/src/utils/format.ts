@@ -52,7 +52,7 @@ export function bindOf(proxy: string): string {
   return proxy.includes('://') ? proxy.split('://')[1] : proxy;
 }
 
-/** 采样时间戳（秒）→ HH:MM:SS（zh-CN 24h 制，与旧图表 x 轴一致） */
+/** 秒级时间戳 → HH:MM:SS（zh-CN 24h 制）：图表 x 轴采样时间、测速完成时刻（服务端 ts 与本地 Date.now()/1000）共用 */
 export function fmtTime(tsSeconds: number): string {
   return new Date(tsSeconds * 1000).toLocaleTimeString('zh-CN', { hour12: false });
 }
