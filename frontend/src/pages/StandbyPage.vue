@@ -22,7 +22,7 @@
  * 其余行灰显且不可交互——不单独开锁定卡片。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { api, errText } from '@/api/client';
+import { api } from '@/api/client';
 import { useStatusStore } from '@/stores/status';
 import { useToastStore } from '@/stores/toast';
 import { useRowSelection } from '@/composables/useRowSelection';
@@ -158,6 +158,12 @@ watch(
 async function refreshQueueOrder() {
   await store.refreshNow();
   displayStandby.value = [...(store.status?.standby ?? [])];
+}
+
+/** 移出/拉黑成功后收尾：清空选中并按最新队列回正顺序 */
+async function afterRemoval() {
+  selection.clear();
+  await refreshQueueOrder();
 }
 
 async function doPin(proxy: string) {
@@ -406,25 +412,19 @@ async function onMenuAction(item: MenuItem) {
   }
   if (item.action === 'move' && item.group) {
     const target = item.group;
-    try {
-      const d = await api.moveProxy(list, target);
-      toast.success('已移出', `已将 ${d.count} 个代理移到 ${groups.value[target]?.label ?? target}`);
-      selection.clear();
-      await refreshQueueOrder();
-    } catch (e) {
-      toast.error('移出失败', errText(e));
-    }
+    await runAction(() => api.moveProxy(list, target), {
+      ok: (d) => ({ title: '已移出', message: `已将 ${d.count} 个代理移到 ${groups.value[target]?.label ?? target}` }),
+      failTitle: '移出失败',
+      after: afterRemoval,
+    });
     return;
   }
   if (item.action === 'blacklist') {
-    try {
-      const d = await api.blacklist(list);
-      toast.success('已拉黑', `已将 ${d.count} 个代理加入黑名单`);
-      selection.clear();
-      await refreshQueueOrder();
-    } catch (e) {
-      toast.error('拉黑失败', errText(e));
-    }
+    await runAction(() => api.blacklist(list), {
+      ok: (d) => ({ title: '已拉黑', message: `已将 ${d.count} 个代理加入黑名单` }),
+      failTitle: '拉黑失败',
+      after: afterRemoval,
+    });
   }
 }
 

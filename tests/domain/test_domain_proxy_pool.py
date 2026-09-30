@@ -528,6 +528,19 @@ class TestProxyPoolDirtyTracking(unittest.TestCase):
         self.pool.reset_consecutive_fails("http://1.2.3.4:8080", group="default-http")
         self.assertEqual(self.pool.dirty_groups(), {"default-http"})
 
+    def test_increment_consecutive_fails_marks_dirty(self):
+        """失败计数 +1 必须置脏，否则增量保存跳过该组、运行期计数不落盘"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=1)
+        self.pool.clear_dirty()
+        self.assertEqual(self.pool.increment_consecutive_fails("http://1.2.3.4:8080"), 2)
+        self.assertEqual(self.pool.dirty_groups(), {"default-http"})
+
+    def test_increment_consecutive_fails_unknown_proxy(self):
+        """不存在的代理返回 None，不产生脏组"""
+        self.pool.clear_dirty()
+        self.assertIsNone(self.pool.increment_consecutive_fails("http://0.0.0.0:0"))
+        self.assertEqual(self.pool.dirty_groups(), set())
+
     def test_pause_source_marks_dirty(self):
         self.pool.pause_source("src.interfaces.sources.ip89")
         self.assertTrue(self.pool.source_paused_dirty())

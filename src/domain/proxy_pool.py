@@ -329,6 +329,19 @@ class ProxyPool:
             info["consecutive_fails"] = 0
             self._dirty_groups.add(grp)
 
+    def increment_consecutive_fails(self, proxy: str) -> int | None:
+        """代理连续失败计数 +1，返回新计数（代理不存在返回 None）
+
+        与 reset_consecutive_fails 同款置脏：计数变更必须标记所在组，否则增量保存
+        跳过该组、运行期失败计数不落盘；计数变更只经本方法，调用方不直接改 info。
+        """
+        grp, info = self.find_proxy(proxy)
+        if info is None:
+            return None
+        info["consecutive_fails"] += 1
+        self._dirty_groups.add(grp)
+        return info["consecutive_fails"]
+
     def get_consecutive_fail_count(self, proxy: str) -> int:
         """获取代理当前连续失败次数（不存在返回 0）"""
         _, info = self.find_proxy(proxy)

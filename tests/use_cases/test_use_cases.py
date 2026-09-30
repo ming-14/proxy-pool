@@ -163,6 +163,13 @@ class TestRecordProxyUseCase(unittest.TestCase):
         self.record.record_fail("http://1.2.3.4:8080")
         self.assertEqual(self.pool.proxy_groups["default-http"]["proxies"]["http://1.2.3.4:8080"]["consecutive_fails"], 1)
 
+    def test_record_fail_marks_group_dirty(self):
+        """回归：失败计数曾直接改 info 不置脏，增量保存跳过该组、运行期计数不落盘"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.clear_dirty()
+        self.record.record_fail("http://1.2.3.4:8080")
+        self.assertEqual(self.pool.dirty_groups(), {"default-http"})
+
     def test_record_fail_trusted(self):
         self.pool.add_to_group("trusted", "http://1.2.3.4:8080")
         self.record.record_fail("http://1.2.3.4:8080")

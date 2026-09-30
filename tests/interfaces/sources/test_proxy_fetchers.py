@@ -184,10 +184,12 @@ class TestGeonodeProxyFetcher(unittest.TestCase):
         page3 = {"data": [], "total": 2}
         mock_resp.json.side_effect = [page1, page2, page3]
         mock_resp.raise_for_status = MagicMock()
-        with patch("src.interfaces.http_client.get", return_value=mock_resp):
+        with patch("src.interfaces.http_client.get", return_value=mock_resp) as get:
             proxies = self.Fetcher(params={"limit": "1", "protocols": "http,https"}).fetch_proxies()
         self.assertIn("http://1.2.3.4:8080", proxies)
         self.assertIn("http://5.6.7.8:3128", proxies)
+        # 3 页各请求一次：末页空页是正常终止，不触发重试（删掉 accept 会让空页重试 3 次）
+        self.assertEqual(get.call_count, 3)
 
     def test_fetch_proxies_empty_data(self):
         mock_resp = MagicMock()

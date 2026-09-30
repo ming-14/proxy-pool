@@ -489,13 +489,28 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["geo"]["1.2.3.4:8080"]["city"] == "东京"
         assert data["geo"]["5.6.7.8:8080"] is None
 
-    async def test_standby_geo_locate_failure_does_not_break(self):
-        """归属定位异常时返回空映射（面板归位列显示 -，不影响其余功能）"""
+    async def test_standby_geo_cache_read_failure_degrades(self):
+        """缓存读取异常时返回空映射（面板归位列显示 -，不影响其余功能）"""
         self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
-        self.ctx.geo.query_cache = MagicMock(side_effect=RuntimeError("mmdb 挂了"))
+        self.ctx.geo.query_cache = MagicMock(side_effect=RuntimeError("db 挂了"))
         resp = await self.client.get("/api/standby/geo")
         assert resp.status == 200
         assert (await resp.json())["geo"] == {"1.2.3.4:8080": None}
+
+    async def test_standby_geo_locate_failure_keeps_cached(self):
+        """定位异常时保留已读缓存：已缓存 IP 照常下发，缺失 IP 降级为 None"""
+        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
+        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:8080", consecutive_fails=0)
+        self.ctx.geo.query_cache = MagicMock(return_value=(
+            {"1.2.3.4": {"country": "美国", "country_code": "US",
+                         "province": "加州", "city": "洛杉矶", "lat": 34.0, "lng": -118.0}},
+            ["5.6.7.8"]))
+        self.ctx.geo.locate = MagicMock(side_effect=RuntimeError("mmdb 挂了"))
+        resp = await self.client.get("/api/standby/geo")
+        assert resp.status == 200
+        geo = (await resp.json())["geo"]
+        assert geo["1.2.3.4:8080"]["city"] == "洛杉矶"
+        assert geo["5.6.7.8:8080"] is None
 
     async def test_status_with_purity_cache(self):
         """status 快照带纯净度缓存数据（历史有数据时前端直接显示 tag，无需手动点击）"""

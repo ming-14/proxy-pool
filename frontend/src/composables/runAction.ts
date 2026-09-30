@@ -37,6 +37,11 @@ export async function runAction<T>(
     toast.error(opts.failTitle, errText(e));
     return undefined;
   } finally {
-    await opts.after?.();
+    try {
+      await opts.after?.();
+    } catch (e) {
+      // 收尾（刷新/复位）属尽力而为：失败静默，不能外抛成未处理 rejection
+      console.warn('runAction after failed', e);
+    }
   }
 }

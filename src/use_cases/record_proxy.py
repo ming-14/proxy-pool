@@ -48,12 +48,11 @@ class RecordProxyUseCase:
         "计数 → 达阈值 → 拉黑"的连续失败语义只在此实现，调用方不自行拼装这几步；
         锁定/固定代理的免疫属调用方策略，传 blacklist=False 只计数不移出。
         """
-        _, info = self._pool.find_proxy(proxy)
-        if info is None:
+        fails = self._pool.increment_consecutive_fails(proxy)
+        if fails is None:
             logger.info("代理 %s 连续失败计数: 0", proxy)
             return False
-        info["consecutive_fails"] += 1
-        logger.info("代理 %s 连续失败计数: %d", proxy, info["consecutive_fails"])
+        logger.info("代理 %s 连续失败计数: %d", proxy, fails)
         if blacklist and self.should_blacklist(proxy):
             self.remove(proxy)
             return True

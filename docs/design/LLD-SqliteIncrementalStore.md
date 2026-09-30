@@ -185,7 +185,7 @@ class ProxyPool:
         self._dirty_groups: set[str] = set()
         self._source_paused_dirty: bool = False
 
-    # 修改方法末尾标记 dirty（8 个方法）：
+    # 修改方法末尾标记 dirty（9 个方法）：
     def add_to_group(self, group_name, ...):
         ...
         self._dirty_groups.add(group_name)
@@ -201,6 +201,7 @@ class ProxyPool:
     def update_latency(self, ...): ...  # → self._dirty_groups.add(group)
     def remove_all_copies(self, ...): ...  # → 标记所有涉及的组
     def reset_consecutive_fails(self, ...): ...  # → self._dirty_groups.add(group)
+    def increment_consecutive_fails(self, ...): ...  # → self._dirty_groups.add(group)
     def pause_source(self, ...): ...  # → self._source_paused_dirty = True
 
     def _cleanup_all_expired(self):
@@ -314,6 +315,7 @@ pool.restore_state(state)            # 恢复内存状态
 | `update_latency` | 心跳成功 | 代理所在组 |
 | `remove_all_copies` | 拉黑清理副本 | 所有含该代理的组 + blacklist |
 | `reset_consecutive_fails` | 请求/心跳/补测成功 | 代理所在组 |
+| `increment_consecutive_fails` | 请求/心跳/补测失败（`record_fail`） | 代理所在组 |
 | `pause_source` | 源暂停 / Web 面板 | `_source_paused_dirty=True` |
 | `_cleanup_all_expired` | 过期清理（被动触发） | 清理了代理的组 |
 

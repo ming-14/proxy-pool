@@ -111,22 +111,31 @@ def _geo_payload(geo: dict | None) -> dict | None:
     }
 
 
-async def _resolve_geo(ctx: PanelContext, ips: list[str]) -> dict[str, dict]:
+async def _resolve_geo(ctx: PanelContext, ips: list[str], *, label: str) -> dict[str, dict]:
     """归属查询三步编排（SQLite 线程绑定）：主线程读缓存 → executor 定位缺失（纯 mmdb）→ 主线程写缓存
 
-    组明细/队列页/地图共用；查询失败只记日志并降级为「无归属」，不阻断页面。
-    调用方须先确认 ctx.geo 非 None（geoip 关闭时不构造）。
+    组明细/队列页/地图共用，label 标识调用方（组名/页面）供日志定位；查询失败只记日志并
+    降级，不阻断页面。三步各自降级，代价互不牵连：缓存读失败无从降级返回空；定位失败
+    返回已读到的缓存（已缓存 IP 的归属照常下发，不因新 IP 定位失败连坐）；缓存写失败只
+    丢持久化、不丢本次定位结果。调用方须先确认 ctx.geo 非 None（geoip 关闭时不构造）。
     """
     try:
         cached, missing = ctx.geo.query_cache(ips)
-        located: dict[str, dict] = {}
-        if missing:
-            located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
-            ctx.geo.save_cache(located)
-        return {**cached, **located}
     except Exception:
-        logger.exception("IP 归属查询失败: %d 个 IP", len(ips))
+        logger.exception("IP 归属缓存读取失败 (%s): %d 个 IP", label, len(ips))
         return {}
+    if not missing:
+        return cached
+    try:
+        located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
+    except Exception:
+        logger.exception("IP 归属定位失败 (%s): %d 个 IP", label, len(missing))
+        return cached
+    try:
+        ctx.geo.save_cache(located)
+    except Exception:
+        logger.exception("IP 归属缓存写入失败 (%s): %d 个 IP", label, len(located))
+    return {**cached, **located}
 
 
 def _status_snapshot(ctx: PanelContext) -> dict:
@@ -299,7 +308,7 @@ async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
     # geoip.enabled=false 时 geo 为 None，proxies 不带 geo 字段
     geo_map: dict[str, dict] = {}
     if ctx.geo is not None:
-        geo_map = await _resolve_geo(ctx, [proxy_to_ip(x["proxy"]) for x in proxies])
+        geo_map = await _resolve_geo(ctx, [proxy_to_ip(x["proxy"]) for x in proxies], label=f"group={name}")
     for x in proxies:
         x["geo"] = _geo_payload(geo_map.get(proxy_to_ip(x["proxy"])))
     return {"group": name, "ttl": ttl, "count": len(proxies), "proxies": proxies}
@@ -395,7 +404,7 @@ async def _standby_geo(request: web.Request) -> web.Response:
     """
     ctx = request.app[_PANEL_KEY]
     proxies = _standby_rows(ctx)
-    geo_map = await _resolve_geo(ctx, [proxy_to_ip(p) for p in proxies])
+    geo_map = await _resolve_geo(ctx, [proxy_to_ip(p) for p in proxies], label="standby")
     return web.json_response({
         "geo": {bind_of(p): _geo_payload(geo_map.get(proxy_to_ip(p))) for p in proxies},
     })
@@ -595,7 +604,7 @@ async def _geo_map(request: web.Request) -> web.Response:
     """
     ctx = request.app[_PANEL_KEY]
     ips = ctx.geo.collect_ips(ctx.pool)
-    geo_map = await _resolve_geo(ctx, ips)
+    geo_map = await _resolve_geo(ctx, ips, label="geo-map")
     agg = ctx.geo.aggregate(geo_map)
     return web.json_response({
         "total_ips": len(ips),

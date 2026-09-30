@@ -39,6 +39,22 @@ describe('runAction', () => {
     });
   });
 
+  it('after 抛错不外抛：收尾失败静默，不影响结果与成功 toast', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await runAction(async () => ({ count: 1 }), {
+      ok: { title: '已固定' },
+      failTitle: '固定失败',
+      after: async () => {
+        throw new Error('refresh boom');
+      },
+    });
+    expect(result).toEqual({ count: 1 });
+    expect(useToastStore().toasts).toHaveLength(1);
+    expect(useToastStore().toasts[0]).toMatchObject({ type: 'success', title: '已固定' });
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
   it('成功提示可改走 info（后端幂等拒绝）', async () => {
     await runAction(async () => ({ status: 'running' as const }), {
       ok: { type: 'info', title: '拉取进行中' },
