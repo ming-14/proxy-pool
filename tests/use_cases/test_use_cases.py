@@ -193,15 +193,20 @@ class TestRecordProxyUseCase(unittest.TestCase):
 
     def test_auto_remove_on_max_consecutive_fails(self):
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=MAX_CONSECUTIVE_FAILS - 1)
-        self.record.record_fail("http://1.2.3.4:8080")
-        self.record.remove("http://1.2.3.4:8080")
+        self.assertTrue(self.record.record_fail("http://1.2.3.4:8080", blacklist=True))
         self.assertNotIn("http://1.2.3.4:8080", self.pool.proxy_groups["default-http"]["proxies"])
+        self.assertTrue(self.pool.is_blacklisted("http://1.2.3.4:8080"))
 
     def test_trusted_removed_on_max_consecutive_fails(self):
         self.pool.add_to_group("trusted", "http://1.2.3.4:8080", consecutive_fails=TRUSTED_MAX_CONSECUTIVE_FAILS - 1)
-        self.record.record_fail("http://1.2.3.4:8080")
-        self.record.remove("http://1.2.3.4:8080")
+        self.assertTrue(self.record.record_fail("http://1.2.3.4:8080", blacklist=True))
         self.assertNotIn("http://1.2.3.4:8080", self.pool.proxy_groups["trusted"]["proxies"])
+
+    def test_record_fail_blacklist_false_keeps_proxy(self):
+        """blacklist=False 只计数不移出（锁定/固定代理免疫的调用方式）"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080", consecutive_fails=MAX_CONSECUTIVE_FAILS)
+        self.assertFalse(self.record.record_fail("http://1.2.3.4:8080"))
+        self.assertIn("http://1.2.3.4:8080", self.pool.proxy_groups["default-http"]["proxies"])
 
     def test_get_trusted_proxies(self):
         self.pool.add_to_group("trusted", "http://1.2.3.4:8080")
@@ -462,7 +467,7 @@ class TestRequestWithRetry(unittest.TestCase):
         get = MagicMock()
         get.execute.side_effect = [["http://1.1.1.1:8080"], ["http://2.2.2.2:3128"]]
         record = MagicMock()
-        record.should_blacklist.return_value = False
+        record.record_fail.return_value = False
         http_getter = MagicMock()
         mock_resp = MagicMock()
         http_getter.get.side_effect = [Exception("fail"), mock_resp]
@@ -475,7 +480,7 @@ class TestRequestWithRetry(unittest.TestCase):
         get = MagicMock()
         get.execute.side_effect = [["http://1.1.1.1:8080"], ["http://2.2.2.2:3128"], []]
         record = MagicMock()
-        record.should_blacklist.return_value = False
+        record.record_fail.return_value = False
         http_getter = MagicMock()
         http_getter.get.side_effect = Exception("fail")
         uc = RequestWithRetryUseCase(get_proxies=get, record=record, http_getter=http_getter)
@@ -495,13 +500,13 @@ class TestRequestWithRetry(unittest.TestCase):
         get = MagicMock()
         get.execute.side_effect = [["http://1.1.1.1:8080"], ["http://2.2.2.2:3128"]]
         record = MagicMock()
-        record.should_blacklist.return_value = True
+        record.record_fail.return_value = True
         http_getter = MagicMock()
         mock_resp = MagicMock()
         http_getter.get.side_effect = [Exception("fail"), mock_resp]
         uc = RequestWithRetryUseCase(get_proxies=get, record=record, http_getter=http_getter)
         uc.execute("http://example.com", max_retries=3)
-        record.remove.assert_called_with("http://1.1.1.1:8080")
+        record.record_fail.assert_called_with("http://1.1.1.1:8080", blacklist=True)
 
 
 class TestCheckProxiesConcurrent(unittest.TestCase):

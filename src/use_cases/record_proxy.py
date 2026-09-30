@@ -42,12 +42,22 @@ class RecordProxyUseCase:
                 self._pool.move_proxy(proxy, self._pool.trusted_group, consecutive_fails=0)
             logger.info("代理 %s 已加入信任池", proxy)
 
-    def record_fail(self, proxy: str) -> None:
-        """记录代理失败，连续失败计数 +1"""
-        group_name, info = self._pool.find_proxy(proxy)
-        if info is not None:
-            info["consecutive_fails"] += 1
-        logger.info("代理 %s 连续失败计数: %d", proxy, self.get_consecutive_fail_count(proxy))
+    def record_fail(self, proxy: str, *, blacklist: bool = False) -> bool:
+        """记录代理失败（连续失败 +1）；blacklist=True 时达阈值即拉黑移出，返回是否已拉黑
+
+        "计数 → 达阈值 → 拉黑"的连续失败语义只在此实现，调用方不自行拼装这几步；
+        锁定/固定代理的免疫属调用方策略，传 blacklist=False 只计数不移出。
+        """
+        _, info = self._pool.find_proxy(proxy)
+        if info is None:
+            logger.info("代理 %s 连续失败计数: 0", proxy)
+            return False
+        info["consecutive_fails"] += 1
+        logger.info("代理 %s 连续失败计数: %d", proxy, info["consecutive_fails"])
+        if blacklist and self.should_blacklist(proxy):
+            self.remove(proxy)
+            return True
+        return False
 
     def remove(self, proxy: str) -> None:
         """移除代理所有组副本并加入黑名单组

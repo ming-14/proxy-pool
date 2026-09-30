@@ -61,10 +61,8 @@ class RequestWithRetryUseCase:
                 self._record.record_success(proxy)
                 return proxy, resp
             except Exception as e:
-                self._record.record_fail(proxy)
                 last_exc = e
-                if self._record.should_blacklist(proxy):
-                    self._record.remove(proxy)
+                if self._record.record_fail(proxy, blacklist=True):
                     logger.info("代理 %s 连续失败次数过多, 已拉黑", proxy)
                 logger.info("代理 %s 请求失败 (尝试 %d/%d): %s", proxy, attempt + 1, max_retries, e)
 
