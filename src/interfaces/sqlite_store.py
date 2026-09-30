@@ -14,6 +14,8 @@ import logging
 import sqlite3
 import time
 
+from src.domain.proxy_pool import export_entry
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,20 +119,8 @@ class SqliteProxyStore:
             g = r["group_name"]
             if g not in proxy_groups:
                 proxy_groups[g] = {"ttl": ttl_map.get(g), "proxies": []}
-            entry: dict = {
-                "proxy": r["proxy"],
-                "joined_at": r["joined_at"],
-                "consecutive_fails": r["consecutive_fails"],
-            }
-            # 与 export_state 对齐：latency/pinned/source_group 仅在非默认值时导出
-            if r["latency"] is not None:
-                entry["latency"] = r["latency"]
-            if r["pinned"]:
-                entry["pinned"] = True
-                entry["pinned_at"] = r["pinned_at"]
-            if r["source_group"] is not None:
-                entry["source_group"] = r["source_group"]
-            proxy_groups[g]["proxies"].append(entry)
+            # 条目形状与 export_state 共用同一规则（domain.export_entry）
+            proxy_groups[g]["proxies"].append(export_entry(r["proxy"], dict(r)))
 
         # 补全空组（有 meta 无代理的组也要返回，restore_state 需要组骨架）
         for g, ttl in ttl_map.items():

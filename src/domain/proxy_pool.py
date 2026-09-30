@@ -24,6 +24,7 @@ serve lock 时代理 move 到该组作为 pproxy 唯一上游。
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from src.domain.models import is_supported_proxy, normalize_proxy
@@ -32,6 +33,23 @@ from src.domain.models import is_supported_proxy, normalize_proxy
 # serve lock 时代理 move 到该组，upstream_proxies 只返回该组代理作为 pproxy 唯一上游；
 # unlock 时代理 move 回代理服务队列。对前端/组列表隐藏。
 LOCKED_GROUP = "_proxy-pool-locked"
+
+
+def export_entry(proxy: str, info: Mapping) -> dict:
+    """代理条目 → 可持久化 dict（可选字段 latency/pinned/source_group 仅在非默认值时出现）
+
+    持久化导出（ProxyPool.export_*）与存储加载（SqliteProxyStore）共用本规则，
+    新增字段只改这里。info 只读。
+    """
+    entry: dict = {"proxy": proxy, "joined_at": info["joined_at"], "consecutive_fails": info["consecutive_fails"]}
+    if info.get("latency") is not None:
+        entry["latency"] = info["latency"]
+    if info.get("pinned"):
+        entry["pinned"] = True
+        entry["pinned_at"] = info["pinned_at"]
+    if info.get("source_group") is not None:
+        entry["source_group"] = info["source_group"]
+    return entry
 
 
 class ProxyPool:
@@ -412,15 +430,7 @@ class ProxyPool:
         for proxy, info in group["proxies"].items():
             if ttl is not None and now - info["joined_at"] >= ttl:
                 continue
-            entry = {"proxy": proxy, "joined_at": info["joined_at"], "consecutive_fails": info["consecutive_fails"]}
-            if info.get("latency") is not None:
-                entry["latency"] = info["latency"]
-            if info.get("pinned"):
-                entry["pinned"] = True
-                entry["pinned_at"] = info["pinned_at"]
-            if info.get("source_group") is not None:
-                entry["source_group"] = info["source_group"]
-            proxies.append(entry)
+            proxies.append(export_entry(proxy, info))
         return {"ttl": ttl, "proxies": proxies}
 
     def export_source_paused(self) -> dict:
@@ -428,24 +438,11 @@ class ProxyPool:
         return dict(self.source_paused)
 
     def export_state(self) -> dict:
-        """导出可持久化状态（先清理过期条目）
-
-        latency 仅在非 None 时导出。
-        """
+        """导出可持久化状态（先清理过期条目；条目形状见 export_entry）"""
         self._cleanup_all_expired()
         data: dict[str, Any] = {"proxy_groups": {}, "source_paused": dict(self.source_paused)}
         for name, group in self.proxy_groups.items():
-            proxies = []
-            for proxy, info in group["proxies"].items():
-                entry = {"proxy": proxy, "joined_at": info["joined_at"], "consecutive_fails": info["consecutive_fails"]}
-                if info.get("latency") is not None:
-                    entry["latency"] = info["latency"]
-                if info.get("pinned"):
-                    entry["pinned"] = True
-                    entry["pinned_at"] = info["pinned_at"]
-                if info.get("source_group") is not None:
-                    entry["source_group"] = info["source_group"]
-                proxies.append(entry)
+            proxies = [export_entry(proxy, info) for proxy, info in group["proxies"].items()]
             data["proxy_groups"][name] = {"ttl": group["ttl"], "proxies": proxies}
         return data
 
