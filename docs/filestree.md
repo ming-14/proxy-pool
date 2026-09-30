@@ -50,7 +50,7 @@ proxy-pool/
 │   │   │   └── ipok.py            # ipok.io 源（同契约，无需密钥）
 │   │   └── sources/               # 代理源适配器
 │   │       ├── __init__.py
-│   │       ├── base.py            # HttpSourceFetcher 基类（URL 构建 + 重试骨架）
+│   │       ├── base.py            # HttpSourceFetcher 基类 + retry_fetch/retry_fetch_async 共用重试策略
 │   │       ├── ip89.py            # 89IP 源（纯文本响应，正则提取）
 │   │       ├── goodips.py         # Goodips 源（JSON 接口）
 │   │       ├── proxy_scdn.py      # ProxyScdn 源（JSON 接口）

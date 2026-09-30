@@ -194,7 +194,7 @@ for attempt in range(max_retries):
 
 ## 代理源
 
-通用 HTTP API 源继承 `HttpSourceFetcher` 基类（`sources/base.py`）：URL 构建 + 重试直到非空（`_fetch_until_nonempty`）+ scheme 前缀补全。基类类属性 `BASE_URL / DEFAULT_PARAMS / RETRIES / TIMEOUT / PROTOCOL`，子类提供 `_parse`。
+通用 HTTP API 源继承 `HttpSourceFetcher` 基类（`sources/base.py`）：URL 构建 + 重试直到非空 + scheme 前缀补全。重试是全源唯一实现 `retry_fetch / retry_fetch_async`（同策略的同步/异步双版：环绕“请求 + 校验 + 解析”的 attempt，日志口径与尝试耗尽语义一致）——github_lists（非子类）与 freeproxy_world（异步）同样复用，不各自写循环。基类类属性 `BASE_URL / DEFAULT_PARAMS / RETRIES / TIMEOUT / PROTOCOL`，子类提供 `_parse`。
 
 | 模块 | 机制 |
 |---|---|

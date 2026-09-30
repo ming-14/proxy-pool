@@ -37,7 +37,7 @@ from src.domain.models import FpwConfig
 from src.domain.ports import ProxySource
 from src.interfaces import http_client
 from src.interfaces.scheduler import ProxyScheduler
-from src.interfaces.sources.base import HttpSourceFetcher
+from src.interfaces.sources.base import HttpSourceFetcher, retry_fetch_async
 from src.interfaces.ua_generator import UAGenerator
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -123,22 +123,24 @@ async def _try_first_page(url, ua_gen, proxies_dict, seed, retries, timeout, pha
     """请求第 1 页并解析，重试直至成功；全失败返回 None
 
     走代理时 proxies_dict 非 None（https 中转），直连传 None 回退；
-    两者共用同一重试循环（Phase1/Phase3 复用）。
+    两者共用同一重试策略（Phase1/Phase3 复用）。
     seed 为 UA 确定性种子（代理地址；直连用 "local"）。
     """
     cfg = config or FpwConfig()
-    for attempt in range(retries):
-        try:
-            headers = _build_headers(ua_gen, seed, cfg)
-            html, elapsed = await _fetch_page(url, headers, proxies_dict, timeout=timeout, config=cfg)
-            proxies = _parse_proxies(html)
-            total_pages = _parse_total_pages(html)
-            logger.info("[%s] 成功: 耗时 %.1fs, 获取 %d 个代理, 共 %d 页",
-                        phase, elapsed, len(proxies), total_pages)
-            return proxies, total_pages
-        except Exception as e:
-            logger.warning("[%s] 请求失败 (尝试 %d/%d): %s", phase, attempt + 1, retries, e)
-    return None
+
+    async def attempt():
+        headers = _build_headers(ua_gen, seed, cfg)
+        html, elapsed = await _fetch_page(url, headers, proxies_dict, timeout=timeout, config=cfg)
+        return _parse_proxies(html), _parse_total_pages(html), elapsed
+
+    result = await retry_fetch_async(attempt, retries=retries, label=phase,
+                                     accept=lambda r: bool(r[0]))
+    if result is None:
+        return None
+    proxies, total_pages, elapsed = result
+    logger.info("[%s] 成功: 耗时 %.1fs, 获取 %d 个代理, 共 %d 页",
+                phase, elapsed, len(proxies), total_pages)
+    return proxies, total_pages
 
 
 def _load_first_page(path):

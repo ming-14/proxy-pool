@@ -1,8 +1,8 @@
 """GitHub 静态代理列表源（proxifly / monosans / clarketm / ALIILAPRO / hookzof）
 
 这些仓库只提供纯文本列表（每行一个代理），没有 base_url/params 语义，故不套用
-HttpSourceFetcher。一次拉取多条列表并合并，由拉取用例按 scheme 分拣入
-github-http / github-https / github-socks5 组。
+HttpSourceFetcher，只复用其重试策略 retry_fetch。一次拉取多条列表并合并，由拉取
+用例按 scheme 分拣入 github-http / github-https / github-socks5 组。
 
 raw.githubusercontent.com 在部分网络直连被 SSL 中断，镜像前缀由环境变量
 GITHUB_LISTS_MIRROR 提供（未设置或为空即直连，代码不内嵌任何镜像地址）。
@@ -18,6 +18,7 @@ import re
 from src.domain.models import SUPPORTED_SCHEMES
 from src.domain.ports import ProxySource
 from src.interfaces import http_client
+from src.interfaces.sources.base import retry_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -92,18 +93,15 @@ class GithubListsFetcher:
 
     def _fetch_one(self, url: str, protocol: str, retries: int, timeout: int) -> list[str]:
         """拉取单条列表并解析；重试直到拿到非空结果，全失败返回空列表"""
-        for attempt in range(retries):
-            try:
-                resp = http_client.get(url, timeout=timeout)
-                resp.raise_for_status()
-                proxies = [p for p in (parse_line(line, protocol) for line in resp.text.splitlines()) if p]
-                if proxies:
-                    logger.info("列表 %s 获取 %d 个代理 (%s)", url, len(proxies), protocol)
-                    return proxies
-                logger.warning("列表 %s 无有效代理（第 %d/%d 次）", url, attempt + 1, retries)
-            except Exception as e:
-                logger.warning("列表 %s 请求失败（第 %d/%d 次）: %s", url, attempt + 1, retries, e)
-        return []
+        def attempt() -> list[str]:
+            resp = http_client.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return [p for p in (parse_line(line, protocol) for line in resp.text.splitlines()) if p]
+
+        proxies = retry_fetch(attempt, retries=retries, label=url)
+        if proxies:
+            logger.info("列表 %s 获取 %d 个代理 (%s)", url, len(proxies), protocol)
+        return proxies or []
 
 
 def create_source(config=None) -> ProxySource:

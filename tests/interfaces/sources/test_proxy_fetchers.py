@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -7,8 +8,61 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
+from src.interfaces.sources.base import retry_fetch, retry_fetch_async
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.disable(logging.WARNING)
+
+
+class TestRetryFetch(unittest.TestCase):
+    """共用重试策略：重试次数、异常/空结果重试、accept 谓词（sync/async 同口径）"""
+
+    def test_retries_until_nonempty(self):
+        calls = []
+
+        def attempt():
+            calls.append(1)
+            return [] if len(calls) < 2 else ["a"]
+
+        self.assertEqual(retry_fetch(attempt, retries=3, label="t"), ["a"])
+        self.assertEqual(len(calls), 2)
+
+    def test_all_attempts_fail_returns_none(self):
+        calls = []
+
+        def attempt():
+            calls.append(1)
+            raise ValueError("boom")
+
+        self.assertIsNone(retry_fetch(attempt, retries=2, label="t"))
+        self.assertEqual(len(calls), 2)
+
+    def test_accept_bypasses_nonempty_rule(self):
+        """分页末页空结果：accept 接受空值，不触发无谓重试"""
+        calls = []
+
+        def attempt():
+            calls.append(1)
+            return []
+
+        self.assertEqual(retry_fetch(attempt, retries=3, label="t", accept=lambda _: True), [])
+        self.assertEqual(len(calls), 1)
+
+    def test_async_matches_sync_policy(self):
+        calls = []
+
+        async def attempt():
+            calls.append(1)
+            if len(calls) < 2:
+                raise RuntimeError("boom")
+            return ["x"]
+
+        self.assertEqual(asyncio.run(retry_fetch_async(attempt, retries=3, label="t")), ["x"])
+
+        async def fail():
+            raise RuntimeError("boom")
+
+        self.assertIsNone(asyncio.run(retry_fetch_async(fail, retries=2, label="t")))
 
 
 class TestIP89ProxyFetcher(unittest.TestCase):

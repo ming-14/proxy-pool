@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 
 from src.domain.ports import ProxySource
-from src.interfaces.sources.base import HttpSourceFetcher
+from src.interfaces.sources.base import HttpSourceFetcher, retry_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -35,38 +35,36 @@ class GeonodeProxyFetcher(HttpSourceFetcher):
     def fetch_proxies(self, retries=None, timeout=None) -> list[str]:
         """分页拉取代理，只保留 http 协议代理，跨页去重
 
-        逐页拉取直到空页或单页不足 limit 条（分页结束）。
+        逐页拉取直到空页或单页不足 limit 条（分页结束）。末页空结果是正常终止，
+        accept 直接接受空页（不触发无谓重试）；整页重试耗尽则按分页结束处理。
         """
         max_retries = retries if retries is not None else self.retries
         req_timeout = timeout if timeout is not None else self.timeout
+        limit = int(self.params.get("limit", 500))
 
-        all_proxies = []
-        seen = set()
+        all_proxies: list[str] = []
+        seen: set[str] = set()
         page = 1
         while True:
             url = self._build_url({"page": str(page)})
-            for _ in range(max_retries):
-                try:
-                    resp = self._request(url, timeout=req_timeout)
-                    resp.raise_for_status()
-                    proxies = self._parse(resp)
-                    if not proxies:
-                        logger.info("请求成功: 共拉取 %d 页, 获取 %d 个代理", page - 1, len(all_proxies))
-                        return self._with_protocol(list(all_proxies))
-                    for p in proxies:
-                        if p not in seen:
-                            seen.add(p)
-                            all_proxies.append(p)
-                    if len(proxies) < int(self.params.get("limit", 500)):
-                        logger.info("请求成功: 共拉取 %d 页, 获取 %d 个代理", page, len(all_proxies))
-                        return self._with_protocol(list(all_proxies))
-                    page += 1
-                    break
-                except Exception as e:
-                    logger.warning("请求失败 (page=%d): %s", page, e)
-            else:
+            page_proxies = retry_fetch(
+                lambda url=url: self._fetch_once(url, req_timeout),
+                retries=max_retries, label=f"page={page}", accept=lambda _: True,
+            )
+            if page_proxies is None:
                 logger.info("请求结束: 已拉取 %d 页, 获取 %d 个代理", page - 1, len(all_proxies))
-                return self._with_protocol(list(all_proxies))
+                return self._with_protocol(all_proxies)
+            if not page_proxies:
+                logger.info("请求成功: 共拉取 %d 页, 获取 %d 个代理", page - 1, len(all_proxies))
+                return self._with_protocol(all_proxies)
+            for p in page_proxies:
+                if p not in seen:
+                    seen.add(p)
+                    all_proxies.append(p)
+            if len(page_proxies) < limit:
+                logger.info("请求成功: 共拉取 %d 页, 获取 %d 个代理", page, len(all_proxies))
+                return self._with_protocol(all_proxies)
+            page += 1
 
 
 def create_source(config=None) -> ProxySource:
