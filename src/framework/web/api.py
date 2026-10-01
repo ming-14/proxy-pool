@@ -748,14 +748,13 @@ async def _do_settings(request: web.Request) -> web.Response:
     ctx = request.app[_PANEL_KEY]
     ctl = ctx.control
     body = await _json_body(request)
-    changed_rules = False
+    # 先纯校验入队规则（不写状态）：与调度字段一起，任一节非法都在任何落地动作之前返回 400
+    enqueue_rules = None
     if "enqueue_rules" in body:
         try:
-            rules = ctx.enqueue_settings.apply(ctx.enqueue_settings.validate(body["enqueue_rules"]))
+            enqueue_rules = ctx.enqueue_settings.validate(body["enqueue_rules"])
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
-        ctx.standby.update_enqueue_rules(rules)
-        changed_rules = True
     try:
         changed = ctl.update(body)
     except ValueError as e:
@@ -764,7 +763,8 @@ async def _do_settings(request: web.Request) -> web.Response:
         await ctx.server.set_salgorithm(ctl.salgorithm)
     if "fill_probe_multiplier" in changed or "fill_probe_min_extra" in changed:
         ctx.standby.update_fill_probe_params(ctl.fill_probe_multiplier, ctl.fill_probe_min_extra)
-    if changed_rules:
+    if enqueue_rules is not None:
+        ctx.standby.update_enqueue_rules(ctx.enqueue_settings.apply(enqueue_rules))
         changed["enqueue_rules"] = ctx.enqueue_settings.to_dict()
     ctx.save()
     return web.json_response({"ok": True, "changed": changed, "settings": _settings_snapshot(ctx)})

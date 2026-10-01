@@ -912,6 +912,19 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert rules[0]["enabled"] is False and rules[0]["params"]["max_score"] == 50
         assert self.standby.rules_updates == []
 
+    async def test_settings_scheduling_error_does_not_apply_rules(self):
+        """同请求里调度字段非法：返回 400 且入队规则不得先行生效"""
+        self.ctx.enqueue_settings = EnqueueRuleSettings((
+            EnqueueRule(metric="purity", priority=3, params={"max_score": 50}),
+        ))
+        r = await self.client.post("/api/settings", json={
+            "enqueue_rules": [{"metric": "purity", "enabled": True, "max_score": 30}],
+            "interval": -1,
+        })
+        assert r.status == 400
+        assert self.ctx.enqueue_settings.to_dict()[0]["enabled"] is False
+        assert self.standby.rules_updates == []
+
     async def test_speedtest_missing_bind(self):
         """缺少 bind 参数返回 400"""
         r = await self.client.post("/api/proxy/speedtest", json={})
