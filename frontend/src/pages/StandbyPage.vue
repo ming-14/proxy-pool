@@ -367,7 +367,7 @@ function onTableTouchCancel() {
 
 function buildMenuItems(): MenuItem[] {
   const children = Object.entries(groups.value)
-    .filter(([, g]) => g.kind !== 'standby' && g.kind !== 'blacklist')
+    .filter(([, g]) => g.kind !== 'standby' && g.kind !== 'blacklist' && g.kind !== 'rejected')
     .map(([name, g]) => ({ label: g.label, action: 'move', group: name, meta: String(g.count) }));
   const items: MenuItem[] = [
     { label: '移出', children },

@@ -30,6 +30,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - **协议能力（TCP only）**：SOCKS4/SOCKS4a、SOCKS5 CONNECT、HTTP/HTTPS 隧道均支持；**UDP 不中继**——SOCKS5 `UDP ASSOCIATE` 回 REP `0x07`（command not supported），客户端据此退回 TCP；`BIND(0x02)` 等未实现 CMD 同样回 `0x07`（不再裸断连）。原因：上游是 HTTP/HTTPS/SOCKS5 免费代理，HTTP(S) 无法承载 UDP，SOCKS5 上游也需 UDP ASSOCIATE 客户端（几乎没有免费代理支持）；唯一"能跑通"的形态是 UDP 直连=泄漏真实 IP，故不做
 - **上游协议**：与池支持集合一致（`http`/`https`/`socks5`，见 `SUPPORTED_SCHEMES`）；**socks4 上游已移除**——入选集合与入池校验同源，面板添加 / autoload / `blacklist`/`trust` 传入 socks4 都会被拒（响应回传 `rejected` 并记日志）。原因：免费源不产出 socks4，保留只会形成"能被选中却无供给"的半支持状态；pproxy 与 `aiohttp_socks` 的 socks4 机制能力（含入站 `socks4://` 监听）不受影响
 - 代理服务队列按响应时间（latency）升序维护，队列满时新代理更快则踢队尾 move trusted、较慢则自身 move trusted（探测成果不浪费）
+- **入队筛选**：候选入队前按 `[[server.enqueue_rules]]` 的 `priority` 升序逐条判定（延时/国家/纯净度/测速，默认全部不启用），未通过即短路后续规则并移入 `enqueue-rejected` 组（`ttl="never"`、不可请求，不再参与填充）；测量惰性（前序不过则后续指标不测）、未测到值一律放过；启停与阈值可在设置页调整（优先级只读，改配置重启生效）
 - **本地链路门控**：fill/心跳/补测在探测前和探测后各直连多个探测目标（`network_probe_urls`，任一返回状态码 <400 即正常）判定链路可用性——**两次都必须正常才允许执行正常拉黑操作**：探测前不可用（WiFi 断/ISP 故障）跳过本轮操作（不计数/不拉黑/不补测），探测后复检不可用则本轮失败不归因到代理（探测期间链路劣化），队列保持现状、恢复后自动续跑；结论缓存单向——只缓存"不可用"（`network_unhealthy_cache_ttl` 秒内复用、不再探测），"可用"每次真实探测（心跳 2s 一轮，链路抖动 10~20 秒即可让失败代理攒满拉黑阈值，陈旧的"可用"会授权误拉黑；失败结论只会让本轮跳过，复用只花时间）
 
 ### Web 控制面板
@@ -51,7 +52,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」；黑名单组：「还原」（移到代理队列）+「删除」
 - **代理归属地**：队列行展示国家·省·市（`/api/standby/geo`，bind → geo，缺失的 IP 首次请求时批量定位并写入 90 天缓存；`geoip.enabled=false` 时该路由不注册、面板不展示该列）
 - **添加代理**：代理组页面「添加」按钮（导出 CSV 左边），弹出模态框输入代理地址（每行一个，裸地址默认 http），调 `POST /api/group/{name}/add` 批量添加到当前组
-- **设置页**（侧边栏「设置」，仅运行时可变项）：编辑 6 项运行时调度参数（心跳间隔/并发/超时/探测 URL/允许类型/调度算法，`/api/settings` 即刻生效）；填充候选倍率与最小增量不提供面板入口，取值见 `config/serve.toml` 的 `standby_fill_probe_multiplier` / `standby_fill_probe_min_extra`
+- **设置页**（侧边栏「设置」，仅运行时可变项）：编辑 6 项运行时调度参数（心跳间隔/并发/超时/探测 URL/允许类型/调度算法，`/api/settings` 即刻生效）；**入队筛选规则卡片**逐指标开关 + 阈值（延时秒数/国家白名单/纯净度上限/测速下限），优先级以「执行顺序」一行只读展示（改顺序需改 `config/serve.toml` 重启）；填充候选倍率与最小增量不提供面板入口，取值见 `config/serve.toml` 的 `standby_fill_probe_multiplier` / `standby_fill_probe_min_extra`
 
 #### 控制功能
 
@@ -68,6 +69,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - 调度策略运行时调整（`/api/settings`）：
   - 心跳间隔、并发、超时、探测 URL
   - 填充倍率/增量、允许的代理类型
+  - 入队筛选规则（`enqueue_rules`：[{metric, enabled, ...阈值}]，校验复用领域层 `METRIC_SPECS`，非法值 400）
   - 调度算法（`salgorithm`：fa/rr/rc/lc）切换会重启 pproxy 调度器（保留现有上游），其余参数 serve 下一轮即生效
 
 仪表盘的「代理服务队列延迟趋势」「健康率趋势」图表由**后端采样**驱动：每轮 heartbeat 结束采一次队列指标，存内存按 `METRICS_WINDOW`（全局留存时长，与流量共用）保留，超出自动清理；`/api/status/history` 增量下发（`?since=<ts>` 只回新点，并带 `retention_window` 供前端按时间裁剪本地缓冲），图表**按拿到的真实数据点绘制、不做窗口裁剪**——**刷新页面不丢失趋势**（多标签一致），重启清空。`standby_chart_window` 只决定**队列页**行内趋势图显示多长，不影响留存与仪表盘。

@@ -235,9 +235,10 @@ class ProxyPool:
         清除，否则会复活为可请求代理。单次遍历所有组 pop（与 find_proxy
         同量级），不做反向索引，避免 O(组数×组内代理) 的二次扫描。
 
-        来源组（source_group）：拉黑时代理所在的活跃组（find_proxy 定位），
-        记入黑名单 info 供前端展示"从哪个组被拉黑"。find_proxy 开销 O(组数)，
-        remove 本身已遍历所有组，额外开销可忽略；拉黑是低频操作不影响热路径。
+        来源组（source_group）：移动前代理所在的活跃组（find_proxy 定位），
+        记入目标组 info 供前端展示"从哪个组被移出"（拉黑与入队淘汰共用该字段）。
+        find_proxy 开销 O(组数)，remove 本身已遍历所有组，额外开销可忽略；
+        两种调用都是低频操作，不影响热路径。
         """
         proxy = normalize_proxy(proxy)
         src_group, _ = self.find_proxy(proxy)

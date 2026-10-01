@@ -8,7 +8,7 @@ export interface GroupStat {
   count: number;
   active: number;
   label: string;           // 中文显示名（后端由 config 派生）
-  kind: 'trusted' | 'blacklist' | 'standby' | 'staging' | 'normal';
+  kind: 'trusted' | 'blacklist' | 'standby' | 'staging' | 'rejected' | 'normal';
 }
 
 /** 面板日志条目（GET /api/logs），与后端 logbuffer.py 的 entry 结构一致 */
@@ -110,6 +110,35 @@ export interface ScheduleSettings {
   salgorithm: 'fa' | 'rr' | 'rc' | 'lc';
 }
 
+/** 入队筛选规则（settings.enqueue_rules；优先级来自配置，只读） */
+export interface EnqueueRuleSetting {
+  metric: string;                        // latency | country | purity | speed
+  label: string;                         // 中文展示名（后端由指标派生）
+  priority: number;                      // 升序执行，数字小先测
+  enabled: boolean;
+  params: Record<string, number | string[]>;  // 阈值：max_latency / allow / max_score / min_download_mbps
+}
+
+/** POST /api/settings 的入队规则补丁：按指标更新启停与阈值 */
+export interface EnqueueRulePatch {
+  metric: string;
+  enabled: boolean;
+  max_latency?: number;
+  allow?: string[];
+  max_score?: number;
+  min_download_mbps?: number;
+}
+
+/** 运行时可调项快照：调度参数 + 入队筛选规则 */
+export interface SettingsSnapshot extends ScheduleSettings {
+  enqueue_rules: EnqueueRuleSetting[];
+}
+
+/** POST /api/settings 补丁：调度参数子集 + 入队规则 */
+export interface SettingsPatch extends Partial<ScheduleSettings> {
+  enqueue_rules?: EnqueueRulePatch[];
+}
+
 export interface TrafficTotal {
   upload: number;
   download: number;
@@ -128,7 +157,7 @@ export interface StatusSnapshot {
   pending_retries: string[];
   fetching_all: boolean;   // 全量拉取进行中（后端状态，刷新后仍可恢复）
   sources: SourceStat[];
-  settings: ScheduleSettings;
+  settings: SettingsSnapshot;
   traffic_total: TrafficTotal;
 }
 
@@ -242,5 +271,5 @@ export interface GeoMapData {
 export interface SettingsResponse {
   ok: boolean;
   changed: Record<string, unknown>;
-  settings: ScheduleSettings;
+  settings: SettingsSnapshot;
 }

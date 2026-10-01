@@ -6,7 +6,8 @@ import type {
   GeoMapData,
   GroupDetail,
   LogsResponse,
-  ScheduleSettings,
+  SettingsPatch,
+  SettingsResponse,
   SpeedTestResult,
   StandbyGeoMap,
   StandbySeries,
@@ -106,8 +107,7 @@ export const api = {
 
   unlock: () => post<{ ok: boolean; proxy: string | null }>('/api/standby/unlock', {}),
 
-  settings: (patch: Partial<ScheduleSettings>) =>
-    post<{ ok: boolean; changed: Record<string, unknown>; settings: ScheduleSettings }>('/api/settings', patch),
+  settings: (patch: SettingsPatch) => post<SettingsResponse>('/api/settings', patch),
 
   /** 测速：进行中（幂等）时后端返回 {"status":"running"} */
   speedTest: (bind: string) => post<SpeedTestResult | { status: 'running' }>('/api/proxy/speedtest', { bind }),

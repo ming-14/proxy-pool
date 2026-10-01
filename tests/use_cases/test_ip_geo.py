@@ -1,10 +1,12 @@
-"""IpGeoUseCase 单测：mock GeoLocator + GeoCacheStore，验证 IP 收集、缓存、聚合"""
+"""IpGeoUseCase 单测：mock GeoLocator + GeoCacheStore，验证 IP 收集、缓存、聚合、resolve 编排"""
 
+import asyncio
 import logging
 import os
 import sys
 import time
 import unittest
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 logging.disable(logging.WARNING)
@@ -227,6 +229,61 @@ class AggregateTest(unittest.TestCase):
         agg = IpGeoUseCase.aggregate(geo_map)
         assert agg["points"] == []
         assert agg["countries"] == [{"name": "某未知国", "code": "ZZ", "count": 1}]
+
+
+class ResolveTest(unittest.TestCase):
+    """async resolve 编排：缓存优先；三步各自降级（Web 面板与入队筛选共用）"""
+
+    def test_cache_hit_skips_locate(self):
+        cache = FakeGeoCache()
+        cache.store["1.2.3.4"] = {"country": "中国", "country_code": "CN", "lat": 31.23, "lng": 121.47,
+                                  "cached_at": time.time()}
+        locator = FakeLocator()
+        geo = asyncio.run(IpGeoUseCase(locator, cache).resolve(["1.2.3.4"], label="t"))
+        assert geo["1.2.3.4"]["country"] == "中国"
+        assert locator.calls == []  # 缓存命中不碰 mmdb
+
+    def test_miss_locates_and_saves(self):
+        cache = FakeGeoCache()
+        geo = asyncio.run(
+            IpGeoUseCase(FakeLocator(), cache).resolve(["1.2.3.4", "10.0.0.1"], label="t"))
+        assert set(geo) == {"1.2.3.4"}  # 未定位到的 IP 不出现在结果里
+        assert "1.2.3.4" in cache.store  # 定位结果已落缓存
+
+    def test_cache_read_failure_returns_empty(self):
+        cache = FakeGeoCache()
+        cache.get_geo_batch = MagicMock(side_effect=RuntimeError("db 挂了"))
+        geo = asyncio.run(IpGeoUseCase(FakeLocator(), cache).resolve(["1.2.3.4"], label="t"))
+        assert geo == {}
+
+    def test_locate_failure_keeps_cached(self):
+        cache = FakeGeoCache()
+        cache.store["1.2.3.4"] = {"country": "中国", "country_code": "CN", "lat": 31.23, "lng": 121.47,
+                                  "cached_at": time.time()}
+        locator = FakeLocator()
+        locator.locate = MagicMock(side_effect=RuntimeError("mmdb 挂了"))
+        geo = asyncio.run(IpGeoUseCase(locator, cache).resolve(["1.2.3.4", "5.6.7.8"], label="t"))
+        assert list(geo) == ["1.2.3.4"]  # 已缓存 IP 照常下发，缺失 IP 不连坐
+
+    def test_save_cache_failure_keeps_result(self):
+        cache = FakeGeoCache()
+        cache.save_geo_batch = MagicMock(side_effect=RuntimeError("磁盘满了"))
+        geo = asyncio.run(IpGeoUseCase(FakeLocator(), cache).resolve(["1.2.3.4"], label="t"))
+        assert geo["1.2.3.4"]["city"] == "上海"  # 只丢持久化，不丢本次结果
+
+
+class ResolveCountryTest(unittest.TestCase):
+    """单代理国家查询：入队筛选国家指标的测量源"""
+
+    def test_accepts_url_and_bind(self):
+        uc = IpGeoUseCase(FakeLocator(), FakeGeoCache())
+        assert asyncio.run(uc.resolve_country("http://1.2.3.4:8080")) == "CN"
+        assert asyncio.run(uc.resolve_country("9.9.9.9:443")) == "US"
+
+    def test_unknown_ip_returns_none(self):
+        """无定位记录返回 None（判定层按未测到放过）"""
+        uc = IpGeoUseCase(FakeLocator(), FakeGeoCache())
+        assert asyncio.run(uc.resolve_country("10.0.0.1:8080")) is None
 
 
 if __name__ == "__main__":

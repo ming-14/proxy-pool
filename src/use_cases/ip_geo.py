@@ -1,18 +1,21 @@
 """IP 归属地图用例：收集池中全部 IP → 查缓存 → 缺失批量定位 → 写缓存 → 聚合地图点
 
 用例层。协调 domain 模型（提取 IP、聚合）与端口（GeoLocator 定位 / GeoCacheStore 缓存），
-不含 mmdb 读取细节。输出城市级散点 + 国家汇总，供 Web 面板 ECharts 地图展示。
+不含 mmdb 读取细节。输出城市级散点 + 国家汇总，供 Web 面板 ECharts 地图展示；
+单代理国家查询（入队筛选国家指标）复用同一条缓存/定位路径。
 
 缓存策略：定位结果持久化到 GeoCacheStore，TTL 内直接返回缓存，避免重复解析 mmdb；
 TTL 判断在本层（缓存策略非领域规则）。
 
-线程安全：SQLite 连接线程绑定，Web 端在 executor 线程调 mmdb（纯磁盘读）时不能碰 SQLite。
-故拆成三步供 API 层编排：query_cache（主线程 SQLite 读）→ locate（executor 纯 mmdb）
-→ save_cache（主线程 SQLite 写）。aggregate 为纯计算，任何线程可调。
+线程安全：SQLite 连接线程绑定，调 mmdb（纯磁盘读）时不能碰 SQLite。故底层拆成三步：
+query_cache（主线程 SQLite 读）→ locate（executor 纯 mmdb）→ save_cache（主线程 SQLite 写）；
+async resolve 是三者之上的统一编排入口（Web 面板与入队筛选共用）。aggregate 为纯计算，
+任何线程可调。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -161,6 +164,42 @@ class IpGeoUseCase:
         """写缓存并返回结果；访问 SQLite，必须在创建连接的线程调用"""
         if self._cache is not None and results:
             self._cache.save_geo_batch(results)
+
+    # ------------------------------------------------------------------ 编排入口
+    async def resolve(self, ips: list[str], *, label: str) -> dict[str, dict]:
+        """缓存优先的归属查询（Web 面板与入队筛选共用），返回 {ip: geo}
+
+        三步各自降级，代价互不牵连：缓存读失败只能返回空；定位失败返回已读到的缓存
+        （已缓存 IP 的归属照常下发，不因新 IP 定位失败连坐）；缓存写失败只丢持久化、
+        不丢本次定位结果。本方法不外抛，调用方无需 try。
+        """
+        try:
+            cached, missing = self.query_cache(ips)
+        except Exception:
+            logger.exception("IP 归属缓存读取失败 (%s): %d 个 IP", label, len(ips))
+            return {}
+        if not missing:
+            return cached
+        try:
+            located = await asyncio.get_running_loop().run_in_executor(None, self.locate, missing)
+        except Exception:
+            logger.exception("IP 归属定位失败 (%s): %d 个 IP", label, len(missing))
+            return cached
+        try:
+            self.save_cache(located)
+        except Exception:
+            logger.exception("IP 归属缓存写入失败 (%s): %d 个 IP", label, len(located))
+        return {**cached, **located}
+
+    async def resolve_country(self, proxy: str) -> str | None:
+        """单个代理的国家代码（入队筛选国家指标用）；无记录/未定位到返回 None（判定放过）
+
+        接受完整 proxy URL 或裸 bind，与 CheckPurityUseCase 同口径。
+        """
+        ip = proxy_to_ip(proxy)
+        geo = await self.resolve([ip], label="enqueue")
+        entry = geo.get(ip)
+        return entry.get("country_code") if entry else None
 
     # ------------------------------------------------------------------ 聚合
     @staticmethod

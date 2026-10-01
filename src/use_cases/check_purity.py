@@ -10,13 +10,14 @@
 分数不同，换源不得复用旧源结果；TTL 内直接返回缓存（from_cache=True），避免重复调 API
 消耗日限额。TTL 判断在本层（缓存策略非领域规则）。
 
-线程安全：SQLite 连接线程绑定，Web 端在 executor 线程调网络 API 时不能碰 SQLite。
-故拆成三步供 API 层编排：query_cache（主线程 SQLite 读）→ check_remote（executor
-纯网络）→ save_cache（主线程 SQLite 写）。
+线程安全：SQLite 连接线程绑定，调网络 API 时不能碰 SQLite。故拆成三步：query_cache
+（主线程 SQLite 读）→ check_remote（executor 纯网络）→ save_cache（主线程 SQLite 写）；
+async resolve 是三步之上的统一编排入口（Web 面板与入队筛选共用）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -79,3 +80,27 @@ class CheckPurityUseCase:
         if self._cache is not None:
             self._cache.save_purity(self.source, proxy_to_ip(proxy), result)
         return result
+
+    # ------------------------------------------------------------------ 编排入口
+    async def resolve(self, proxy: str) -> dict:
+        """缓存优先的查询（Web 面板与入队筛选共用），命中直接返回（from_cache=True）"""
+        cached = self.query_cache(proxy)
+        if cached is not None:
+            return cached
+        return await self.inspect(proxy)
+
+    async def inspect(self, proxy: str) -> dict:
+        """调检查源并落缓存（异常原样抛出，由调用方决定展示/降级）
+
+        线程安全：SQLite 连接线程绑定，故 check_remote 放 executor、save_cache 回
+        调用线程（事件循环主线程）。
+        """
+        result = await asyncio.get_running_loop().run_in_executor(None, self.check_remote, proxy)
+        return self.save_cache(proxy, result)
+
+    async def resolve_score(self, proxy: str) -> int | None:
+        """纯净度分数（入队筛选纯净度指标用）；源未给出/未测到返回 None（判定放过）
+
+        normalize_result 已保证 score 为 0-100 整数或 None，此处不做二次校验。
+        """
+        return (await self.resolve(proxy)).get("score")

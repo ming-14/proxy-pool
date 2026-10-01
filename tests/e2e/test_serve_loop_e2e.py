@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import sys
@@ -24,6 +25,7 @@ logging.disable(logging.WARNING)
 
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.proxy_server import PproxyServer
+from src.use_cases.enqueue_filter import EnqueueFilterUseCase
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.framework import config
 from src.framework.serve import _run
@@ -71,7 +73,9 @@ def make_standby(pool, record, check):
         record=record,
         check_proxies=check,
         network_gate=gate,
+        enqueue_filter=EnqueueFilterUseCase(rules=config.ENQUEUE_RULES),
         standby_group=config.STANDBY_GROUP,
+        reject_group=config.ENQUEUE_REJECT_GROUP,
         fill_groups=config.STANDBY_FILL_GROUPS,
         fill_probe_multiplier=config.STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
@@ -96,7 +100,9 @@ class _FakeCheck:
         on_result = kw.get("on_result")
         if on_result:
             for p in proxies:
-                on_result(p, results[p])
+                ret = on_result(p, results[p])
+                if inspect.isawaitable(ret):
+                    await ret
         return results
 
 

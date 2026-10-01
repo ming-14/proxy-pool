@@ -4,11 +4,13 @@
 （check_remote 为纯网络，不碰缓存）。
 """
 
+import asyncio
 import logging
 import os
 import sys
 import time
 import unittest
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 logging.disable(logging.WARNING)
@@ -163,6 +165,43 @@ class MetadataTest(unittest.TestCase):
         uc = make_uc(FakeChecker(), source="ipok")
         assert uc.source == "ipok"
         assert uc.label == "AbuseIPDB"
+
+
+class ResolveTest(unittest.TestCase):
+    """async resolve/inspect 编排：缓存优先，网络在 executor、写缓存在调用线程（Web 与筛选共用）"""
+
+    def test_resolve_cache_hit_skips_checker(self):
+        cache = FakeCache()
+        cache.store[("abuseipdb", "1.2.3.4")] = {
+            "result": {"score": 5, "usage_type": "mobile", "extra": {}},
+            "cached_at": time.time(),
+        }
+        checker = FakeChecker()
+        result = asyncio.run(make_uc(checker, cache).resolve("http://1.2.3.4:80"))
+        assert result["from_cache"] is True and result["score"] == 5
+        assert checker.calls == []
+
+    def test_resolve_miss_checks_and_saves(self):
+        checker = FakeChecker()
+        cache = FakeCache()
+        result = asyncio.run(make_uc(checker, cache).resolve("http://1.2.3.4:80"))
+        assert result["score"] == 0 and result["ip"] == "1.2.3.4"
+        assert checker.calls == ["1.2.3.4"]
+        assert cache.saves == 1  # 结果已落缓存
+
+    def test_inspect_propagates_checker_error(self):
+        """检查源异常原样抛出，由调用方（API 层）转 500 / 筛选放行"""
+        uc = make_uc(FakeChecker())
+        uc.check_remote = MagicMock(side_effect=RuntimeError("API error"))
+        with self.assertRaises(RuntimeError):
+            asyncio.run(uc.inspect("http://1.2.3.4:80"))
+
+    def test_resolve_score_value_and_missing(self):
+        """分数转交筛选：源未给出 score 时返回 None（判定放过）"""
+        assert asyncio.run(make_uc(FakeChecker({"score": 42})).resolve_score(
+            "http://1.2.3.4:80")) == 42
+        assert asyncio.run(make_uc(FakeChecker({"usage_type": "hosting"})).resolve_score(
+            "http://1.2.3.4:80")) is None
 
 
 if __name__ == "__main__":

@@ -631,6 +631,29 @@ class TestStandby:
         page.wait_for_timeout(2500)
         assert page.input_value('[data-testid="set-interval"]') == "2"
 
+    def test_enqueue_rules_threshold_save(self, page):
+        """入队筛选卡片：只读执行顺序 + 阈值保存往返（不改启用态，避免影响队列填充）"""
+        page.click('[data-testid="nav-settings"]')
+        card = page.locator('[data-testid="enqueue-card"]')
+        card.wait_for(state="visible", timeout=8000)
+        assert "延时" in card.inner_text() and "执行顺序" in card.inner_text()
+        before = next(r for r in api_status()["settings"]["enqueue_rules"] if r["metric"] == "purity")
+        new_score = 49 if before["params"]["max_score"] != 49 else 48
+        page.fill('[data-testid="enq-max-score"]', str(new_score))
+        save = page.locator('[data-testid="enq-save"]')
+        save.wait_for(state="visible")
+        assert save.is_enabled()
+        save.click()
+        page.wait_for_selector(".toast-success", timeout=8000)
+        after = next(r for r in api_status()["settings"]["enqueue_rules"] if r["metric"] == "purity")
+        assert after["params"]["max_score"] == new_score
+        assert after["enabled"] is False  # 阈值保存不应顺带开启规则
+        # 还原
+        requests.post(f"{BASE_URL}/api/settings", json={"enqueue_rules": [
+            {"metric": "purity", "enabled": False, "max_score": before["params"]["max_score"]}]}, timeout=5)
+        page.wait_for_timeout(2500)
+        assert page.input_value('[data-testid="enq-max-score"]') == str(before["params"]["max_score"])
+
     def test_standby_dark_screenshot(self, page, shot):
         """暗色截图：质量带全指标常显（含纯净度/测速占位）供人工比对"""
         page.click('[data-testid="btn-theme"]')

@@ -49,7 +49,7 @@ class CheckProxiesUseCase:
         max_concurrent: int = 8,
         timeout: float = 10,
         headers: dict | None = None,
-        on_result: Callable[[str, dict], None] | None = None,
+        on_result: Callable[[str, dict], object] | None = None,
     ) -> dict[str, dict]:
         """并发测试代理是否可访问 url
 
@@ -59,7 +59,7 @@ class CheckProxiesUseCase:
 
         Args:
             on_result: 每个代理探测完成即调（proxy, result），用于流式入队等实时处理；
-                       None 则仅返回最终 results dict（批量语义）。
+                       可为协程（返回值透传给调度器 await）；None 则仅返回最终 results dict（批量语义）。
         """
         results: dict[str, dict] = {}
 
@@ -95,7 +95,7 @@ class CheckProxiesUseCase:
         def _on_success(p, t, r):
             results[p] = r
             if on_result is not None:
-                on_result(p, r)
+                return on_result(p, r)  # 透传返回值，协程回调由调度器 await
 
         await scheduler.run(tasks, "TestProxies", do_test, on_success=_on_success)
 

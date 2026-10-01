@@ -209,7 +209,7 @@ function buildMenuItems(): MenuItem[] {
     return [{ label: '还原', action: 'restore' }, deleteItem];
   }
   const moveChildren = Object.entries(groups.value)
-    .filter(([name, g]) => name !== currentGroup.value && g.kind !== 'blacklist')
+    .filter(([name, g]) => name !== currentGroup.value && g.kind !== 'blacklist' && g.kind !== 'rejected')
     .map(([name, g]) => ({ label: g.label, action: 'move', group: name, meta: String(g.count) }));
   return [
     { label: '移动', children: moveChildren },

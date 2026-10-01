@@ -8,6 +8,7 @@ max_consecutive_fails 为单次 run 内连续异常丢弃代理的阈值（调�
 """
 
 import asyncio
+import inspect
 import logging
 import time
 
@@ -60,7 +61,7 @@ class ProxyScheduler:
 
         tasks: [(proxy, task_data), ...] 每个任务绑定一个代理
         do_task: async callable(proxy, task_data) -> result  执行单个任务，抛异常表示失败
-        on_success: callable(proxy, task_data, result)  成功回调
+        on_success: callable(proxy, task_data, result)  成功回调，可为协程（返回值可 await）
 
         每轮循环：提交满足条件（并发上限 + 代理限流 + 存活）的任务，
         await 到至少一个完成再处理其结果（失败重试/超限丢弃）。
@@ -112,7 +113,9 @@ class ProxyScheduler:
                         if proxy in results:
                             results[proxy]["success"] = is_success
                         if on_success:
-                            on_success(proxy, task_data, result)
+                            ret = on_success(proxy, task_data, result)
+                            if inspect.isawaitable(ret):
+                                await ret
                         if is_success:
                             logger.debug("[%s] %s 任务%s: 成功", phase_name, proxy, task_data)
                         else:

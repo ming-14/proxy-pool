@@ -35,7 +35,9 @@ from src.framework.config import (
     STANDBY_FILL_PROBE_MIN_EXTRA,
     METRICS_WINDOW,
 )
-from src.framework.web.control import ServeControl
+from src.framework.web.control import EnqueueRuleSettings, ServeControl
+from src.domain.enqueue_filter import EnqueueRule
+from src.interfaces.speedtest import PspeedTester
 from src.framework.web.api import build_app, PanelContext, _do_fetch
 from src.framework.web.panel_state import PanelTasks
 from src.framework import logbuffer
@@ -67,6 +69,7 @@ class FakeStandby:
     def __init__(self, pool):
         self.pool = pool
         self.probe_params = []
+        self.rules_updates = []
 
     @property
     def standby_group(self):
@@ -112,13 +115,25 @@ class FakeStandby:
     def update_fill_probe_params(self, multiplier, min_extra):
         self.probe_params.append((multiplier, min_extra))
 
+    def update_enqueue_rules(self, rules):
+        self.rules_updates.append(tuple(rules))
+
 
 def make_purity_mock() -> MagicMock:
-    """纯净度用例 mock：源元数据为字符串（快照会下发到 JSON），默认无缓存命中"""
+    """纯净度用例 mock：源元数据为字符串（快照会下发到 JSON），默认无缓存命中
+
+    inspect 按用例的编排组合 check_remote + save_cache，使用例断言（如
+    check_remote.assert_not_called）仍针对同一对桩函数。
+    """
     purity = MagicMock()
     purity.source = "abuseipdb"
     purity.label = "AbuseIPDB"
     purity.query_cache = MagicMock(return_value=None)  # 无缓存 → _purity_cached 返回 None
+
+    async def inspect(proxy):
+        return purity.save_cache(proxy, purity.check_remote(proxy))
+
+    purity.inspect = inspect
     return purity
 
 
@@ -135,6 +150,18 @@ class _FakeRequest:
 
     async def json(self):
         return self._body
+
+
+class FakeGeo:
+    """geo 用例替身：Web 层只依赖 async resolve（三步编排语义在 IpGeoUseCase 单测）"""
+
+    def __init__(self, result: dict | None = None):
+        self.result = result or {}
+        self.calls: list[tuple[list[str], str]] = []
+
+    async def resolve(self, ips: list[str], *, label: str) -> dict[str, dict]:
+        self.calls.append((list(ips), label))
+        return {ip: self.result[ip] for ip in ips if ip in self.result}
 
 
 def make_ctx(pool):
@@ -155,14 +182,11 @@ def make_ctx(pool):
         fill_probe_min_extra=STANDBY_FILL_PROBE_MIN_EXTRA,
     )
     purity = make_purity_mock()
-    geo = MagicMock()
-    # IP 归属：默认无缓存、无定位结果（group detail 正常路径，避免解包异常被吞）
-    geo.query_cache = MagicMock(return_value=({}, []))
-    geo.locate = MagicMock(return_value={})
-    geo.save_cache = MagicMock()
+    geo = FakeGeo()  # 默认无归属数据（group detail 正常路径，归属字段为 null）
     ctx = PanelContext(pool=pool, fetch=fetch, record=record, standby=standby,
-                       control=control, server=server, save=MagicMock(), capacity=5,
-                       purity=purity, geo=geo, tasks=PanelTasks())
+                       control=control, enqueue_settings=EnqueueRuleSettings(()),
+                       server=server, save=MagicMock(), capacity=5,
+                       purity=purity, geo=geo, speedtest=PspeedTester(), tasks=PanelTasks())
     return ctx, fetch, standby, server
 
 
@@ -467,50 +491,25 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_standby_geo_from_cache(self):
         """队列归属地按 bind 下发（前端行内展示国家/城市）"""
         self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
-        self.ctx.geo.query_cache = MagicMock(return_value=(
-            {"1.2.3.4": {"country": "美国", "country_code": "US",
-                         "province": "加州", "city": "洛杉矶", "lat": 34.0, "lng": -118.0}}, []))
+        self.ctx.geo.result = {"1.2.3.4": {"country": "美国", "country_code": "US",
+                                           "province": "加州", "city": "洛杉矶"}}
         resp = await self.client.get("/api/standby/geo")
         assert resp.status == 200
         geo = (await resp.json())["geo"]
         assert geo["1.2.3.4:8080"] == {"country": "美国", "country_code": "US",
                                        "province": "加州", "city": "洛杉矶"}
+        assert self.ctx.geo.calls == [(["1.2.3.4"], "standby")]
 
-    async def test_standby_geo_missing_triggers_locate(self):
-        """缓存未命中 → executor 定位并落缓存；未解析出的 IP 下发 None"""
+    async def test_standby_geo_missing_is_null(self):
+        """未解析出的 IP 下发 None（归属列显示 -）"""
         self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
         self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:8080", consecutive_fails=0)
-        self.ctx.geo.query_cache = MagicMock(return_value=({}, ["1.2.3.4", "5.6.7.8"]))
-        self.ctx.geo.locate = MagicMock(return_value={
-            "1.2.3.4": {"country": "日本", "country_code": "JP", "province": None, "city": "东京"}})
+        self.ctx.geo.result = {"1.2.3.4": {"country": "日本", "country_code": "JP",
+                                           "province": None, "city": "东京"}}
         data = await (await self.client.get("/api/standby/geo")).json()
-        self.ctx.geo.locate.assert_called_once_with(["1.2.3.4", "5.6.7.8"])
-        self.ctx.geo.save_cache.assert_called_once()
         assert data["geo"]["1.2.3.4:8080"]["city"] == "东京"
         assert data["geo"]["5.6.7.8:8080"] is None
-
-    async def test_standby_geo_cache_read_failure_degrades(self):
-        """缓存读取异常时返回空映射（面板归位列显示 -，不影响其余功能）"""
-        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
-        self.ctx.geo.query_cache = MagicMock(side_effect=RuntimeError("db 挂了"))
-        resp = await self.client.get("/api/standby/geo")
-        assert resp.status == 200
-        assert (await resp.json())["geo"] == {"1.2.3.4:8080": None}
-
-    async def test_standby_geo_locate_failure_keeps_cached(self):
-        """定位异常时保留已读缓存：已缓存 IP 照常下发，缺失 IP 降级为 None"""
-        self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
-        self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:8080", consecutive_fails=0)
-        self.ctx.geo.query_cache = MagicMock(return_value=(
-            {"1.2.3.4": {"country": "美国", "country_code": "US",
-                         "province": "加州", "city": "洛杉矶", "lat": 34.0, "lng": -118.0}},
-            ["5.6.7.8"]))
-        self.ctx.geo.locate = MagicMock(side_effect=RuntimeError("mmdb 挂了"))
-        resp = await self.client.get("/api/standby/geo")
-        assert resp.status == 200
-        geo = (await resp.json())["geo"]
-        assert geo["1.2.3.4:8080"]["city"] == "洛杉矶"
-        assert geo["5.6.7.8:8080"] is None
+        assert self.ctx.geo.calls == [(["1.2.3.4", "5.6.7.8"], "standby")]
 
     async def test_status_with_purity_cache(self):
         """status 快照带纯净度缓存数据（历史有数据时前端直接显示 tag，无需手动点击）"""
@@ -621,33 +620,23 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         notfound = await self.client.get("/api/group/no-such-group")
         assert notfound.status == 404
 
-    async def test_group_detail_geo_from_cache(self):
-        """代理组明细带 IP 归属：缓存命中直接下发 geo 字段"""
+    async def test_group_detail_geo_attached(self):
+        """代理组明细带 IP 归属（label 标识调用方，供日志定位）"""
         self.pool.add_to_group("trusted", "5.6.7.8:3128", consecutive_fails=0)
-        self.ctx.geo.query_cache = MagicMock(return_value=(
-            {"5.6.7.8": {"country": "美国", "country_code": "US", "province": "California",
-                         "city": "Los Angeles", "lat": 34.05, "lng": -118.24, "cached_at": 1}},
-            [],
-        ))
+        self.ctx.geo.result = {"5.6.7.8": {"country": "美国", "country_code": "US",
+                                           "province": "California", "city": "Los Angeles"}}
         resp = await self.client.get("/api/group/trusted")
         data = await resp.json()
         geo = data["proxies"][0]["geo"]
         assert geo["country"] == "美国" and geo["country_code"] == "US"
         assert geo["city"] == "Los Angeles"
+        assert self.ctx.geo.calls == [(["5.6.7.8"], "group=trusted")]
 
-    async def test_group_detail_geo_missing_triggers_locate(self):
-        """缓存缺失：locate 在 executor 执行并写缓存，结果合并下发"""
+    async def test_group_detail_without_geo_record(self):
+        """无归属记录：geo 字段为 null（不解包异常、不阻断明细）"""
         self.pool.add_to_group("trusted", "5.6.7.8:3128", consecutive_fails=0)
-        self.ctx.geo.query_cache = MagicMock(return_value=({}, ["5.6.7.8"]))
-        self.ctx.geo.locate = MagicMock(return_value={
-            "5.6.7.8": {"country": "日本", "country_code": "JP", "province": "Tokyo", "city": "Tokyo",
-                        "lat": 35.68, "lng": 139.69},
-        })
-        resp = await self.client.get("/api/group/trusted")
-        data = await resp.json()
-        assert data["proxies"][0]["geo"]["country"] == "日本"
-        self.ctx.geo.locate.assert_called_once_with(["5.6.7.8"])
-        self.ctx.geo.save_cache.assert_called_once()
+        data = await (await self.client.get("/api/group/trusted")).json()
+        assert data["proxies"][0]["geo"] is None
 
     async def test_fetch_control(self):
         """全量拉取：plan/collect/apply 三段编排，只有 collect 走线程（不碰池）"""
@@ -868,6 +857,45 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert data["bind"] == "9.9.9.9:9999"
         assert data["latency_history"] == []
         assert data["traffic_history"] == []
+
+    async def test_settings_carry_enqueue_rules(self):
+        """status 快照带入队规则（优先级只读，供面板展示执行顺序与阈值）"""
+        self.ctx.enqueue_settings = EnqueueRuleSettings((
+            EnqueueRule(metric="latency", priority=1, params={"max_latency": 1.0}),
+            EnqueueRule(metric="speed", priority=4, params={"min_download_mbps": 10.0}),
+        ))
+        settings = (await (await self.client.get("/api/status")).json())["settings"]
+        rules = settings["enqueue_rules"]
+        assert [r["metric"] for r in rules] == ["latency", "speed"]
+        assert rules[0]["label"] == "延时" and rules[0]["priority"] == 1
+        assert rules[0]["enabled"] is False and rules[0]["params"] == {"max_latency": 1.0}
+
+    async def test_settings_enable_enqueue_rule(self):
+        """开启规则：校验后落到筛选用例，响应回带最新规则"""
+        self.ctx.enqueue_settings = EnqueueRuleSettings((
+            EnqueueRule(metric="purity", priority=3, params={"max_score": 50}),
+        ))
+        r = await self.client.post("/api/settings", json={
+            "enqueue_rules": [{"metric": "purity", "enabled": True, "max_score": 30}]})
+        assert r.status == 200
+        data = await r.json()
+        rule = data["settings"]["enqueue_rules"][0]
+        assert rule["enabled"] is True and rule["params"]["max_score"] == 30
+        assert data["changed"]["enqueue_rules"][0]["enabled"] is True
+        rules = self.standby.rules_updates[-1]
+        assert len(rules) == 1 and rules[0].enabled and rules[0].params["max_score"] == 30
+
+    async def test_settings_invalid_enqueue_rule_returns_400(self):
+        self.ctx.enqueue_settings = EnqueueRuleSettings((
+            EnqueueRule(metric="purity", priority=3, params={"max_score": 50}),
+        ))
+        r = await self.client.post("/api/settings", json={
+            "enqueue_rules": [{"metric": "purity", "enabled": True, "max_score": 101}]})
+        assert r.status == 400
+        r = await self.client.post("/api/settings", json={
+            "enqueue_rules": [{"metric": "weather", "enabled": True}]})
+        assert r.status == 400
+        assert self.standby.rules_updates == []
 
     async def test_speedtest_missing_bind(self):
         """缺少 bind 参数返回 400"""

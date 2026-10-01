@@ -10,6 +10,7 @@ geoip.enabled=false 场景不加载这些依赖树（边际 ~5.6MB，调研见�
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import os
@@ -19,16 +20,18 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from src.domain.models import SourceSpec, FpwConfig
-from src.domain.ports import ProxySource
+from src.domain.ports import ProxySource, ProxySpeedTester
 from src.domain.purity import IppurePluginConfig, IppureSourceSpec, resolve_proxy
 from src.domain.proxy_pool import ProxyPool
 from src.interfaces.http_client import HttpGetter, AsyncHttpGetter
 from src.interfaces.proxy_scheme import verify_target
+from src.interfaces.speedtest import PspeedTester
 from src.interfaces.sqlite_store import SqliteProxyStore
 from src.interfaces.scheduler import ProxyScheduler
 from src.use_cases.autoload import AutoloadUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
+from src.use_cases.enqueue_filter import EnqueueFilterUseCase, MetricProvider
 from src.use_cases.fetch_proxies import FetchProxiesUseCase
 from src.use_cases.get_proxies import GetProxiesUseCase
 from src.use_cases.ip_geo import IpGeoUseCase
@@ -50,9 +53,11 @@ class Container:
     request_with_retry: RequestWithRetryUseCase
     check_proxies: CheckProxiesUseCase
     standby: StandbyQueueUseCase
+    enqueue_filter: EnqueueFilterUseCase  # 入队筛选规则链（standby.fill 消费；按优先级惰性判定）
     async_getter: AsyncHttpGetter
     purity: CheckPurityUseCase | None   # IP 纯净度检查；web 关闭/未启用源/缺密钥时为 None（功能禁用）
     geo: IpGeoUseCase | None          # IP 归属地图（GeoLite2 定位 + 缓存 + 聚合）；geoip.enabled=false 时为 None
+    speedtest: PspeedTester            # 测速（面板手动测速 + 入队筛选测速指标）
 
     def save(self) -> None:
         """增量保存：只写 dirty 组（serve 主循环 / Web 控制动作高频调用）
@@ -90,8 +95,52 @@ def _source_loader(name: str) -> ProxySource:
     return importlib.import_module(name).create_source(config=fpw_config)
 
 
+def _speed_provider(tester: ProxySpeedTester) -> MetricProvider:
+    """测速测量源：同步阻塞实现放 executor，不阻塞 serve 事件循环"""
+    async def provider(proxy: str) -> object | None:
+        return await asyncio.get_running_loop().run_in_executor(None, tester.download_mbps, proxy)
+
+    return provider
+
+
+def _enqueue_metric_enabled(metric: str) -> bool:
+    """配置里是否有启用该指标的入队规则（决定无面板时是否构造其测量源）
+
+    web 开启时构造条件更宽（面板可运行时开启任意规则），这里只覆盖"没有面板也必须测"的场景。
+    """
+    from src.framework import config
+
+    return any(rule.enabled and rule.metric == metric for rule in config.ENQUEUE_RULES)
+
+
+def _load_geo(store: SqliteProxyStore) -> IpGeoUseCase | None:
+    """加载 GeoLite2 定位器并组装 IP 归属用例（Web 面板与入队筛选消费）
+
+    库不随仓库分发：缺失/损坏时只警告并禁用（serve 仍可运行）。定位库切换（City/Country
+    或版本升级）时指纹变化，清空旧缓存防止粒度不一致数据复用。不需要归属数据时不 import
+    geoip2 链、不加载 mmdb。
+    """
+    from src.framework import config
+
+    if not config.GEOIP_ENABLED or not (config.WEB_ENABLED or _enqueue_metric_enabled("country")):
+        return None
+    from src.interfaces.geoip_client import GeoLite2Locator
+    try:
+        locator = GeoLite2Locator(config.GEOIP_DB_FILE)
+    except Exception as exc:
+        # 下载 GeoLite2-City/Country.mmdb 放到 vendor/geoip/，或在 panel.toml 里把
+        # geoip.db_file 指向实际位置
+        logger.warning("GeoLite2 加载失败，IP 归属禁用 path=%s err=%s", config.GEOIP_DB_FILE, exc)
+        return None
+    if store.get_geo_cache_fingerprint() != locator.fingerprint:
+        store.clear_geo_cache()
+        store.set_geo_cache_fingerprint(locator.fingerprint)
+        logger.info("GeoLite2 定位库变化，已清空 geo 缓存")
+    return IpGeoUseCase(locator=locator, cache=store, cache_ttl=config.GEOIP_CACHE_TTL)
+
+
 def _load_ippure(store: SqliteProxyStore) -> CheckPurityUseCase | None:
-    """加载纯净度检查插件并组装用例（仅面板消费）
+    """加载纯净度检查插件并组装用例（Web 面板与入队筛选消费）
 
     配置错误（插件模块导入失败/缺 SOURCE/插件名重复/节未被声明/未知源名/插件参数非法）
     直接抛错——启动即暴露，不做运行期兜底；选中源缺必需环境变量时只警告并禁用，
@@ -99,7 +148,7 @@ def _load_ippure(store: SqliteProxyStore) -> CheckPurityUseCase | None:
     """
     from src.framework import config
 
-    if not config.WEB_ENABLED or not config.IPPURE_SOURCE:
+    if not config.IPPURE_SOURCE or not (config.WEB_ENABLED or _enqueue_metric_enabled("purity")):
         return None
     registry: dict[str, tuple[object, IppureSourceSpec]] = {}
     for module_path in config.IPPURE_PLUGIN_MODULES:
@@ -214,48 +263,31 @@ def build_container(cache_db: str | None = None) -> Container:
         probe_timeout=config.NETWORK_PROBE_TIMEOUT,
         unhealthy_cache_ttl=config.NETWORK_UNHEALTHY_CACHE_TTL,
     )
+    # IP 纯净度 / IP 归属：Web 面板与入队筛选消费——两者均分支内惰性 import 依赖链
+    purity = _load_ippure(store)
+    geo = _load_geo(store)
+    # 入队筛选测量源：latency 直接取 fill 探测结果（不占 provider），其余指标按注册表提供
+    speedtest = PspeedTester()
+    providers: dict[str, MetricProvider] = {"speed": _speed_provider(speedtest)}
+    if geo is not None:
+        providers["country"] = geo.resolve_country
+    if purity is not None:
+        providers["purity"] = purity.resolve_score
+    enqueue_filter = EnqueueFilterUseCase(rules=config.ENQUEUE_RULES, providers=providers)
     standby = StandbyQueueUseCase(
         pool=pool,
         record=record,
         check_proxies=check_proxies,
         network_gate=network_gate,
+        enqueue_filter=enqueue_filter,
         standby_group=config.STANDBY_GROUP,
+        reject_group=config.ENQUEUE_REJECT_GROUP,
         fill_groups=config.STANDBY_FILL_GROUPS,
         fill_probe_multiplier=config.STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
         metrics_window=config.METRICS_WINDOW,
         chart_window=config.STANDBY_CHART_WINDOW,
     )
-    # IP 纯净度 / IP 归属：仅 Web 面板消费（api.py）——web 关闭时不构造也不
-    # import 依赖链（纯净度插件模块/geoip2 均分支内惰性导入）
-    purity = _load_ippure(store)
-    # IP 归属地图：GeoLite2 离线定位 + SQLite 缓存（Web 面板地图页面按需懒查）
-    # geoip.enabled=false 或 web 关闭时不构造（不 import geoip2 链、不加载 mmdb）
-    # 定位库切换（City/Country 或版本升级）时指纹变化，清空旧缓存防止粒度不一致数据复用
-    geo: IpGeoUseCase | None = None
-    if config.GEOIP_ENABLED and config.WEB_ENABLED:
-        from src.interfaces.geoip_client import GeoLite2Locator
-        try:
-            geo_locator = GeoLite2Locator(config.GEOIP_DB_FILE)
-        except Exception as exc:
-            # 库不随仓库分发：缺失/损坏时只禁用地图，serve 仍可运行。
-            # 下载 GeoLite2-City/Country.mmdb 放到 vendor/geoip/，或在
-            # panel.toml 里把 geoip.db_file 指向实际位置
-            logger.warning(
-                "GeoLite2 加载失败，IP 归属地图禁用 path=%s err=%s",
-                config.GEOIP_DB_FILE,
-                exc,
-            )
-        else:
-            if store.get_geo_cache_fingerprint() != geo_locator.fingerprint:
-                store.clear_geo_cache()
-                store.set_geo_cache_fingerprint(geo_locator.fingerprint)
-                logger.info("GeoLite2 定位库变化，已清空 geo 缓存")
-            geo = IpGeoUseCase(
-                locator=geo_locator,
-                cache=store,
-                cache_ttl=config.GEOIP_CACHE_TTL,
-            )
     return Container(
         pool=pool,
         store=store,
@@ -265,7 +297,9 @@ def build_container(cache_db: str | None = None) -> Container:
         request_with_retry=request_with_retry,
         check_proxies=check_proxies,
         standby=standby,
+        enqueue_filter=enqueue_filter,
         async_getter=async_getter,
         purity=purity,
         geo=geo,
+        speedtest=speedtest,
     )

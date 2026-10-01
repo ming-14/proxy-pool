@@ -4,8 +4,9 @@
 
 - fill:       队列有缺口时，按配置的填充组优先级收集候选（排除已在队列的代理），
               并发探测；**流式入队**——每个代理探测完成即处理（不等全部完成）：
-              存活按 latency 插入队列（队列满时与队尾比较，更快则踢尾入新、较慢则
-              move trusted），失败 record_fail 累计到 max_consecutive_fails 才拉黑。
+              存活先过 enqueue_filter（优先级升序惰性判定），未通过则移入 reject_group
+              不再入队；通过后按 latency 插入队列（队列满时与队尾比较，更快则踢尾入新、
+              较慢则 move trusted），失败 record_fail 累计到 max_consecutive_fails 才拉黑。
               队列始终按 latency 升序维护（最快的在上游 rc 调度时更易命中）。
 - heartbeat:  并发探测队列**全部成员**（不因 capacity 截断；capacity 只限制进上游的
               数量），成功更新 latency + 清零连续失败计数，失败计 consecutive_fails，
@@ -32,13 +33,16 @@ import asyncio
 import logging
 import time
 from collections import deque
+from collections.abc import Iterable
 from typing import Callable, NamedTuple
 
+from src.domain.enqueue_filter import EnqueueRule, order_rules
 from src.domain.proxy_pool import ProxyPool, LOCKED_GROUP
 from src.domain.models import bind_of, proxy_type
 from src.use_cases.network_gate import LocalNetworkGate
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.check_proxies import CheckProxiesUseCase
+from src.use_cases.enqueue_filter import EnqueueFilterUseCase
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +88,9 @@ class StandbyQueueUseCase:
         record: RecordProxyUseCase,
         check_proxies: CheckProxiesUseCase,
         network_gate: LocalNetworkGate,
+        enqueue_filter: EnqueueFilterUseCase,
         standby_group: str,
+        reject_group: str,
         fill_groups: tuple[str, ...],
         fill_probe_multiplier: int,
         fill_probe_min_extra: int,
@@ -97,7 +103,9 @@ class StandbyQueueUseCase:
             record:                 记录用例（连续失败计数/拉黑）
             check_proxies:          并发探测用例
             network_gate:           本地链路门控（链路不可用时跳过本轮；探测期间劣化则该轮不计分）
+            enqueue_filter:         入队筛选规则链（按优先级惰性判定，未通过则不入队）
             standby_group:          代理服务队列组名（配置 role="standby"）
+            reject_group:           未通过筛选的候选归属组（不可请求，避免反复成为候选）
             fill_groups:            填充候选组（按优先级顺序，靠前优先）
             fill_probe_multiplier:  候选数 = 缺口 × 倍率
             fill_probe_min_extra:   候选数至少 缺口 + 增量
@@ -111,7 +119,9 @@ class StandbyQueueUseCase:
         self._record = record
         self._check_proxies = check_proxies
         self._gate = network_gate
+        self._enqueue_filter = enqueue_filter
         self._standby_group = standby_group
+        self._reject_group = reject_group
         self._fill_groups = fill_groups
         self._fill_probe_multiplier = fill_probe_multiplier
         self._fill_probe_min_extra = fill_probe_min_extra
@@ -156,6 +166,14 @@ class StandbyQueueUseCase:
         """运行时更新填充候选数参数（Web 面板调整调度策略时调用，serve 下次 fill 生效）"""
         self._fill_probe_multiplier = fill_probe_multiplier
         self._fill_probe_min_extra = fill_probe_min_extra
+
+    def update_enqueue_rules(self, rules: Iterable[EnqueueRule]) -> None:
+        """运行时替换入队筛选规则（Web 面板启停/改阈值），serve 下次 fill 生效"""
+        rules = tuple(rules)
+        self._enqueue_filter.update_rules(rules)
+        state = ", ".join(f"{r.label}({r.priority}){'开' if r.enabled else '关'}"
+                          for r in order_rules(rules))
+        logger.info("入队筛选规则更新: %s", state or "无规则")
 
     def history(self) -> list[StandbySample]:
         """采样历史（按时间正序），供 /api/status 下发前端图表重绘"""
@@ -319,6 +337,7 @@ class StandbyQueueUseCase:
 
         候选按配置的填充组顺序从可用集合收集（排除已在队列的代理，避免重复探测）。
         每个代理探测完成即处理（on_result 回调，不等全部完成）：
+          - 入队筛选未通过：移入 reject_group，不入队（探测完成即可判定，不必等整轮）
           - 存活 + 队列未满：move 入 standby（记 latency），调 on_change（实时 sync 上游）
           - 存活 + 队列满 + latency < 队尾：踢队尾 move trusted，新代理入 standby，调 on_change
           - 存活 + 队列满 + latency >= 队尾：新代理 move trusted（响应太快没进队列不浪费探测成果）
@@ -370,12 +389,25 @@ class StandbyQueueUseCase:
         logger.info("代理服务队列探测 %d 个候选 -> %s", len(candidates), probe_url)
         added = 0
         failed: list[str] = []  # 失败的候选延后到整轮结束统一计分（探测后复检通过才计）
+        rejected: dict[str, int] = {}  # 规则标签 → 本轮淘汰数
+        unmeasured = 0  # 存在未测到指标的候选数（规则因缺数据未生效的信号）
 
-        def on_result(proxy: str, result: dict) -> None:
+        async def on_result(proxy: str, result: dict) -> None:
             """流式入队回调：探测完成即处理，不等全部完成"""
-            nonlocal added
+            nonlocal added, unmeasured
             latency = result.get("elapsed")
             if result.get("success"):
+                outcome = await self._enqueue_filter.evaluate(proxy, latency=latency)
+                if any(not verdict.measured for _, verdict in outcome.trace):
+                    unmeasured += 1
+                if not outcome.passed:
+                    # 移出候选池（清掉各组副本）：留在原组会下轮反复被选中、重复测量
+                    self._pool.remove_all_copies(proxy, self._reject_group)
+                    label = outcome.rejected_by.label
+                    rejected[label] = rejected.get(label, 0) + 1
+                    logger.info("候选 %s 未通过入队筛选 (%s)，移入 %s",
+                                proxy, outcome.workflow(), self._reject_group)
+                    return
                 current = self.standby_proxies()  # 已按 latency 升序（进上游的候选）
                 if len(self.standby_members()) < capacity:
                     # 队列未满：入队
@@ -427,6 +459,11 @@ class StandbyQueueUseCase:
             else:
                 logger.warning("本地链路在探测期间劣化，本轮 %d 个候选失败不计分",
                                len(failed))
+        if rejected:
+            logger.info("入队筛选本轮淘汰 %d 个候选: %s", sum(rejected.values()),
+                        ", ".join(f"{label} {count}" for label, count in rejected.items()))
+        if unmeasured:
+            logger.info("入队筛选本轮 %d 个候选有指标未测到（已放过）", unmeasured)
         logger.info("代理服务队列补充完成: +%d (队列 %d/%d)", added, len(self.standby_members()), capacity)
         return added
 

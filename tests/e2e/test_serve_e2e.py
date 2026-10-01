@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import socket
@@ -38,7 +39,10 @@ from src.framework.config import (
     STANDBY_FILL_PROBE_MIN_EXTRA,
     METRICS_WINDOW,
     STANDBY_CHART_WINDOW,
+    ENQUEUE_RULES,
+    ENQUEUE_REJECT_GROUP,
 )
+from src.use_cases.enqueue_filter import EnqueueFilterUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 
 from tests.e2e.mock_upstream import MOCK_BODY, start_mock_upstream
@@ -100,7 +104,9 @@ def make_standby(pool, record, check):
         record=record,
         check_proxies=check,
         network_gate=gate,
+        enqueue_filter=EnqueueFilterUseCase(rules=ENQUEUE_RULES),
         standby_group=STANDBY_GROUP,
+        reject_group=ENQUEUE_REJECT_GROUP,
         fill_groups=STANDBY_FILL_GROUPS,
         fill_probe_multiplier=STANDBY_FILL_PROBE_MULTIPLIER,
         fill_probe_min_extra=STANDBY_FILL_PROBE_MIN_EXTRA,
@@ -144,7 +150,9 @@ def _probe_side_effect(success_map):
         on_result = kw.get("on_result")
         if on_result:
             for p in proxies:
-                on_result(p, results[p])
+                ret = on_result(p, results[p])
+                if inspect.isawaitable(ret):
+                    await ret
         return results
     return execute
 

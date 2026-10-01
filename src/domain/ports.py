@@ -148,3 +148,18 @@ class GeoCacheStore(Protocol):
     def clear_geo_cache(self) -> None:
         """清空归属缓存（库切换/升级时调用）"""
         ...
+
+
+class ProxySpeedTester(Protocol):
+    """代理测速端口：测 Cloudflare 下载速率（Mbps）
+
+    measure 返回面板展示的完整结果（download/upload 精简 dict）；download_mbps 是入队筛选的
+    轻量入口，带缓存与串行保护。两者均为同步阻塞 IO（调用方放 executor，不阻塞事件循环）；
+    测不出（超时/代理不可用/无速率）返回 None，判定层按未测到放过。
+    """
+
+    def measure(self, proxy: str) -> dict:
+        """完整测速结果：{proxy, download, upload}"""
+        ...
+
+    def download_mbps(self, proxy: str) -> float | None: ...

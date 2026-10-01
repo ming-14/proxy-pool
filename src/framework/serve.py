@@ -18,7 +18,7 @@ from typing import Callable
 
 from src.framework import config
 from src.framework.loop import run_coro
-from src.framework.web.control import ServeControl
+from src.framework.web.control import EnqueueRuleSettings, ServeControl
 from src.framework.web.panel_state import PanelTasks
 from src.interfaces.proxy_server import PproxyServer, listen_uri
 
@@ -77,6 +77,8 @@ async def _run(
         fill_probe_min_extra=config.STANDBY_FILL_PROBE_MIN_EXTRA,
         salgorithm="rc",
     )
+    # 入队筛选规则的运行时设置（启停/阈值）：与 control 同层，面板写、fill 读
+    enqueue_settings = EnqueueRuleSettings(config.ENQUEUE_RULES)
 
     # save 节流：每 30 秒持久化一次（c.save 序列化全池 + 文件 I/O，每 2 秒一轮太频繁）
     _last_save = 0.0
@@ -139,11 +141,13 @@ async def _run(
             record=c.record,
             standby=standby,
             control=control,
+            enqueue_settings=enqueue_settings,
             server=server,
             save=c.save,
             capacity=capacity,
             purity=c.purity,
             geo=c.geo,
+            speedtest=c.speedtest,
             tasks=PanelTasks(),
         ))
         if web_port:

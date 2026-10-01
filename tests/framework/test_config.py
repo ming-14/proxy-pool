@@ -49,6 +49,10 @@ def _run_config(tmp_path: Path, *, env_file: str | None = None,
                 ippure: str | None = None, panel: str | None = None,
                 listen_protocols: tuple[str, ...] | None = None,
                 fetch_filter: str | None = None,
+                enqueue_rules: str | None = None,
+                reject_group: str | None = None,
+                reject_group_defined: bool = True,
+                reject_group_requestable: bool = False,
                 extra_env: dict | None = None,
                 drop_ippure: bool = False) -> subprocess.CompletedProcess:
     """复制真实配置目录 → 覆写指定文件 → 子进程 import config"""
@@ -71,15 +75,38 @@ def _run_config(tmp_path: Path, *, env_file: str | None = None,
                                 src_path.read_text(encoding="utf-8"))
         assert hits == 1, f"sources.toml 的 [[fetch_filter]] 段命中 {hits} 次（应为 1 次）"
         src_path.write_text(patched, encoding="utf-8")
-    if listen_protocols is not None:
-        # 只替换 listen_protocols 一行（serve.toml 其余键是合法 [server] 结构的脚手架）
+    if listen_protocols is not None or enqueue_rules is not None or reject_group is not None:
+        # 只替换指定行/段（serve.toml 其余键是合法 [server] 结构的脚手架）
         serve_path = cfg_dir / "serve.toml"
-        value = "[" + ", ".join(f'"{p}"' for p in listen_protocols) + "]"
-        patched, hits = re.subn(r"^listen_protocols = \[[^\]]*\]",
-                                f"listen_protocols = {value}",
-                                serve_path.read_text(encoding="utf-8"), flags=re.MULTILINE)
-        assert hits == 1, f"serve.toml 的 listen_protocols 命中 {hits} 次（应为 1 次）"
-        serve_path.write_text(patched, encoding="utf-8")
+        text = serve_path.read_text(encoding="utf-8")
+        if listen_protocols is not None:
+            value = "[" + ", ".join(f'"{p}"' for p in listen_protocols) + "]"
+            text, hits = re.subn(r"^listen_protocols = \[[^\]]*\]",
+                                 f"listen_protocols = {value}", text, flags=re.MULTILINE)
+            assert hits == 1, f"serve.toml 的 listen_protocols 命中 {hits} 次（应为 1 次）"
+        if reject_group is not None:
+            text, hits = re.subn(r'^enqueue_reject_group = .*$',
+                                 f'enqueue_reject_group = "{reject_group}"',
+                                 text, flags=re.MULTILINE)
+            assert hits == 1, f"serve.toml 的 enqueue_reject_group 命中 {hits} 次（应为 1 次）"
+        if enqueue_rules is not None:
+            # 数组表在文件尾部，整段替换（空串 = 无规则）
+            text, hits = re.subn(r"\[\[server\.enqueue_rules\]\][\s\S]*$",
+                                 enqueue_rules.strip() + "\n" if enqueue_rules.strip() else "",
+                                 text)
+            assert hits == 1, f"serve.toml 的 [[server.enqueue_rules]] 段命中 {hits} 次（应为 1 次）"
+        serve_path.write_text(text, encoding="utf-8")
+    if not reject_group_defined or reject_group_requestable:
+        pool_path = cfg_dir / "pool.toml"
+        text = pool_path.read_text(encoding="utf-8")
+        if not reject_group_defined:
+            text, hits = re.subn(r'^"enqueue-rejected".*$\n?', "", text, flags=re.MULTILINE)
+            assert hits == 1, f"pool.toml 的 enqueue-rejected 组命中 {hits} 次（应为 1 次）"
+        if reject_group_requestable:
+            text, hits = re.subn(r'(^requestable_groups = \[\n)', r'\1    "enqueue-rejected",\n',
+                                 text, flags=re.MULTILINE)
+            assert hits == 1, f"pool.toml 的 requestable_groups 命中 {hits} 次（应为 1 次）"
+        pool_path.write_text(text, encoding="utf-8")
     code = (
         "import sys; sys.path.insert(0, sys.argv[1]);"
         "from src.framework import config as c;"
@@ -88,6 +115,8 @@ def _run_config(tmp_path: Path, *, env_file: str | None = None,
         "print('SECTIONS', sorted(c.IPPURE_SECTIONS));"
         "print('LISTEN', c.SERVER_LISTEN_PROTOCOLS);"
         "print('FILTER', [(r.source_glob, r.pattern.pattern, r.reason) for r in c.FETCH_FILTER_RULES]);"
+        "print('ENQUEUE', [(r.metric, r.priority, r.enabled, dict(r.params)) for r in c.ENQUEUE_RULES]);"
+        "print('REJECT', c.ENQUEUE_REJECT_GROUP);"
         f"print('KEY', repr(__import__('os').environ.get({_ENV_KEY!r})))"
     )
     env = dict(os.environ, PROXY_POOL_CONFIG=str(cfg_dir))
@@ -314,6 +343,101 @@ def test_fetch_filter_unknown_key_fails_fast(tmp_path) -> None:
     ))
     assert r.returncode != 0
     assert "未知键" in r.stderr and "action" in r.stderr
+
+
+# ---------------------------------------------------------------- 入队筛选规则
+def test_enqueue_rules_parsed(tmp_path) -> None:
+    """规则按书写顺序解析，参数经 METRIC_SPECS 校验后归一（此处断言用例自带内容）"""
+    r = _run_config(tmp_path, enqueue_rules=(
+        '[[server.enqueue_rules]]\nmetric = "latency"\npriority = 1\nmax_latency = 0.5\nenabled = true\n'
+        "\n"
+        '[[server.enqueue_rules]]\nmetric = "country"\npriority = 2\nallow = ["us", "jp"]\n'
+    ))
+    assert r.returncode == 0, r.stderr
+    assert ("ENQUEUE [('latency', 1, True, {'max_latency': 0.5}), "
+            "('country', 2, False, {'allow': ['US', 'JP']})]") in r.stdout
+    assert "REJECT enqueue-rejected" in r.stdout
+
+
+def test_enqueue_rules_absent_allowed(tmp_path) -> None:
+    """无 [[server.enqueue_rules]] 合法：不做任何入队筛选"""
+    r = _run_config(tmp_path, enqueue_rules="")
+    assert r.returncode == 0, r.stderr
+    assert "ENQUEUE []" in r.stdout
+
+
+def test_enqueue_unknown_metric_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, enqueue_rules=(
+        '[[server.enqueue_rules]]\nmetric = "weather"\npriority = 1\n'
+    ))
+    assert r.returncode != 0
+    assert "未知指标" in r.stderr and "weather" in r.stderr
+
+
+def test_enqueue_unknown_key_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, enqueue_rules=(
+        '[[server.enqueue_rules]]\nmetric = "latency"\npriority = 1\nmax_latency = 1.0\nmin_speed = 5\n'
+    ))
+    assert r.returncode != 0
+    assert "未知键" in r.stderr and "min_speed" in r.stderr
+
+
+def test_enqueue_missing_required_param_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, enqueue_rules='[[server.enqueue_rules]]\nmetric = "purity"\npriority = 1\n')
+    assert r.returncode != 0
+    assert "缺少必需参数" in r.stderr and "max_score" in r.stderr
+
+
+def test_enqueue_invalid_param_fails_fast(tmp_path) -> None:
+    """参数值非法在启动期报错（如延时阈值非正数），不静默失效"""
+    r = _run_config(tmp_path, enqueue_rules=(
+        '[[server.enqueue_rules]]\nmetric = "latency"\npriority = 1\nmax_latency = 0\n'
+    ))
+    assert r.returncode != 0
+    assert "max_latency" in r.stderr
+
+
+def test_enqueue_priority_non_positive_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, enqueue_rules=(
+        '[[server.enqueue_rules]]\nmetric = "latency"\npriority = 0\nmax_latency = 1.0\n'
+    ))
+    assert r.returncode != 0
+    assert "priority" in r.stderr
+
+
+def test_enqueue_priority_duplicate_fails_fast(tmp_path) -> None:
+    """优先级重复时顺序不确定，启动即报错"""
+    r = _run_config(tmp_path, enqueue_rules=(
+        '[[server.enqueue_rules]]\nmetric = "latency"\npriority = 1\nmax_latency = 1.0\n'
+        "\n"
+        '[[server.enqueue_rules]]\nmetric = "purity"\npriority = 1\nmax_score = 50\n'
+    ))
+    assert r.returncode != 0
+    assert "priority 重复" in r.stderr
+
+
+def test_enqueue_duplicate_metric_fails_fast(tmp_path) -> None:
+    """同一指标写两条无法定位面板开关/阈值，启动即报错"""
+    r = _run_config(tmp_path, enqueue_rules=(
+        '[[server.enqueue_rules]]\nmetric = "latency"\npriority = 1\nmax_latency = 1.0\n'
+        "\n"
+        '[[server.enqueue_rules]]\nmetric = "latency"\npriority = 2\nmax_latency = 2.0\n'
+    ))
+    assert r.returncode != 0
+    assert "指标重复" in r.stderr
+
+
+def test_enqueue_reject_group_undefined_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, reject_group_defined=False)
+    assert r.returncode != 0
+    assert "未在 [groups] 定义" in r.stderr
+
+
+def test_enqueue_reject_group_requestable_fails_fast(tmp_path) -> None:
+    """拒绝组可请求 = 被拒候选立即重新成为候选，规则形同虚设"""
+    r = _run_config(tmp_path, reject_group_requestable=True)
+    assert r.returncode != 0
+    assert "requestable_groups" in r.stderr
 
 
 if __name__ == "__main__":

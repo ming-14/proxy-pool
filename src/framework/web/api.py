@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -24,19 +23,11 @@ from src.domain.models import bind_of, normalize_proxy, proxy_to_ip
 from src.domain.proxy_pool import LOCKED_GROUP
 from src.framework import config, logbuffer
 from src.interfaces.proxy_server import PproxyServer
+from src.interfaces.speedtest import PspeedTester
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
 from src.framework.web.panel_state import PanelTasks
-
-# pspeed 测速工具（vendor 目录）：sys.path 注册留在模块级（stdlib，零成本），
-# 实际 import 下沉到 _run_speedtest——测速是低频面板动作，不为其常驻加载
-# requests+PySocks 依赖链（调研实测边际 ~0.1MB/27ms，主要是隔离 vendor 导入面）
-_WEB_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_WEB_DIR)))
-_PSPEED_SRC = os.path.join(_PROJECT_ROOT, "vendor", "pspeed", "src")
-if _PSPEED_SRC not in sys.path:
-    sys.path.insert(0, _PSPEED_SRC)
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +48,13 @@ class PanelContext:
     record: RecordProxyUseCase
     standby: StandbyQueueUseCase
     control: object            # ServeControl
+    enqueue_settings: object   # EnqueueRuleSettings：入队筛选运行时设置（启停/阈值）
     server: PproxyServer
     save: Callable[[], None]   # 落盘回调（c.save）
     capacity: int              # 代理服务队列容量
     purity: CheckPurityUseCase | None    # IP 纯净度检查；禁用时为 None
     geo: object | None                   # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）；geoip.enabled=false 时为 None
+    speedtest: PspeedTester              # 测速实现（面板手动测速与入队筛选共用）
     tasks: PanelTasks                    # 面板任务状态（测速/纯净度检查进行中与终态，前端刷新后恢复）
 
 
@@ -111,31 +104,9 @@ def _geo_payload(geo: dict | None) -> dict | None:
     }
 
 
-async def _resolve_geo(ctx: PanelContext, ips: list[str], *, label: str) -> dict[str, dict]:
-    """归属查询三步编排（SQLite 线程绑定）：主线程读缓存 → executor 定位缺失（纯 mmdb）→ 主线程写缓存
-
-    组明细/队列页/地图共用，label 标识调用方（组名/页面）供日志定位；查询失败只记日志并
-    降级，不阻断页面。三步各自降级，代价互不牵连：缓存读失败无从降级返回空；定位失败
-    返回已读到的缓存（已缓存 IP 的归属照常下发，不因新 IP 定位失败连坐）；缓存写失败只
-    丢持久化、不丢本次定位结果。调用方须先确认 ctx.geo 非 None（geoip 关闭时不构造）。
-    """
-    try:
-        cached, missing = ctx.geo.query_cache(ips)
-    except Exception:
-        logger.exception("IP 归属缓存读取失败 (%s): %d 个 IP", label, len(ips))
-        return {}
-    if not missing:
-        return cached
-    try:
-        located = await asyncio.get_running_loop().run_in_executor(None, ctx.geo.locate, missing)
-    except Exception:
-        logger.exception("IP 归属定位失败 (%s): %d 个 IP", label, len(missing))
-        return cached
-    try:
-        ctx.geo.save_cache(located)
-    except Exception:
-        logger.exception("IP 归属缓存写入失败 (%s): %d 个 IP", label, len(located))
-    return {**cached, **located}
+def _settings_snapshot(ctx: PanelContext) -> dict:
+    """运行时可调项快照：调度参数 + 入队筛选规则（/api/status 与 /api/settings 响应共用）"""
+    return {**ctx.control.to_dict(), "enqueue_rules": ctx.enqueue_settings.to_dict()}
 
 
 def _status_snapshot(ctx: PanelContext) -> dict:
@@ -146,6 +117,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         config.TRUSTED_GROUP: ("信任池", "trusted"),
         config.BLACKLIST_GROUP: ("黑名单", "blacklist"),
         config.STANDBY_GROUP: ("代理队列", "standby"),
+        config.ENQUEUE_REJECT_GROUP: ("入队淘汰", "rejected"),
         "staging": ("暂存组", "staging"),
     }
     groups = {}
@@ -218,7 +190,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         # 全量拉取进行中（前端刷新后恢复全量按钮的「处理中」）
         "fetching_all": ctx.tasks.fetching_all(),
         "sources": sources,
-        "settings": ctx.control.to_dict(),
+        "settings": _settings_snapshot(ctx),
         "traffic_total": {"upload": traffic_upload, "download": traffic_download},
     }
 
@@ -308,7 +280,7 @@ async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
     # geoip.enabled=false 时 geo 为 None，proxies 不带 geo 字段
     geo_map: dict[str, dict] = {}
     if ctx.geo is not None:
-        geo_map = await _resolve_geo(ctx, [proxy_to_ip(x["proxy"]) for x in proxies], label=f"group={name}")
+        geo_map = await ctx.geo.resolve([proxy_to_ip(x["proxy"]) for x in proxies], label=f"group={name}")
     for x in proxies:
         x["geo"] = _geo_payload(geo_map.get(proxy_to_ip(x["proxy"])))
     return {"group": name, "ttl": ttl, "count": len(proxies), "proxies": proxies}
@@ -404,7 +376,7 @@ async def _standby_geo(request: web.Request) -> web.Response:
     """
     ctx = request.app[_PANEL_KEY]
     proxies = _standby_rows(ctx)
-    geo_map = await _resolve_geo(ctx, [proxy_to_ip(p) for p in proxies], label="standby")
+    geo_map = await ctx.geo.resolve([proxy_to_ip(p) for p in proxies], label="standby")
     return web.json_response({
         "geo": {bind_of(p): _geo_payload(geo_map.get(proxy_to_ip(p))) for p in proxies},
     })
@@ -470,48 +442,6 @@ def _find_proxy_by_bind(ctx: PanelContext, bind: str) -> str | None:
     return next((p for p in _standby_rows(ctx) if bind_of(p) == bind), None)
 
 
-def _simplify_speed_result(d: dict | None) -> dict | None:
-    """精简 pspeed 返回的 download/upload dict，只保留前端需要的字段"""
-    if not d:
-        return None
-    return {
-        "ok": d.get("ok"),
-        "best_mbps": d.get("best_mbps"),
-        "avg_mbps": d.get("avg_mbps"),
-        "bytes": d.get("bytes"),
-        "ms": d.get("ms"),
-        "node": d.get("node"),
-        "err": d.get("err"),
-    }
-
-
-def _run_speedtest(proxy: str) -> dict:
-    """同步调 pspeed probe_one：Cloudflare 下载+上传，10s 时限
-
-    在 asyncio.to_thread 中执行，避免阻塞事件循环。pspeed 及其 requests/PySocks
-    依赖在此惰性导入（首次测速点击时，~27ms）。
-    """
-    from pspeed.probe import probe_one
-    from pspeed.proxy import parse_one
-    from pspeed.nodes import get_download_nodes, get_upload_nodes
-
-    px = parse_one(proxy)
-    dl_nodes = get_download_nodes(["cloudflare"])
-    ul_nodes = get_upload_nodes(["cloudflare"])
-    result = probe_one(
-        px, ["download", "upload"],
-        dl_nodes=dl_nodes, ul_nodes=ul_nodes,
-        dl_bytes=100 * 1024 * 1024,
-        ul_bytes=5 * 1024 * 1024,
-        multi=1, hard_limit=10.0,
-    )
-    return {
-        "proxy": proxy,
-        "download": _simplify_speed_result(result.get("download")),
-        "upload": _simplify_speed_result(result.get("upload")),
-    }
-
-
 async def _do_speedtest(request: web.Request) -> web.Response:
     """对指定代理进行 Cloudflare 上传/下载 10s 测速
 
@@ -532,7 +462,7 @@ async def _do_speedtest(request: web.Request) -> web.Response:
     if not ctx.tasks.speedtest_start(bind):
         return web.json_response({"status": "running"})
     try:
-        result = await asyncio.get_running_loop().run_in_executor(None, _run_speedtest, proxy)
+        result = await asyncio.get_running_loop().run_in_executor(None, ctx.speedtest.measure, proxy)
     except Exception as e:
         logger.exception("测速失败 proxy=%s", proxy)
         ctx.tasks.speedtest_error(bind, str(e))
@@ -545,11 +475,8 @@ async def _do_purity(request: web.Request) -> web.Response:
     """检查代理纯净度：按 ippure.toml 选中的检查源查询该 IP 的分数与用途类型
 
     请求体 {"bind": "1.2.3.4:8080"}，后端反查完整 proxy URL 后调 CheckPurityUseCase。
-
-    线程安全：SQLite 连接线程绑定，故分三步编排——
-      1. query_cache 在事件循环线程（主线程 SQLite 读）
-      2. check_remote 在 executor 线程（纯网络，不碰 SQLite）
-      3. save_cache 在事件循环线程（主线程 SQLite 写）
+    缓存读取留在本层：需要在调 API 前先做「同 IP 已在检查中」的幂等门控（防重复
+    消耗日限额）；网络检查与写缓存的线程编排由用例的 inspect 完成。
     """
     ctx = request.app[_PANEL_KEY]
     if ctx.purity is None:
@@ -571,19 +498,12 @@ async def _do_purity(request: web.Request) -> web.Response:
     if not ctx.tasks.purity_start(ip):
         return web.json_response({"status": "checking"})
     try:
-        # 2. 调检查源 API（executor 线程，纯网络）
-        try:
-            result = await asyncio.get_running_loop().run_in_executor(None, ctx.purity.check_remote, proxy)
-        except Exception as e:
-            logger.exception("纯净度检查失败 proxy=%s", proxy)
-            ctx.tasks.purity_error(ip, str(e))
-            return web.json_response({"error": f"检查失败: {e}"}, status=500)
-        # 3. 写缓存（主线程 SQLite 写）
-        final = ctx.purity.save_cache(proxy, result)
+        # 2+3. 调检查源（executor）并写缓存（主线程），编排在用例层
+        final = await ctx.purity.inspect(proxy)
     except Exception as e:
-        logger.exception("纯净度结果写缓存失败 proxy=%s", proxy)
+        logger.exception("纯净度检查失败 proxy=%s", proxy)
         ctx.tasks.purity_error(ip, str(e))
-        return web.json_response({"error": f"写缓存失败: {e}"}, status=500)
+        return web.json_response({"error": f"检查失败: {e}"}, status=500)
     # 清除中间态（结果由 SQLite 缓存承载，快照读 row.purity）
     ctx.tasks.purity_done(ip)
     return web.json_response(final)
@@ -604,7 +524,7 @@ async def _geo_map(request: web.Request) -> web.Response:
     """
     ctx = request.app[_PANEL_KEY]
     ips = ctx.geo.collect_ips(ctx.pool)
-    geo_map = await _resolve_geo(ctx, ips, label="geo-map")
+    geo_map = await ctx.geo.resolve(ips, label="geo-map")
     agg = ctx.geo.aggregate(geo_map)
     return web.json_response({
         "total_ips": len(ips),
@@ -824,10 +744,18 @@ async def _do_standby_unlock(request: web.Request) -> web.Response:
 
 
 async def _do_settings(request: web.Request) -> web.Response:
-    """更新调度策略参数；落地副作用（salgorithm 重启 / fill 倍率同步）"""
+    """更新运行时参数（调度策略 + 入队筛选规则）；落地副作用（salgorithm 重启 / fill 倍率同步）"""
     ctx = request.app[_PANEL_KEY]
     ctl = ctx.control
     body = await _json_body(request)
+    changed_rules = False
+    if "enqueue_rules" in body:
+        try:
+            rules = ctx.enqueue_settings.update(body["enqueue_rules"])
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        ctx.standby.update_enqueue_rules(rules)
+        changed_rules = True
     try:
         changed = ctl.update(body)
     except ValueError as e:
@@ -836,8 +764,10 @@ async def _do_settings(request: web.Request) -> web.Response:
         await ctx.server.set_salgorithm(ctl.salgorithm)
     if "fill_probe_multiplier" in changed or "fill_probe_min_extra" in changed:
         ctx.standby.update_fill_probe_params(ctl.fill_probe_multiplier, ctl.fill_probe_min_extra)
+    if changed_rules:
+        changed["enqueue_rules"] = ctx.enqueue_settings.to_dict()
     ctx.save()
-    return web.json_response({"ok": True, "changed": changed, "settings": ctl.to_dict()})
+    return web.json_response({"ok": True, "changed": changed, "settings": _settings_snapshot(ctx)})
 
 
 @web.middleware

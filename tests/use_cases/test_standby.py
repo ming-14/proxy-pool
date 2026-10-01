@@ -4,15 +4,18 @@
 """
 
 import asyncio
+import inspect
 import time
 import unittest
 from unittest.mock import MagicMock
 
+from src.domain.enqueue_filter import EnqueueRule
 from src.domain.proxy_pool import ProxyPool, LOCKED_GROUP
 from src.framework.config import (
     PROXY_GROUPS, MAX_CONSECUTIVE_FAILS, TRUSTED_MAX_CONSECUTIVE_FAILS, SOURCE_PAUSE_TTL,
-    TRUSTED_GROUP, BLACKLIST_GROUP, STANDBY_GROUP,
+    TRUSTED_GROUP, BLACKLIST_GROUP, STANDBY_GROUP, ENQUEUE_REJECT_GROUP,
 )
+from src.use_cases.enqueue_filter import EnqueueFilterUseCase
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 
@@ -31,12 +34,14 @@ def make_pool():
     )
 
 
-def _fire_on_result(proxies, results, kw):
-    """模拟 CheckProxiesUseCase 的 on_result 回调（fill 流式入队依赖）"""
+async def _fire_on_result(proxies, results, kw):
+    """模拟 CheckProxiesUseCase 的 on_result 回调（fill 流式入队依赖，回调可为协程）"""
     on_result = kw.get("on_result")
     if on_result:
         for p in proxies:
-            on_result(p, results[p])
+            ret = on_result(p, results[p])
+            if inspect.isawaitable(ret):
+                await ret
 
 
 def make_check(success_map):
@@ -45,7 +50,7 @@ def make_check(success_map):
 
     async def execute(proxies, url, **kw):
         results = _async_result({p: p in success_map for p in proxies})
-        _fire_on_result(proxies, results, kw)
+        await _fire_on_result(proxies, results, kw)
         return results
 
     check.execute.side_effect = execute
@@ -66,7 +71,7 @@ def make_check_results(spec):
                 "elapsed": s.get("elapsed", 0.1),
                 "error": None if s["success"] else "Timeout",
             }
-        _fire_on_result(proxies, results, kw)
+        await _fire_on_result(proxies, results, kw)
         return results
 
     check.execute.side_effect = execute
@@ -104,13 +109,16 @@ def make_gate(ok: bool = True, check_results=None):
 
 
 def make_standby(pool, check, fill_groups=("default-http",), multiplier=2, min_extra=1,
-                 metrics_window=1800, chart_window=60, gate=None):
+                 metrics_window=1800, chart_window=60, gate=None,
+                 enqueue_filter=None, reject_group=ENQUEUE_REJECT_GROUP):
     return StandbyQueueUseCase(
         pool=pool,
         record=RecordProxyUseCase(pool=pool, standby_group=STANDBY_GROUP),
         check_proxies=check,
         network_gate=gate or make_gate(True),
+        enqueue_filter=enqueue_filter or EnqueueFilterUseCase(rules=()),
         standby_group=STANDBY_GROUP,
+        reject_group=reject_group,
         fill_groups=fill_groups,
         fill_probe_multiplier=multiplier,
         fill_probe_min_extra=min_extra,
@@ -135,6 +143,35 @@ class TestStandbyFill(unittest.TestCase):
         # 入队连续失败计数清零
         self.assertEqual(self.pool.get_consecutive_fail_count("http://1.2.3.4:8080"), 0)
 
+    def test_fill_rejected_candidate_moves_to_reject_group(self):
+        """规则未通过：清掉各组副本后移入 reject 组，不入队；下轮不再是候选，不再被采集"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        self.pool.add_to_group("github-http", "http://1.2.3.4:8080")  # 跨组副本一并清除
+        rules = (EnqueueRule(metric="latency", priority=1, params={"max_latency": 0.05}, enabled=True),)
+        check = make_check({"http://1.2.3.4:8080"})
+        c = make_standby(self.pool, check, enqueue_filter=EnqueueFilterUseCase(rules=rules))
+        added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
+        self.assertEqual(added, 0)
+        self.assertEqual(c.standby_proxies(), [])
+        self.assertEqual(self.pool.get_group_proxies("default-http"), [])
+        self.assertEqual(self.pool.get_group_proxies("github-http"), [])
+        self.assertEqual(self.pool.get_group_proxies(ENQUEUE_REJECT_GROUP), ["http://1.2.3.4:8080"])
+        # 拒绝组不可请求 -> 下轮候选为空，不再发起探测
+        self.assertNotIn("http://1.2.3.4:8080", self.pool.get_available_proxies())
+        asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
+        self.assertEqual(check.execute.call_count, 1)
+
+    def test_fill_within_threshold_enqueues(self):
+        """规则通过：候选正常入队（阈值内不放行任何额外动作）"""
+        self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
+        rules = (EnqueueRule(metric="latency", priority=1, params={"max_latency": 0.5}, enabled=True),)
+        c = make_standby(self.pool, make_check({"http://1.2.3.4:8080"}),
+                         enqueue_filter=EnqueueFilterUseCase(rules=rules))
+        added = asyncio.run(c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5))
+        self.assertEqual(added, 1)
+        self.assertEqual(c.standby_proxies(), ["http://1.2.3.4:8080"])
+        self.assertEqual(self.pool.get_group_proxies(ENQUEUE_REJECT_GROUP), [])
+
     def test_fill_failure_records_consecutive_fails_not_blacklist(self):
         """探测失败只 record_fail，未达 max_consecutive_fails 不拉黑，留原组下次可再被选"""
         self.pool.add_to_group("default-http", "http://1.2.3.4:8080")
@@ -153,7 +190,7 @@ class TestStandbyFill(unittest.TestCase):
         async def execute(proxies, url, **kw):
             calls.append(list(proxies))
             results = {p: {"success": True, "status_code": 200, "elapsed": 0.1, "error": None} for p in proxies}
-            _fire_on_result(proxies, results, kw)
+            await _fire_on_result(proxies, results, kw)
             return results
 
         check.execute.side_effect = execute
@@ -170,7 +207,7 @@ class TestStandbyFill(unittest.TestCase):
 
         async def execute(proxies, url, **kw):
             results = {p: {"success": True, "status_code": 200, "elapsed": 0.1, "error": None} for p in proxies}
-            _fire_on_result(proxies, results, kw)
+            await _fire_on_result(proxies, results, kw)
             return results
 
         check.execute.side_effect = execute
@@ -188,7 +225,7 @@ class TestStandbyFill(unittest.TestCase):
         async def execute(proxies, url, **kw):
             calls.append(list(proxies))
             results = {p: {"success": True, "status_code": 200, "elapsed": 0.1, "error": None} for p in proxies}
-            _fire_on_result(proxies, results, kw)
+            await _fire_on_result(proxies, results, kw)
             return results
 
         check.execute.side_effect = execute
@@ -212,7 +249,7 @@ class TestStandbyFill(unittest.TestCase):
 
         async def execute(proxies, url, **kw):
             results = {p: {"success": True, "status_code": 200, "elapsed": 0.1, "error": None} for p in proxies}
-            _fire_on_result(proxies, results, kw)
+            await _fire_on_result(proxies, results, kw)
             return results
 
         check.execute.side_effect = execute
@@ -288,7 +325,7 @@ class TestStandbyFill(unittest.TestCase):
 
         async def execute(proxies, url, **kw):
             results = {p: {"success": True, "status_code": 200, "elapsed": 0.1, "error": None} for p in proxies}
-            _fire_on_result(proxies, results, kw)
+            await _fire_on_result(proxies, results, kw)
             return results
 
         check.execute.side_effect = execute
@@ -476,7 +513,7 @@ class TestStandbyRetryProbe(unittest.TestCase):
         # 补测期探测恢复正常
         async def execute(proxies, url, **kw):
             results = _async_result({p: True for p in proxies})
-            _fire_on_result(proxies, results, kw)
+            await _fire_on_result(proxies, results, kw)
             return results
 
         check.execute.side_effect = execute
@@ -969,7 +1006,7 @@ def make_recording_check(spec):
                 "elapsed": s.get("elapsed", 0.1),
                 "error": None if s["success"] else "Timeout",
             }
-        _fire_on_result(proxies, results, kw)
+        await _fire_on_result(proxies, results, kw)
         return results
 
     check.execute.side_effect = execute

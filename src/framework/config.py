@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections import Counter
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # Python 3.8 兼容
 
+from src.domain.enqueue_filter import METRIC_SPECS, EnqueueRule  # noqa: E402
 from src.domain.models import SUPPORTED_SCHEMES  # noqa: E402
 from src.domain.purity import ProxyRule  # noqa: E402  (tomllib 分支之后，保持导入分组清晰)
 from src.domain.source_filter import FilterRule  # noqa: E402
@@ -240,6 +242,56 @@ STANDBY_FILL_GROUPS: tuple[str, ...] = tuple(_toml["server"]["standby_fill_group
 _unknown_fill_groups = [g for g in STANDBY_FILL_GROUPS if g not in _GROUPS]
 if _unknown_fill_groups:
     raise ValueError(f"standby_fill_groups 含未定义的组: {_unknown_fill_groups}")
+# ---------------------------------------------------------------- 入队筛选规则
+# 候选入队前按 priority 升序逐条判定（小号先测），未通过即移入 enqueue_reject_group。
+# 指标参数键与校验由 domain.METRIC_SPECS 提供（新增指标只改领域层）。
+_ENQUEUE_META_KEYS = {"metric", "priority", "enabled"}
+
+
+def _parse_enqueue_rule(raw: dict, index: int) -> EnqueueRule:
+    """校验单条入队筛选规则（未知指标/键、缺参数、优先级非法直接报错）"""
+    label = f"serve.toml [[server.enqueue_rules]] 第 {index + 1} 条"
+    metric = str(raw.get("metric", "")).strip()
+    spec = METRIC_SPECS.get(metric)
+    if spec is None:
+        raise ValueError(f"{label} 未知指标 {metric!r}（可选 {sorted(METRIC_SPECS)}）")
+    allowed = _ENQUEUE_META_KEYS | set(spec.required) | set(spec.optional)
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(f"{label} 含未知键 {sorted(unknown)}（可选 {sorted(allowed)}）")
+    missing = spec.required - set(raw)
+    if missing:
+        raise ValueError(f"{label} 缺少必需参数 {sorted(missing)}")
+    priority = raw.get("priority")
+    if isinstance(priority, bool) or not isinstance(priority, int) or priority <= 0:
+        raise ValueError(f"{label} priority 须为正整数")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"{label} enabled 须为布尔值")
+    return EnqueueRule(metric=metric, priority=priority, params=spec.coerce(raw), enabled=enabled)
+
+
+ENQUEUE_RULES: tuple[EnqueueRule, ...] = tuple(
+    _parse_enqueue_rule(rule, i) for i, rule in enumerate(_toml["server"].get("enqueue_rules") or [])
+)
+_repeated = sorted(key for key, count in Counter(r.priority for r in ENQUEUE_RULES).items() if count > 1)
+if _repeated:
+    raise ValueError(f"serve.toml [[server.enqueue_rules]] priority 重复: {_repeated}")
+# 每个指标至多一条：网页设置按指标启停/改阈值，重复指标无法定位到具体一条
+_repeated = sorted(key for key, count in Counter(r.metric for r in ENQUEUE_RULES).items() if count > 1)
+if _repeated:
+    raise ValueError(f"serve.toml [[server.enqueue_rules]] 指标重复: {_repeated}（每个指标至多一条）")
+
+# 拒绝候选的归属组：必须已定义且不可请求
+# （可请求会让被拒绝的代理立即重新成为候选，规则形同虚设）
+ENQUEUE_REJECT_GROUP = str(_toml["server"]["enqueue_reject_group"])
+if ENQUEUE_REJECT_GROUP not in _GROUPS:
+    raise ValueError(f"组 {ENQUEUE_REJECT_GROUP!r} 未在 [groups] 定义")
+if ENQUEUE_REJECT_GROUP in REQUESTABLE_GROUPS:
+    raise ValueError(
+        f"组 {ENQUEUE_REJECT_GROUP!r} 不可列入 pool.toml requestable_groups（被拒绝的候选会立即重新成为候选）"
+    )
+
 HEARTBEAT_INTERVAL = int(_toml["server"]["heartbeat_interval"])  # 心跳间隔秒
 # 锁定单一上游时的心跳间隔秒（锁定时代理不淘汰不拉黑，仅测速展示，降低探测频率）
 HEARTBEAT_LOCK_INTERVAL = int(_toml["server"]["heartbeat_lock_interval"])

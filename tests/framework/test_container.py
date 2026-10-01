@@ -3,12 +3,14 @@
 覆盖点：
 - 纯净度插件：缺环境变量 → purity 为 None；未知源名/模块导入失败/未声明节/插件参数非法 → 抛错
 - geoip 库缺失/损坏 → geo 为 None
-- web.enabled=false → purity/geo 均不构造（仅面板消费）
+- web.enabled=false → purity 不构造；geo 仅在启用国家规则时为 serve 路径构造
+- 入队筛选测量源接线：国家规则经 geo.resolve_country 判定
 - 惰性导入：import container 不得拉起 requests/geoip2/fake_useragent 与纯净度插件模块
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -18,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from src.domain.enqueue_filter import EnqueueRule
 from src.framework import config
 from src.framework.container import build_container
 
@@ -146,15 +149,113 @@ def test_plugin_config_invalid_raises(cache_db, monkeypatch) -> None:
     assert "max_age_in_days" in str(exc.value)
 
 
+class _FakeGeoLite2:
+    """GeoLite2Locator 替身：静态归属 + fingerprint（隔离 mmdb 文件依赖）"""
+
+    fingerprint = "test-fingerprint"
+
+    def __init__(self, path: str) -> None:
+        pass
+
+    def locate(self, ip: str) -> dict | None:
+        if ip == "1.2.3.4":
+            return {"country": "美国", "country_code": "US", "province": None,
+                    "city": None, "lat": 1.0, "lng": 2.0}
+        return None
+
+
+def _patch_country_rule(monkeypatch, *, enabled: bool) -> None:
+    """注入国家规则并替身定位器（不依赖本机 mmdb 与实际配置）"""
+    monkeypatch.setattr(config, "IPPURE_SOURCE", "")  # 隔离纯净度分支
+    monkeypatch.setattr(config, "GEOIP_ENABLED", True)
+    monkeypatch.setattr(config, "ENQUEUE_RULES", (
+        EnqueueRule(metric="country", priority=1, params={"allow": ["JP"]}, enabled=enabled),
+    ))
+    monkeypatch.setattr("src.interfaces.geoip_client.GeoLite2Locator", _FakeGeoLite2)
+
+
 def test_web_disabled_skips_purity_and_geo(cache_db, monkeypatch) -> None:
-    """web 关闭：purity/geo 仅面板消费，不构造也不 import 依赖链"""
+    """web 关闭且无启用规则：purity/geo 都不构造，不 import 依赖链"""
     monkeypatch.setattr(config, "WEB_ENABLED", False)
+    monkeypatch.setattr(config, "ENQUEUE_RULES", ())
     _enable_abuseipdb(monkeypatch)
     monkeypatch.setattr(config, "GEOIP_ENABLED", True)
 
     container = build_container(cache_db=cache_db)
 
     assert container.purity is None
+    assert container.geo is None
+
+
+def test_geo_constructed_for_country_rule_without_web(cache_db, monkeypatch) -> None:
+    """web 关闭但启用了国家规则：geo 照构造（serve 核心路径不再依赖面板开关）
+
+    同时验证组合根把 geo.resolve_country 接成了筛选的国家测量源：
+    US ∉ {JP} 应拒绝，且拒绝理由是该国家规则。
+    """
+    monkeypatch.setattr(config, "WEB_ENABLED", False)
+    _patch_country_rule(monkeypatch, enabled=True)
+
+    container = build_container(cache_db=cache_db)
+
+    assert container.geo is not None
+    assert asyncio.run(container.geo.resolve_country("http://1.2.3.4:8080")) == "US"
+    outcome = asyncio.run(
+        container.enqueue_filter.evaluate("http://1.2.3.4:8080", latency=0.1))
+    assert outcome.passed is False
+    assert outcome.rejected_by is not None and outcome.rejected_by.metric == "country"
+
+
+def test_purity_constructed_for_purity_rule_without_web(cache_db, monkeypatch) -> None:
+    """web 关闭但启用了纯净度规则：插件照加载，筛选经缓存分数拒绝
+
+    缓存直接写库，避免真调检查源；同时验证 (源, IP) 分区下的分数已接通筛选。
+    """
+    monkeypatch.setattr(config, "WEB_ENABLED", False)
+    _enable_abuseipdb(monkeypatch)
+    monkeypatch.setattr(config, "ENQUEUE_RULES", (
+        EnqueueRule(metric="purity", priority=1, params={"max_score": 50}, enabled=True),
+    ))
+
+    container = build_container(cache_db=cache_db)
+
+    assert container.purity is not None
+    container.store.save_purity("abuseipdb", "1.2.3.4",
+                                {"score": 88, "usage_type": "hosting", "extra": {}})
+    outcome = asyncio.run(
+        container.enqueue_filter.evaluate("http://1.2.3.4:8080", latency=0.1))
+    assert outcome.passed is False
+    assert outcome.rejected_by is not None and outcome.rejected_by.metric == "purity"
+
+
+def test_speed_rule_uses_tester(cache_db, monkeypatch) -> None:
+    """测速规则经 PspeedTester.download_mbps 判定（组合根接线）"""
+    monkeypatch.setattr(config, "IPPURE_SOURCE", "")
+    monkeypatch.setattr(config, "GEOIP_ENABLED", False)
+    monkeypatch.setattr(config, "ENQUEUE_RULES", (
+        EnqueueRule(metric="speed", priority=1, params={"min_download_mbps": 10}, enabled=True),
+    ))
+    monkeypatch.setattr("src.interfaces.speedtest._measure", lambda proxy: {
+        "proxy": proxy,
+        "download": {"ok": True, "best_mbps": 5.0},
+        "upload": None,
+    })
+
+    container = build_container(cache_db=cache_db)
+
+    outcome = asyncio.run(
+        container.enqueue_filter.evaluate("http://1.2.3.4:8080", latency=0.1))
+    assert outcome.passed is False
+    assert outcome.rejected_by is not None and outcome.rejected_by.metric == "speed"
+
+
+def test_geo_skipped_when_country_rule_disabled(cache_db, monkeypatch) -> None:
+    """规则未启用（且无面板）：不为它加载 mmdb"""
+    monkeypatch.setattr(config, "WEB_ENABLED", False)
+    _patch_country_rule(monkeypatch, enabled=False)
+
+    container = build_container(cache_db=cache_db)
+
     assert container.geo is None
 
 

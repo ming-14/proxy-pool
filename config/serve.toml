@@ -12,6 +12,9 @@ standby_group = "Proxy-pool-standby-queue"  # serve 代理服务队列组（ppro
 # 心跳探测与淘汰（否则它们既不参与上游也不被探测，会成为永久滞留的成员）。
 standby_queue_capacity = 30
 
+# 未通过入队筛选的候选归属组（须在 pool.toml [groups] 定义，且不可列入 requestable_groups）
+enqueue_reject_group = "enqueue-rejected"
+
 # 代理服务队列填充候选数公式：缺口 × standby_fill_probe_multiplier，且至少 缺口 + standby_fill_probe_min_extra。
 standby_fill_probe_multiplier = 2
 standby_fill_probe_min_extra = 5
@@ -63,3 +66,31 @@ network_unhealthy_cache_ttl = 20
 
 # 链路门控双检查：一轮探测前与探测后各 check 一次本地链路，两次都正常才允许拉黑代理。
 # 探测后复检拦截"探测期间链路劣化"（链路抖动 10~20 秒即可让失败代理攒满拉黑阈值）。
+
+# ---------------------------------------------------------------- 入队筛选规则
+# 候选按 priority 升序逐条判定（小号先测），未通过即移入 enqueue_reject_group。
+# 默认全部不启用，可在网页设置里开启并调整阈值（优先级只读）。
+# 数组表必须尾随在 [server] 的标量键之后。
+[[server.enqueue_rules]]
+metric = "latency"
+priority = 1
+max_latency = 1.0
+enabled = false
+
+[[server.enqueue_rules]]
+metric = "country"
+priority = 2
+allow = ["US", "JP", "SG"]
+enabled = false
+
+[[server.enqueue_rules]]
+metric = "purity"
+priority = 3
+max_score = 50
+enabled = false
+
+[[server.enqueue_rules]]
+metric = "speed"
+priority = 4
+min_download_mbps = 10
+enabled = false
