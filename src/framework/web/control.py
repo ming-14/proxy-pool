@@ -12,7 +12,7 @@ serve 每轮（fill / heartbeat / retry_probe）读取最新值，实现调度�
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from src.domain.enqueue_filter import METRIC_SPECS, EnqueueRule
 from src.domain.models import SUPPORTED_SCHEMES
@@ -43,18 +43,20 @@ class EnqueueRuleSettings:
             for rule in self._rules.values()
         ]
 
-    def update(self, patch: object) -> tuple[EnqueueRule, ...]:
-        """按指标更新启停/阈值，返回更新后的规则集合
+    def validate(self, patch: object) -> dict[str, EnqueueRule]:
+        """纯校验：按指标解析补丁，返回候选规则表（不写内部状态）
 
         patch 为列表 [{metric, enabled?, ...阈值}]；只处理出现的指标，未出现的保持现状。
+        任一项非法即 ValueError（API 层转 400）——校验与落地分离，失败时调用方零副作用。
         """
         if not isinstance(patch, list):
             raise ValueError("enqueue_rules 须为列表")
+        rules = dict(self._rules)
         for item in patch:
             if not isinstance(item, dict):
                 raise ValueError("enqueue_rules 每项须为对象")
             metric = str(item.get("metric", ""))
-            rule = self._rules.get(metric)
+            rule = rules.get(metric)
             if rule is None:
                 raise ValueError(f"未知入队筛选指标 {metric!r}")
             spec = METRIC_SPECS[metric]
@@ -66,8 +68,13 @@ class EnqueueRuleSettings:
                 raise ValueError(f"{rule.label} enabled 须为布尔值")
             params = dict(rule.params)
             params.update({k: item[k] for k in (spec.required | spec.optional) if k in item})
-            self._rules[metric] = EnqueueRule(metric=metric, priority=rule.priority,
-                                              params=spec.coerce(params), enabled=enabled)
+            rules[metric] = EnqueueRule(metric=metric, priority=rule.priority,
+                                        params=spec.coerce(params), enabled=enabled)
+        return rules
+
+    def apply(self, rules: Mapping[str, EnqueueRule]) -> tuple[EnqueueRule, ...]:
+        """提交 validate 产出的候选规则表，返回全部规则（含未启用）"""
+        self._rules = dict(rules)
         return self.rules
 
 

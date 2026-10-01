@@ -751,7 +751,7 @@ async def _do_settings(request: web.Request) -> web.Response:
     changed_rules = False
     if "enqueue_rules" in body:
         try:
-            rules = ctx.enqueue_settings.update(body["enqueue_rules"])
+            rules = ctx.enqueue_settings.apply(ctx.enqueue_settings.validate(body["enqueue_rules"]))
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
         ctx.standby.update_enqueue_rules(rules)

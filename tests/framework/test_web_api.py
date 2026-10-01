@@ -897,6 +897,21 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         assert r.status == 400
         assert self.standby.rules_updates == []
 
+    async def test_settings_invalid_patch_is_atomic(self):
+        """补丁任一项非法则整体不落地：前项已通过校验也不得写入（状态与响应一致）"""
+        self.ctx.enqueue_settings = EnqueueRuleSettings((
+            EnqueueRule(metric="purity", priority=3, params={"max_score": 50}),
+            EnqueueRule(metric="speed", priority=4, params={"min_download_mbps": 10.0}),
+        ))
+        r = await self.client.post("/api/settings", json={"enqueue_rules": [
+            {"metric": "purity", "enabled": True, "max_score": 30},   # 合法
+            {"metric": "weather", "enabled": True},                   # 非法：未知指标
+        ]})
+        assert r.status == 400
+        rules = self.ctx.enqueue_settings.to_dict()
+        assert rules[0]["enabled"] is False and rules[0]["params"]["max_score"] == 50
+        assert self.standby.rules_updates == []
+
     async def test_speedtest_missing_bind(self):
         """缺少 bind 参数返回 400"""
         r = await self.client.post("/api/proxy/speedtest", json={})
