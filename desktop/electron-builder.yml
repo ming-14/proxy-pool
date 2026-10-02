@@ -1,0 +1,30 @@
+# electron-builder 配置：免安装文件夹（dir target）
+# 交付物为 dist/win-unpacked（可整体改名，内部无硬编码路径）
+appId: com.proxypool.desktop
+productName: proxy-pool
+executableName: proxy-pool
+
+directories:
+  output: dist
+
+asar: true
+# 显式白名单：只有 Electron 侧代码进 asar；staging 绝不被打进包（否则体积翻倍）
+files:
+  - src/**/*
+  - package.json
+
+# Python 运行时与 Python 代码/只读资源挂到 resources/ 下（不在 asar 内），
+# Python 直接读 config/vendor 无障碍；staging 由 scripts/prepare.mjs 组装
+extraResources:
+  - from: staging/runtime
+    to: python
+    filter:
+      - "**/*"
+  - from: staging/pyapp
+    to: pyapp
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - dir

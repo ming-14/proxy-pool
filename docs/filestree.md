@@ -96,6 +96,30 @@ proxy-pool/
 │       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
+├── desktop/                       # 桌面封装（Electron + 内嵌 Python 3.11；构建产物不入库，见 desktop/.gitignore）
+│   ├── package.json               # electron / electron-builder 依赖与脚本（postinstall/start/dist/test）
+│   ├── electron-builder.yml       # 打包配置（dir 目标免安装文件夹 + extraResources 投放 python/pyapp）
+│   ├── requirements-desktop.lock  # 内嵌运行时依赖精确版本
+│   ├── src/
+│   │   ├── main.js                # 主进程：单实例 / 启动器与面板窗口 / 托盘 / IPC / 退出序列
+│   │   ├── child.js               # serve 子进程管理：端口预检 + spawn + 三段就绪探测 + taskkill
+│   │   ├── paths.js               # 运行时路径解析（打包态 resources/ 与 exe 同级数据目录；开发态 staging）
+│   │   ├── ports.js               # 端口校验纯函数（可单测）
+│   │   ├── icons.js               # 内联托盘图标（16x16 PNG）
+│   │   ├── preload.js             # contextBridge 暴露的 IPC API
+│   │   └── renderer/              # 启动器页面（launcher.html / .css / .js，无框架）
+│   ├── scripts/
+│   │   ├── prepare.mjs            # 一键：内嵌运行时 -> payload -> 依赖与自检
+│   │   ├── fetch-python.mjs       # 下载 embeddable CPython 3.11 并改写 python311._pth
+│   │   ├── make-payload.mjs       # 工作区组装 pyapp（cli.py + src + vendor + config）
+│   │   ├── install-deps.mjs       # 引导 pip 到内嵌运行时并安装依赖（仅 wheel，--no-compile）
+│   │   ├── smoke.py               # 构建期自检（依赖 import + vendor + geoip 读取）
+│   │   ├── ensure-electron.mjs    # postinstall：补跑被 npm 拦截的 electron 二进制下载
+│   │   ├── dist.mjs               # electron-builder dir 打包（走 npmmirror）
+│   │   └── util.mjs               # 构建脚本共用工具（下载/解压/子进程）
+│   ├── tests/ports.test.cjs       # node --test 单测（端口校验）
+│   ├── staging/                   # 构建中间产物（runtime/ + pyapp/，不入库）
+│   └── dist/                      # 打包输出（win-unpacked 免安装文件夹，不入库）
 ├── tests/                         # 测试目录（复刻 src 结构；tests/e2e/web/ 为面板 Playwright e2e，logpanel_probe.py 为组件探针页共享设施）
 ├── vendor/
 │   ├── pproxy/                    # pproxy 代理库（fork 自 pproxy 2.7.9，本地维护: sslwrap 静默 / sslcontexts 弱引用 / modstat 传 roption / SOCKS5 认证应答与 UDP ASSOCIATE / SOCKS5 未实现 CMD 回 0x07 / SOCKS4 应答推迟与失败应答与 4a 双向 / HTTP 404 / WebSocket 握手修复 / 通道空闲回收改会话双向静默（修复流式长连接被单向 60s 读超时误杀）/ 无上游不回退直连（direct_fallback） 等内化进源码；proxy_server.py 通过 sys.path 导入）

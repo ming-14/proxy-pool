@@ -55,6 +55,7 @@ config.json
 .codeartsdoer/
 .workbuddy/
 .freebuff/
+.trae/
 
 # ---- 操作系统 ----
 .DS_Store

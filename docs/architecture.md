@@ -281,7 +281,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 
 ## 配置项速查（config/ 目录，按领域拆分）
 
-配置按领域拆为多个 TOML（`src/framework/config.py` 导入时按固定文件名加载并导出同名常量；`[paths]` 下路径相对项目根解析；每个顶层节固定归属一个文件，放错文件/缺文件直接报错，无 include/合并机制）：
+配置按领域拆为多个 TOML（`src/framework/config.py` 导入时按固定文件名加载并导出同名常量；`[paths]` 下 cache_db/log_dir/autoload 相对**数据根**解析，只读资源（`vendor/geoip`）相对**代码根**（项目根）解析；每个顶层节固定归属一个文件，放错文件/缺文件直接报错，无 include/合并机制）：
 
 - `config.toml`：`[paths]` 路径 + `[web]` 面板开关/端口
 - `pool.toml`：`[pool]` 阈值/语义组/可请求组 + `[groups]` 分组定义
@@ -292,7 +292,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 - `logging.toml`：`[logging]` 控制台/文件级别分档 + `[logging.loggers]` 逐 logger 覆盖
 - `.env`：密钥（KEY=VALUE；加载时注入进程环境变量，**已存在的真实环境变量优先**；git 忽略）
 
-环境变量 `PROXY_POOL_CONFIG` 指向替代配置**目录**（e2e 隔离用）。
+环境变量 `PROXY_POOL_CONFIG` 指向替代配置**目录**（e2e 隔离用）；`PROXY_POOL_DATA` 指向替代**数据根**（桌面封装用：把 `.cache.db` / `logs/` / `autoload` 落到可写位置；缺省回退项目根，CLI 与测试行为不变）。
 
 **组抽象化**：所有组在 `[groups]` 定义（组名 → `{ ttl }`，仅声明 ttl），代码不硬编码组名。特殊语义组与可请求组均显式声明：
 - `[pool].trusted_group` / `blacklist_group`：信任池 / 黑名单组名
@@ -334,14 +334,14 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 | `NETWORK_UNHEALTHY_CACHE_TTL` | 20 | "链路不可用"结论复用时长秒（0 = 每次真实探测）：只缓存失败结论（陈旧"可用"会授权误拉黑），缓存期内不再探测——同时是链路恢复的最大感知延迟，并抑制异常期各调用方轮询的探测放大 |
 | `SERVER_PROXY_TYPES` | `[server].proxy_types`（当前 `["https"]`） | serve 默认上游代理类型（CLI 未指定 `--type` 时的初始值，面板可运行时增删）：只过滤进入队列的上游类型，不影响本地监听协议 |
 | `WEB_ENABLED` | `true` | 面板总开关（`[web].enabled`；false 时不构造 aiohttp 面板；纯净度/geo 用例仍会为启用中的入队筛选规则构造，否则与其 requests/geoip2 依赖链一起不 import） |
-| `CACHE_DB` / `LOG_DIR` | 项目根 `.cache.db` / `logs/` | 框架层路径（`[paths]` 下相对项目根解析） |
+| `CACHE_DB` / `LOG_DIR` | 数据根 `.cache.db` / `logs/` | 框架层路径（`[paths]` 下相对数据根解析；数据根由 `PROXY_POOL_DATA` 覆盖，缺省=项目根） |
 | `IPPURE_SOURCE` | `abuseipdb` | 启用的纯净度检查插件名（= 插件 `SOURCE.name` = 其配置节名）；空字符串 = 禁用该功能 |
 | `IPPURE_PLUGIN_MODULES` | `[[plugins]]` 列出的模块路径 | 可选检查源插件（`importlib` 加载，模块须暴露 `SOURCE` 与 `create_checker`） |
 | `IPPURE_TIMEOUT` / `IPPURE_CACHE_TTL` | 10 / 2592000 (30d) | 检查请求超时秒数 / 结果缓存有效期（秒，按 `(源名, IP)` 分区） |
 | `IPPURE_PROXY_RULES` | `[[proxy_rules]]` | 声明式代理规则（`match` 源名 glob → `use` 代理 URL；按声明顺序取首个命中，无命中直连） |
 | `IPPURE_SECTIONS` | `ippure.toml` 的插件节 | 插件自声明配置节（原样透传给插件，节名须与某插件 `SOURCE.name` 一致） |
 | `GEOIP_ENABLED` | `true` | 归属定位开关（`[geoip].enabled`；false 时不加载 mmdb，Container.geo 为 None） |
-| `GEOIP_DB_FILE` | `vendor/geoip/GeoLite2-City.mmdb` | GeoLite2 City/Country 离线数据库路径（`[geoip].db_file`，相对项目根，按库类型自动识别） |
+| `GEOIP_DB_FILE` | `vendor/geoip/GeoLite2-City.mmdb` | GeoLite2 City/Country 离线数据库路径（`[geoip].db_file`，相对代码根，按库类型自动识别） |
 | `GEOIP_CACHE_TTL` | 7776000 (90d) | IP 归属缓存有效期（秒），`[geoip].cache_ttl` |
 
 ## view.py — .cache.db 只读查看器
@@ -366,3 +366,22 @@ for proxy, info in results.items():
 
 c.save_full()  # 持久化到 .cache.db
 ```
+
+## 桌面封装（desktop/）
+
+`desktop/` 把项目包成免安装的 Windows 桌面程序（Electron + 内嵌 Python 3.11），不改动 `src/` 的任何业务逻辑；Python 侧唯一配套改动是配置层的**数据根**（`PROXY_POOL_DATA`，见上节）。
+
+**进程与窗口**：Electron 主进程负责启动器窗口（输入代理端口 / 网页端口）、面板窗口（内嵌加载 `http://127.0.0.1:<web-port>/`）与系统托盘；serve 作为子进程运行，用 `-u -B -s -X utf8` 启动内嵌解释器（`-s` 隔开宿主 user site-packages，保证自包含）。
+
+**目录模型**（打包后，`desktop/dist/win-unpacked/`）：
+
+```
+proxy-pool.exe
+.cache.db / logs/            ← 运行数据，写在 exe 同级（PROXY_POOL_DATA 指向该目录）
+resources/python/            ← 内嵌 Python 3.11 运行时 + 依赖（只读）
+resources/pyapp/             ← cli.py + src + vendor（含 geoip）+ config（只读）
+```
+
+**就绪判定**：serve 在首轮探测（fill）之后才 bind 面板，故 Electron 侧按「TCP 可连 → `/api/status` 200 → `/` 含 `#app` 挂载点」三段轮询，最后一段用于捕捉「前端未构建」的静默失败。
+
+**构建**：`desktop/scripts/prepare.mjs`（下载官方 embeddable 运行时 → 组装 payload → 安装依赖并自检）与 `desktop/scripts/dist.mjs`（electron-builder `dir` 目标）。用法见仓库根 `README.md` 的「桌面版（Electron）」一节。

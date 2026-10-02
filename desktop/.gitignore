@@ -1,0 +1,5 @@
+# 构建产物（python 运行时 + 我方 payload 副本）
+node_modules/
+staging/
+dist/
+.dev/

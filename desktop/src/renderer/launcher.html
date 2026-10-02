@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self';" />
+  <title>proxy-pool 启动器</title>
+  <link rel="stylesheet" href="launcher.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <h1>proxy-pool</h1>
+      <p class="subtitle">本地 HTTP / SOCKS 代理服务 + Web 控制面板</p>
+    </header>
+
+    <section class="card">
+      <label class="field">
+        <span class="field-label">代理端口</span>
+        <input id="proxy-port" type="number" min="1" max="65535" step="1" inputmode="numeric" />
+        <span class="field-hint">本机代理服务监听端口（HTTP / SOCKS4 / SOCKS5 共用）</span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">网页服务器端口</span>
+        <input id="web-port" type="number" min="1" max="65535" step="1" inputmode="numeric" />
+        <span class="field-hint">Web 控制面板监听端口</span>
+      </label>
+
+      <div class="actions">
+        <button id="btn-start" class="btn btn-primary" type="button">启动</button>
+        <button id="btn-restart" class="btn" type="button">重启</button>
+        <button id="btn-stop" class="btn btn-danger" type="button">停止</button>
+      </div>
+    </section>
+
+    <section class="status" id="status-box">
+      <span class="badge" id="status-badge">未启动</span>
+      <p class="status-message" id="status-message">填写端口后点击「启动」。</p>
+    </section>
+
+    <details class="logs" id="logs">
+      <summary>运行日志</summary>
+      <pre id="log-output"></pre>
+    </details>
+
+    <footer class="footer">
+      关闭本窗口不会退出：程序驻留系统托盘，serve 继续运行。托盘菜单可打开面板 / 停止 / 退出。
+    </footer>
+  </main>
+
+  <script src="launcher.js"></script>
+</body>
+</html>

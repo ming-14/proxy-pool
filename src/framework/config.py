@@ -14,7 +14,8 @@
 SERVER_* 等），组合根与各框架层模块只从这里导入，不直接接触 TOML。
 组全部由 pool.toml [groups] 定义（仅 ttl），可请求组由 [pool].requestable_groups
 显式声明，特殊语义组（trusted/blacklist/standby）由 [pool] 与 [server] 显式
-指定组名，代码不硬编码组名。路径类配置相对项目根解析。
+指定组名，代码不硬编码组名。[paths] 下 cache_db/log_dir/autoload 相对数据根解析
+（PROXY_POOL_DATA 可覆盖，缺省即项目根）；只读资源（vendor/geoip）相对代码根（项目根）解析。
 
 领域规则常量经组合根（container.py）注入到 ProxyPool 与各用例；
 CACHE_DB/LOG_DIR 为框架层路径。
@@ -42,6 +43,11 @@ from src.domain.source_filter import FilterRule  # noqa: E402
 
 # config.py 位于 src/framework/，上溯 3 级到项目根
 _PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# 代码根与运行数据根分离：源码/随包资源（vendor、vendor/geoip）可能位于只读目录
+# （如内嵌发行的 resources/），而 cache_db/日志/autoload 必须可写落到用户可写位置。
+# PROXY_POOL_DATA 覆盖数据根（桌面封装用：指向 exe 同级目录）；缺省回退代码根，
+# 故 CLI/测试行为不变。注意 vendor/geoip 等只读资源仍按代码根解析，不受此覆盖影响。
+_DATA_ROOT = Path(os.environ.get("PROXY_POOL_DATA") or _PROJECT_ROOT)
 # PROXY_POOL_CONFIG 环境变量指向替代配置目录（e2e 测试隔离用：临时 cache_db、
 # 本地 mock 探测 URL、独立端口）；缺省为项目 config/。目录内文件须齐全（固定清单，无回退）
 CONFIG_DIR = Path(os.environ.get("PROXY_POOL_CONFIG") or (_PROJECT_ROOT / "config"))
@@ -322,10 +328,10 @@ WEB_ENABLED = bool(_toml["web"].get("enabled", True))  # 面板总开关；false
 WEB_HOST = _toml["web"]["host"]   # 面板监听地址（默认仅本机）
 WEB_PORT = int(_toml["web"]["port"])  # 面板监听端口
 
-# ---------------------------------------------------------------- 缓存与日志（相对项目根解析）
-CACHE_DB = str(_PROJECT_ROOT / _toml["paths"]["cache_db"])     # 代理池状态持久化 SQLite 数据库（WAL 模式，组级增量 upsert）
-LOG_DIR = str(_PROJECT_ROOT / _toml["paths"]["log_dir"])         # 日志目录（文件名为 proxy-pool-{时间戳}.log，毫秒精度）
-AUTOLOAD_FILE = str(_PROJECT_ROOT / _toml["paths"]["autoload"])  # 启动时自动加载的代理清单文件（一行一个，# 注释；不存在则跳过）
+# ---------------------------------------------------------------- 缓存与日志（相对数据根解析）
+CACHE_DB = str(_DATA_ROOT / _toml["paths"]["cache_db"])     # 代理池状态持久化 SQLite 数据库（WAL 模式，组级增量 upsert）
+LOG_DIR = str(_DATA_ROOT / _toml["paths"]["log_dir"])         # 日志目录（文件名为 proxy-pool-{时间戳}.log，毫秒精度）
+AUTOLOAD_FILE = str(_DATA_ROOT / _toml["paths"]["autoload"])  # 启动时自动加载的代理清单文件（一行一个，# 注释；不存在则跳过）
 
 # ---------------------------------------------------------------- 日志级别（logging.toml）
 # 控制台与文件独立分档；loggers 表为逐 logger 覆盖（两通道同时生效）。
