@@ -15,7 +15,6 @@ const fs = require('fs');
 const path = require('path');
 
 const { ServeManager } = require('./child');
-const { TRAY_ICON_PNG_BASE64 } = require('./icons');
 const { resolvePaths } = require('./paths');
 const { validateProxyPort } = require('./ports');
 
@@ -57,9 +56,12 @@ function savePrefs({ proxyPort }) {
 
 // ---------------------------------------------------------------- 窗口
 
-/** 窗口/托盘共用图标（每次新建实例，避免跨窗口复用同一 NativeImage） */
+/**
+ * 窗口/托盘共用图标：assets/icon.png（打包后随 src 进 asar）。
+ * 每次调用重新解析，避免跨窗口复用同一个 NativeImage 实例。
+ */
 function appIcon() {
-  return nativeImage.createFromBuffer(Buffer.from(TRAY_ICON_PNG_BASE64, 'base64'));
+  return nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'));
 }
 
 function createLauncherWindow() {

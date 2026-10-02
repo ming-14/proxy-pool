@@ -3,3 +3,9 @@ node_modules/
 staging/
 dist/
 .dev/
+
+# 打包用图标：根 .gitignore 的 build/ 是给 Python 打包产物用的，
+# Electron 侧把 build/ 当 electron-builder 的 buildResources 目录，需入版本库
+!build/
+build/*
+!build/icon.ico

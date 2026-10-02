@@ -26,5 +26,9 @@ extraResources:
       - "**/*"
 
 win:
+  # 必须用现成的 .ico：交给 electron-builder 从 PNG 自动转换时，它会把条目写成
+  # Shell 渲染不了的小尺寸 PNG 载荷，导致图标回退成系统默认图标。
+  # build/icon.ico 由 scripts/make-ico.py 生成，只含 256 一张大图。
+  icon: build/icon.ico
   target:
     - dir

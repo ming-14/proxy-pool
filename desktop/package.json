@@ -7,6 +7,7 @@
   "scripts": {
     "postinstall": "node scripts/ensure-electron.mjs",
     "prepare:runtime": "node scripts/prepare.mjs",
+    "make:icon": "python scripts/make-ico.py src/assets/icon.png build/icon.ico",
     "start": "electron .",
     "dist": "node scripts/dist.mjs",
     "test": "node --test \"tests/**/*.test.cjs\""
