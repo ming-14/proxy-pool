@@ -3,6 +3,8 @@
 /**
  * Electron 主进程：启动器窗口 + 面板窗口 + 托盘 + serve 子进程生命周期。
  *
+ * 启动器只承载「代理端口 + 启动」；网页服务器端口是内部页面，由 ServeManager
+ * 每次启动时挑一个空闲端口。停止 / 重启 / 退出等操作都走托盘菜单。
  * 窗口策略：关闭任一窗口只隐藏到托盘（serve 继续跑）；只有托盘「退出」才真正结束。
  * 单实例：第二个实例启动时唤起已有实例的窗口，避免两个进程抢 .cache.db 与端口。
  */
@@ -14,10 +16,9 @@ const path = require('path');
 const { ServeManager } = require('./child');
 const { TRAY_ICON_PNG_BASE64 } = require('./icons');
 const { resolvePaths } = require('./paths');
-const { validatePorts } = require('./ports');
+const { validateProxyPort } = require('./ports');
 
 const DEFAULT_PROXY_PORT = 8082;
-const DEFAULT_WEB_PORT = 8083;
 const PREFS_FILE = '.desktop.json';
 
 let paths = null;
@@ -26,26 +27,26 @@ let launcherWindow = null;
 let panelWindow = null;
 let tray = null;
 let quitting = false;
-let prefs = { proxyPort: DEFAULT_PROXY_PORT, webPort: DEFAULT_WEB_PORT };
+let prefs = { proxyPort: DEFAULT_PROXY_PORT };
 
-// ---------------------------------------------------------------- 偏好（记忆上次端口）
+// ---------------------------------------------------------------- 偏好（记忆上次代理端口）
 
 function loadPrefs() {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(paths.dataDir, PREFS_FILE), 'utf8'));
-    const check = validatePorts(raw.proxyPort, raw.webPort);
+    const check = validateProxyPort(raw.proxyPort);
     if (check.ok) {
-      prefs = { proxyPort: check.proxyPort, webPort: check.webPort };
+      prefs = { proxyPort: check.proxyPort };
     }
   } catch {
     /* 首次运行或文件损坏：用默认端口 */
   }
 }
 
-function savePrefs({ proxyPort, webPort }) {
-  const check = validatePorts(proxyPort, webPort);
+function savePrefs({ proxyPort }) {
+  const check = validateProxyPort(proxyPort);
   if (!check.ok) return;
-  prefs = { proxyPort: check.proxyPort, webPort: check.webPort };
+  prefs = { proxyPort: check.proxyPort };
   try {
     fs.writeFileSync(path.join(paths.dataDir, PREFS_FILE), JSON.stringify(prefs), 'utf8');
   } catch (e) {
@@ -62,10 +63,10 @@ function appIcon() {
 
 function createLauncherWindow() {
   launcherWindow = new BrowserWindow({
-    width: 520,
-    height: 640,
-    minWidth: 460,
-    minHeight: 520,
+    width: 420,
+    height: 150,
+    resizable: false,
+    maximizable: false,
     title: 'proxy-pool 启动器',
     icon: appIcon(),
     webPreferences: {
@@ -181,8 +182,6 @@ function setupIpc() {
     if (result.ok) savePrefs(payload);
     return result;
   });
-  ipcMain.handle('app:stop', () => manager.stop());
-  ipcMain.handle('app:restart', () => manager.restart());
 }
 
 // ---------------------------------------------------------------- 启动
@@ -192,15 +191,11 @@ function bootstrap() {
   fs.mkdirSync(paths.dataDir, { recursive: true });
   loadPrefs();
 
+  // 日志不再推给渲染层（启动器只剩端口 + 启动）；子进程输出仍留在
+  // ServeManager 的环形缓冲里，用于失败时拼装 state.message
   manager = new ServeManager({
     paths,
     onState: broadcastState,
-    // 日志只推给启动器（面板窗口加载的是外部页面，没有 preload、也不消费这些消息）
-    onLog: (lines) => {
-      if (launcherWindow && !launcherWindow.isDestroyed()) {
-        launcherWindow.webContents.send('log', lines);
-      }
-    },
   });
 
   Menu.setApplicationMenu(null);

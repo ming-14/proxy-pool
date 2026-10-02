@@ -371,7 +371,7 @@ c.save_full()  # 持久化到 .cache.db
 
 `desktop/` 把项目包成免安装的 Windows 桌面程序（Electron + 内嵌 Python 3.11），不改动 `src/` 的任何业务逻辑；Python 侧唯一配套改动是配置层的**数据根**（`PROXY_POOL_DATA`，见上节）。
 
-**进程与窗口**：Electron 主进程负责启动器窗口（输入代理端口 / 网页端口）、面板窗口（内嵌加载 `http://127.0.0.1:<web-port>/`）与系统托盘；serve 作为子进程运行，用 `-u -B -s -X utf8` 启动内嵌解释器（`-s` 隔开宿主 user site-packages，保证自包含）。
+**进程与窗口**：Electron 主进程负责启动器窗口（只提供「代理端口 + 启动」）、面板窗口（内嵌加载 `http://127.0.0.1:<web-port>/`）与系统托盘；网页端口是内部页面地址，每次启动由 `ports.findFreePort` 绑 0 取一个系统空闲端口（并避开代理端口），不交给用户填。serve 作为子进程运行，用 `-u -B -s -X utf8` 启动内嵌解释器（`-s` 隔开宿主 user site-packages，保证自包含）。
 
 **目录模型**（打包后，`desktop/dist/win-unpacked/`）：
 

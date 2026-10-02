@@ -19,7 +19,7 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 
-const { validatePorts } = require('./ports');
+const { validateProxyPort, findFreePort } = require('./ports');
 
 const READY_TIMEOUT_MS = 180000; // 首轮 fill 要探测外网（10~30s），留足余量
 const POLL_INTERVAL_MS = 400;
@@ -89,12 +89,10 @@ class ServeManager {
    * @param {object} opts
    * @param {{pythonExe: string, pyappDir: string, dataDir: string}} opts.paths
    * @param {(state: object) => void} opts.onState 状态变化回调
-   * @param {(lines: string[]) => void} opts.onLog 新增日志行回调
    */
-  constructor({ paths, onState, onLog }) {
+  constructor({ paths, onState }) {
     this.paths = paths;
     this.onState = onState;
-    this.onLog = onLog;
     this.child = null;
     this._exitPromise = null;
     this._intentionalStop = false;
@@ -104,7 +102,7 @@ class ServeManager {
   }
 
   getState() {
-    return { ...this.state, logLines: this._logLines.slice() };
+    return { ...this.state };
   }
 
   _set(partial) {
@@ -122,7 +120,6 @@ class ServeManager {
     if (this._logLines.length > LOG_RING_MAX) {
       this._logLines = this._logLines.slice(-LOG_RING_MAX);
     }
-    this.onLog(lines);
   }
 
   /** 最近若干行输出（stdout+stderr 合并），用于启动失败时回显线索 */
@@ -130,25 +127,24 @@ class ServeManager {
     return this._logLines.slice(-n).join('\n');
   }
 
-  /** 启动：校验端口 → 预检占用 → spawn → 等待就绪 */
-  async start({ proxyPort, webPort }) {
+  /** 启动：校验代理端口 → 预检占用 → 挑空闲面板端口 → spawn → 等待就绪 */
+  async start({ proxyPort }) {
     if (this.child) {
       return { ok: false, error: '服务已在运行' };
     }
-    const check = validatePorts(proxyPort, webPort);
+    const check = validateProxyPort(proxyPort);
     if (!check.ok) {
       this._set({ phase: 'error', message: check.error });
       return check;
     }
 
-    this._set({ phase: 'starting', message: '正在检查端口…', proxyPort: check.proxyPort, webPort: check.webPort, pid: null });
-    for (const [label, port] of [['代理端口', check.proxyPort], ['网页服务器端口', check.webPort]]) {
-      if (!(await isPortFree(port))) {
-        const error = `${label} ${port} 已被占用，请换一个端口`;
-        this._set({ phase: 'error', message: error });
-        return { ok: false, error };
-      }
+    this._set({ phase: 'starting', message: '正在检查端口…', proxyPort: check.proxyPort, webPort: null, pid: null });
+    if (!(await isPortFree(check.proxyPort))) {
+      const error = `代理端口 ${check.proxyPort} 已被占用，请换一个端口`;
+      this._set({ phase: 'error', message: error });
+      return { ok: false, error };
     }
+    const webPort = await findFreePort(check.proxyPort);
 
     if (!fs.existsSync(this.paths.pythonExe) || !fs.existsSync(path.join(this.paths.pyappDir, 'cli.py'))) {
       const error = '内嵌 Python 运行时缺失，请先执行 npm run prepare:runtime 构建';
@@ -165,11 +161,11 @@ class ServeManager {
     const args = [
       '-u', '-B', '-s', '-X', 'utf8', cliPath, 'serve',
       '--host', '127.0.0.1', '--port', String(check.proxyPort),
-      '--web-host', '127.0.0.1', '--web-port', String(check.webPort),
+      '--web-host', '127.0.0.1', '--web-port', String(webPort),
     ];
     this._partialLine = '';
     this._intentionalStop = false;
-    this._set({ phase: 'starting', message: '正在启动服务并探测代理…' });
+    this._set({ phase: 'starting', message: '正在启动服务并探测代理…', webPort });
 
     const child = spawn(this.paths.pythonExe, args, {
       cwd: this.paths.dataDir,
@@ -200,14 +196,14 @@ class ServeManager {
     this._set({ pid: child.pid });
 
     try {
-      await this._waitReady(check.webPort, Date.now() + READY_TIMEOUT_MS);
+      await this._waitReady(webPort, Date.now() + READY_TIMEOUT_MS);
     } catch (e) {
       const error = e && e.message ? e.message : String(e);
       await this.stop();
       this._set({ phase: 'error', message: error });
       return { ok: false, error };
     }
-    this._set({ phase: 'ready', message: `代理服务 127.0.0.1:${check.proxyPort} · 控制面板 127.0.0.1:${check.webPort}`, pid: child.pid });
+    this._set({ phase: 'ready', message: `代理服务 127.0.0.1:${check.proxyPort} · 控制面板 127.0.0.1:${webPort}`, pid: child.pid });
     return { ok: true };
   }
 
@@ -260,14 +256,14 @@ class ServeManager {
     return { ok: true };
   }
 
-  /** 停止后按原端口重启 */
+  /** 停止后按原代理端口重启（面板端口重新挑） */
   async restart() {
-    const { proxyPort, webPort } = this.state;
-    if (proxyPort == null || webPort == null) {
+    const { proxyPort } = this.state;
+    if (proxyPort == null) {
       return { ok: false, error: '尚未启动过服务' };
     }
     await this.stop();
-    return this.start({ proxyPort, webPort });
+    return this.start({ proxyPort });
   }
 
   /** 进程退出钩子用的同步兜底（异步清理来不及执行时） */

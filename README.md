@@ -82,7 +82,7 @@ npm run dev       # 开发模式（HMR，/api 代理到 127.0.0.1:8083，需先 
 
 `desktop/` 把项目打包成**免安装的 Windows 桌面程序**：双击文件夹里的 `proxy-pool.exe` 即用，机器上无需安装 Python。
 
-- 启动后弹出**启动器**：填写「代理端口」「网页服务器端口」，点「启动」→ 自动跑 `serve`，就绪后在**内嵌窗口**打开控制面板网页；
+- 启动后弹出**启动器**：只填「代理端口」，点「启动」→ 自动跑 `serve`（网页面板端口由程序挑一个空闲端口，无需填写），就绪后在**内嵌窗口**打开控制面板网页；
 - 内置 **Python 3.11 运行时与全部依赖**（官方 embeddable + 预编译 wheel），无需目标机器装 Python；
 - **托盘常驻**：关闭任一窗口只隐藏到托盘（serve 继续运行），托盘菜单可打开面板 / 在浏览器中打开 / 打开设置 / 停止 / 重启 / 退出；
 - 运行数据 `.cache.db`、`logs/` 写在 **exe 同级目录**；`resources/pyapp/`（代码、config、geoip）与 `resources/python/`（运行时）为随包只读资源。
@@ -110,7 +110,7 @@ npm run dist       # 产出桌面文件夹 desktop/dist/win-unpacked（可整体
 - `npm run dist` 产出的是**免安装文件夹**（electron-builder `dir` 目标），不是安装包；把该文件夹整体拷走即可分发，内部无硬编码路径。
 - `desktop/node_modules`、`staging/`、`dist/` 均为构建产物（见 `desktop/.gitignore`）。
 - 依赖、运行时与 Electron 二进制走国内镜像（npmmirror / 清华 pypi），无需额外配置。
-- `config/` 随包只读：端口在启动器里改，其余配置（`.env` 密钥、代理源等）需改仓库后重新打包。`make-payload` 会把 `config/.env` 一并打进包，**分发该文件夹等于分发其中的密钥**。
+- `config/` 随包只读：代理端口在启动器里改，其余配置（`.env` 密钥、代理源等）需改仓库后重新打包。`make-payload` 会把 `config/.env` 一并打进包，**分发该文件夹等于分发其中的密钥**。
 - 桌面端单测：`cd desktop && npm test`。
 
 ## 测试
