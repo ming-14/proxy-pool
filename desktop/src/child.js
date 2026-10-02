@@ -19,7 +19,7 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 
-const { validateProxyPort, findFreePort } = require('./ports');
+const { validateProxyPort, isPortFree, findFreePort, recommendFreePort } = require('./ports');
 
 const READY_TIMEOUT_MS = 180000; // 首轮 fill 要探测外网（10~30s），留足余量
 const POLL_INTERVAL_MS = 400;
@@ -40,16 +40,6 @@ function tcpReachable(port, timeoutMs = PROBE_TIMEOUT_MS) {
     socket.once('connect', () => done(true));
     socket.once('timeout', () => done(false));
     socket.once('error', () => done(false));
-  });
-}
-
-/** 试占端口：能 listen 说明空闲 */
-function isPortFree(port) {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.once('listening', () => server.close(() => resolve(true)));
-    server.listen(port, '127.0.0.1');
   });
 }
 
@@ -98,7 +88,15 @@ class ServeManager {
     this._intentionalStop = false;
     this._logLines = [];
     this._partialLine = '';
-    this.state = { phase: 'idle', message: '未启动', proxyPort: null, webPort: null, pid: null };
+    // suggestedProxyPort：代理端口冲突时给出的可用替代端口，供启动器一键改用
+    this.state = {
+      phase: 'idle',
+      message: '未启动',
+      proxyPort: null,
+      webPort: null,
+      pid: null,
+      suggestedProxyPort: null,
+    };
   }
 
   getState() {
@@ -134,15 +132,25 @@ class ServeManager {
     }
     const check = validateProxyPort(proxyPort);
     if (!check.ok) {
-      this._set({ phase: 'error', message: check.error });
+      // 清掉上一轮的推荐端口，避免非法输入时还挂着旧建议
+      this._set({ phase: 'error', message: check.error, suggestedProxyPort: null });
       return check;
     }
 
-    this._set({ phase: 'starting', message: '正在检查端口…', proxyPort: check.proxyPort, webPort: null, pid: null });
+    this._set({
+      phase: 'starting',
+      message: '正在检查端口…',
+      proxyPort: check.proxyPort,
+      webPort: null,
+      pid: null,
+      suggestedProxyPort: null,
+    });
     if (!(await isPortFree(check.proxyPort))) {
-      const error = `代理端口 ${check.proxyPort} 已被占用，请换一个端口`;
-      this._set({ phase: 'error', message: error });
-      return { ok: false, error };
+      // 占用是用户最常撞到的问题，必须给出原因 + 一个确实可用的替代端口
+      const suggestedProxyPort = await recommendFreePort(check.proxyPort);
+      const error = `代理端口 ${check.proxyPort} 已被占用`;
+      this._set({ phase: 'error', message: error, suggestedProxyPort });
+      return { ok: false, error, suggestedProxyPort };
     }
     const webPort = await findFreePort(check.proxyPort);
 

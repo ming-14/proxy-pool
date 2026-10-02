@@ -14,6 +14,11 @@
       <input id="proxy-port" type="number" min="1" max="65535" step="1" inputmode="numeric" />
       <button id="btn-start" class="btn" type="button">启动</button>
     </div>
+    <!-- 启动失败提示（端口占用等）；端口冲突时附带一个可用替代端口 -->
+    <div id="notice" class="notice" hidden>
+      <span id="notice-text" class="notice-text"></span>
+      <button id="btn-suggest" class="suggest-btn" type="button" hidden></button>
+    </div>
   </main>
 
   <script src="launcher.js"></script>

@@ -4,12 +4,13 @@
  * Electron 主进程：启动器窗口 + 面板窗口 + 托盘 + serve 子进程生命周期。
  *
  * 启动器只承载「代理端口 + 启动」；网页服务器端口是内部页面，由 ServeManager
- * 每次启动时挑一个空闲端口。停止 / 重启 / 退出等操作都走托盘菜单。
+ * 每次启动时挑一个空闲端口。托盘只提供「打开控制面板 / 重启服务 / 退出」——
+ * 改设置与停服不对用户开放，服务要么在跑要么随「退出」结束。
  * 窗口策略：关闭任一窗口只隐藏到托盘（serve 继续跑）；只有托盘「退出」才真正结束。
  * 单实例：第二个实例启动时唤起已有实例的窗口，避免两个进程抢 .cache.db 与端口。
  */
 
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -64,6 +65,7 @@ function appIcon() {
 function createLauncherWindow() {
   launcherWindow = new BrowserWindow({
     width: 420,
+    // 高度由渲染层按内容回报（见 app:resizeLauncher），这里只给初始值
     height: 150,
     resizable: false,
     maximizable: false,
@@ -124,13 +126,6 @@ function openPanel() {
   });
 }
 
-function openInBrowser() {
-  const { webPort, phase } = manager.state;
-  if (webPort != null && phase === 'ready') {
-    shell.openExternal(`http://127.0.0.1:${webPort}/`);
-  }
-}
-
 // ---------------------------------------------------------------- 状态广播与托盘
 
 function broadcastState(state) {
@@ -150,12 +145,9 @@ function refreshTray() {
   if (!tray) return;
   const { phase } = manager.state;
   const running = phase === 'starting' || phase === 'ready';
+  // 只留「进面板 / 重启 / 退出」：改设置与停服不开放给用户，退出即停服
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开控制面板', enabled: phase === 'ready', click: openPanel },
-    { label: '在浏览器中打开', enabled: phase === 'ready', click: openInBrowser },
-    { label: '打开设置', click: showLauncher },
-    { type: 'separator' },
-    { label: '停止服务', enabled: running, click: () => manager.stop() },
     { label: '重启服务', enabled: running, click: () => manager.restart() },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
@@ -181,6 +173,14 @@ function setupIpc() {
     const result = await manager.start(payload);
     if (result.ok) savePrefs(payload);
     return result;
+  });
+  // 提示出现/消失时窗口随内容收放，固定高度要么留白要么裁掉提示
+  ipcMain.on('app:resizeLauncher', (_e, contentHeight) => {
+    if (!launcherWindow || launcherWindow.isDestroyed()) return;
+    const height = Math.round(Number(contentHeight));
+    if (!Number.isFinite(height)) return;
+    const [width] = launcherWindow.getContentSize();
+    launcherWindow.setContentSize(width, Math.min(Math.max(height, 120), 260));
   });
 }
 

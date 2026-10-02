@@ -1,4 +1,4 @@
-/* 启动器样式：只有代理端口与启动按钮，浅色、简洁，不引入任何前端框架 */
+/* 启动器样式：代理端口 + 启动按钮 + 启动失败提示，浅色、简洁，不引入任何前端框架 */
 :root {
   --bg: #f5f6f8;
   --border: #e2e5ea;
@@ -6,9 +6,15 @@
   --text-dim: #6b7280;
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
+  --danger: #b91c1c;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
 }
 
 * { box-sizing: border-box; }
+
+/* 注：author 样式里的 display 会盖掉 [hidden] 的 UA 规则，这里显式兜住 */
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -73,3 +79,41 @@ input[type="number"]:disabled {
 
 .btn:hover:not(:disabled) { background: var(--primary-hover); }
 .btn:disabled { opacity: 0.55; cursor: default; }
+
+/* 失败提示：端口占用等。长文案（含子进程日志）在内部滚动，不撑破窗口 */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.notice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* 最多展示约 3 行，再长（含子进程日志）在提示内部滚动，窗口不被撑爆 */
+  max-height: 56px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.suggest-btn {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border: 1px solid var(--danger);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--danger);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.suggest-btn:hover { background: #fee2e2; }
