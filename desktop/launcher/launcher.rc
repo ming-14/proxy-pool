@@ -1,0 +1,5 @@
+#include <windows.h>
+
+// 图标取自 desktop\build\icon.ico，与 dist\win-unpacked\proxy-pool.exe 完全同款
+// （已校验：从该 exe 提取的图标与 build/icon.ico 的 SHA256 一致）。
+1 ICON "icon.ico"

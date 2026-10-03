@@ -9,3 +9,7 @@ dist/
 !build/
 build/*
 !build/icon.ico
+
+# 原生启动器（launcher/）：windres 中间产物与从 build/icon.ico 复制的副本不入库
+launcher/*.res.o
+launcher/icon.ico
