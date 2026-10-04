@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from src.framework.serve import sync_retry_tasks
+from src.framework.serve import _proxy_lookup, sync_retry_tasks
 
 
 class TestSyncRetryTasks(unittest.TestCase):
@@ -46,6 +46,33 @@ class TestSyncRetryTasks(unittest.TestCase):
         sync_retry_tasks(retry_tasks, [], lambda p: "unused")
         self.assertEqual(retry_tasks, {})
 
+
+class TestProxyLookup(unittest.TestCase):
+    """探测候选的 bind → 代理反查：口径为队列行（含锁定代理），离队 bind 返回 None"""
+
+    class _Standby:
+        """只实现 queue_rows 契约的替身"""
+
+        def __init__(self, rows):
+            self.rows = rows
+
+        def queue_rows(self):
+            return list(self.rows)
+
+    def test_matches_bind_and_misses_none(self):
+        standby = self._Standby(["http://1.2.3.4:8080", "socks5://5.6.7.8:1080"])
+        lookup = _proxy_lookup(standby)
+        self.assertEqual(lookup("1.2.3.4:8080"), "http://1.2.3.4:8080")
+        self.assertEqual(lookup("5.6.7.8:1080"), "socks5://5.6.7.8:1080")
+        self.assertIsNone(lookup("9.9.9.9:1"))
+
+    def test_view_rebuilt_per_call(self):
+        """每次查询重建队列视图：探测周期内新入队的代理不能因缓存视图漏掉"""
+        standby = self._Standby(["http://1.2.3.4:8080"])
+        lookup = _proxy_lookup(standby)
+        self.assertIsNone(lookup("5.6.7.8:1080"))
+        standby.rows.append("http://5.6.7.8:1080")
+        self.assertEqual(lookup("5.6.7.8:1080"), "http://5.6.7.8:1080")
 
 if __name__ == "__main__":
     unittest.main()

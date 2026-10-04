@@ -295,6 +295,21 @@ class TargetGeoUseCase:
         flows.sort(key=lambda flow: flow["up_rate"] + flow["down_rate"], reverse=True)
         return flows[:max_flows]
 
+    def build_flows(self, pairs: list[dict], max_flows: int) -> list[dict]:
+        """把活跃 pair 聚合成「代理→目标」弧数据（/api/globe 消费）
+
+        批量读目标归属缓存后交给 aggregate_flows；读失败记日志并返回空——单次
+        DB 抖动只丢本帧目标弧，不把整个地球请求打成 500（与探测侧读失败降级同口径）。
+        """
+        if not pairs:
+            return []
+        try:
+            rows = self._store.get_target_geo_batch([(pair["bind"], pair["host"]) for pair in pairs])
+        except Exception:
+            logger.exception("目标归属缓存读取失败，本次不下发目标弧")
+            return []
+        return self.aggregate_flows(pairs, rows, max_flows)
+
 
 def _ip_literal(host: str):
     """host 是 IP 字面量则返回 ipaddress 对象，否则 None"""

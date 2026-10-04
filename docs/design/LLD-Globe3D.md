@@ -197,21 +197,32 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 ### 3.7 serve 接线（framework/serve.py）
 
 - `_run` 内在构造 `PproxyServer` 后组装（仅 `config.GLOBE_ENABLED and c.geo is not None`）：
-  `target_geo = TargetGeoUseCase(server=server, store=c.store, resolver=c.doh_resolver, geo=c.geo, proxy_lookup=..., ...)`
-  `proxy_lookup(bind)` 复用 `_standby_rows` 口径（含锁定代理，`bind_of` 匹配）。
+  `target_geo = TargetGeoUseCase(server=server, store=c.store, resolver=..., geo=c.geo, proxy_lookup=..., ...)`
+  `proxy_lookup(bind)` 复用面板队列行口径（含锁定代理，`bind_of` 匹配）。
 - 新增第三个周期任务 `target_probe_loop`（间隔 2s，与心跳/采样并列）：未激活时直接休眠；异常只告警不中断；退出时 cancel。
 - `PanelContext` 增加 `target_geo`（None = 功能关闭）。
+
+> 实现注记（已落地）：`DohResolver` 随 `TargetGeoUseCase` 在 `serve._run` 内构造
+> （serve 专属依赖，不进容器——所有 CLI 命令都组装容器，挂上去只增面）；
+> `proxy_lookup` 复用 `StandbyQueueUseCase.queue_rows()`——本次把"锁定代理置首 +
+> 按地址去重"的队列行口径从 web/api 下沉到用例，api 与 serve 共用同一实现
+> （原 `_standby_rows(ctx)` 已删除）。
 
 ### 3.8 API（framework/web/api.py）
 
 - `build_app`：`ctx.target_geo is not None` 时注册 `GET /api/globe`（与 `geo_enabled` 路由同模式）。
 - `/api/globe` handler：`ctx.target_geo.touch()` → 组装响应：
   - `self`: `{lat, lng}` 或 `null`（来自配置）。
-  - `nodes`: `_standby_rows(ctx)` 每行 → geo（`ctx.geo.resolve`，缓存毫秒级）+ `latency/pinned/locked/consecutive_fails` + 该 bind 的聚合速率（`server.active_pairs` 按 bind 求和）。
+  - `nodes`: 队列行每行 → geo（含经纬度，`ctx.geo.resolve`，缓存毫秒级）+ `latency/pinned/locked/consecutive_fails` + 该 bind 的聚合速率（`server.active_pairs` 按 bind 求和）。
   - `flows`: `ctx.server.active_pairs(now - METRICS_WINDOW)` ∩ 当前队列 bind，批量读 `target_geo_cache`，`aggregate_flows(...)` top N。
   - `probed_pairs` / `pending_pairs`: 观测用计数（可选，便于排查）。
 - `/api/status` 增加 `globe_enabled`（前端据此显示/隐藏卡片，复用 `geo_enabled` 模式）。
 - 响应体量控制：nodes ≤ 队列上限（~30），flows ≤ `max_flows`（60），单次 < 20KB。
+
+> 实现注记（已落地）：flows 组装经 `TargetGeoUseCase.build_flows(pairs, max_flows)`
+> （批量读缓存 + 读失败降级：读失败只丢本帧目标弧，不把整个地球请求打成 500）；
+> nodes 的归属字段带经纬度（`_geo_point`，地图/归属路由的 `_geo_payload` 故意不带）；
+> `probed_pairs` / `pending_pairs` 为可选项，暂未实现。
 
 ## 4. 前端设计
 
@@ -297,7 +308,7 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 
 ### 7.2 e2e（tests/e2e/）
 
-- `test_serve_loop_e2e.py`（或新 `test_target_geo_e2e.py`）：mock 上游配置为返回 DoH JSON 响应体 → 经本地代理发一次请求 → 轮询 `/api/globe`（≤10s）出现目标 flow；无激活请求时不探测（`target_geo_cache` 无新行）。
+- `test_target_geo_e2e.py`（已落地，独立于 `test_serve_loop_e2e.py`）：mock 上游配置为返回 DoH JSON 响应体 → 经本地代理发一次请求 → 轮询 `/api/globe`（≤10s）出现目标 flow；无激活请求时不探测（`target_geo_cache` 无新行）。
 - web e2e（可选）：`test_panel_e2e.py` 增加地球卡片存在性断言（canvas 或降级文案；Playwright WebGL 不可用时不误报失败）。
 
 ### 7.3 前端

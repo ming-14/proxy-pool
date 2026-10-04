@@ -16,11 +16,14 @@ import signal
 import time
 from typing import Callable
 
+from src.domain.models import bind_of
 from src.framework import config
 from src.framework.loop import run_coro
 from src.framework.web.control import EnqueueRuleSettings, ServeControl
 from src.framework.web.panel_state import PanelTasks
+from src.interfaces.doh_resolver import DohResolver
 from src.interfaces.proxy_server import PproxyServer, listen_uri
+from src.use_cases.target_geo import TargetGeoUseCase
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,10 @@ logger = logging.getLogger(__name__)
 # 锁定单一上游时心跳放宽到 heartbeat_lock_interval 但采样保持此频率——否则
 # 正被使用的锁定代理流量图会跟着变稀疏（见 traffic_sample_loop）
 TRAFFIC_SAMPLE_INTERVAL = 2.0
+
+# 目标地区探测循环间隔秒：与流量采样同频，但实际探测只在激活窗口内发生
+# （面板最近请求过 /api/globe），未激活时空转的代价只是一次时间戳比较
+TARGET_PROBE_INTERVAL = 2.0
 
 
 def sync_retry_tasks(
@@ -45,6 +52,17 @@ def sync_retry_tasks(
     for p in pending:
         if p not in retry_tasks:
             retry_tasks[p] = start(p)
+
+
+def _proxy_lookup(standby) -> Callable[[str], str | None]:
+    """bind → 当前服务队列代理 URL 的查询闭包（口径 = StandbyQueueUseCase.queue_rows）
+
+    TargetGeoUseCase 候选判定用：bind 不在当前队列（已被淘汰/移出）即跳过探测。
+    每次调用重建视图：队列在探测周期之间可能变化，缓存视图会让新入队代理漏探测。
+    """
+    def lookup(bind: str) -> str | None:
+        return next((p for p in standby.queue_rows() if bind_of(p) == bind), None)
+    return lookup
 
 
 async def _run(
@@ -129,6 +147,27 @@ async def _run(
     else:
         logger.warning("警告: 代理服务队列仍无可用 %s 类型代理", ",".join(sorted(control.allowed_types)))
 
+    # 3D 地球探测：geo 可用且 [globe].enabled 时组装（消费 PproxyServer 的 pair 流量维度）。
+    # DoH 解析器随用例在 serve 内构造：它是 serve 专属依赖，不进容器（所有 CLI 命令
+    # 都会组装容器，把只有 serve 用的适配器挂在容器上只会增加面）
+    target_geo = None
+    if config.GLOBE_ENABLED and c.geo is not None:
+        target_geo = TargetGeoUseCase(
+            server=server,
+            store=c.store,
+            resolver=DohResolver(config.GLOBE_DOH_ENDPOINTS, c.async_getter,
+                                 timeout=config.GLOBE_PROBE_TIMEOUT),
+            geo=c.geo,
+            proxy_lookup=_proxy_lookup(standby),
+            probe_concurrency=config.GLOBE_PROBE_CONCURRENCY,
+            cache_ttl=config.GLOBE_TARGET_CACHE_TTL,
+            activation_window=config.GLOBE_ACTIVATION_WINDOW,
+            probe_window=config.GLOBE_PROBE_WINDOW,
+            prune_after=config.GLOBE_PRUNE_AFTER,
+        )
+        logger.info("目标地区探测已启用: DoH 端点 %d 个, 并发 %d",
+                    len(config.GLOBE_DOH_ENDPOINTS), config.GLOBE_PROBE_CONCURRENCY)
+
     # Web 控制面板（挂载到本事件循环，共享 control 实现运行时调度调整）
     # web.enabled=false 时不构造面板（延迟导入，不加载 aiohttp，省内存）
     panel = None
@@ -149,6 +188,7 @@ async def _run(
             geo=c.geo,
             speedtest=c.speedtest,
             tasks=PanelTasks(),
+            target_geo=target_geo,
         ))
         if web_port:
             await panel.start(web_host or "127.0.0.1", web_port)
@@ -217,8 +257,25 @@ async def _run(
                 logger.warning("流量采样异常: %s", e)
             await asyncio.sleep(TRAFFIC_SAMPLE_INTERVAL)
 
+    async def target_probe_loop():
+        """周期目标地区探测（TARGET_PROBE_INTERVAL）：未激活时用例内部直接返回 0
+
+        激活完全由 /api/globe 的 touch 驱动（见 TargetGeoUseCase.is_active），本循环
+        只负责节奏；探测网络调用多，单轮异常只告警不中断。
+        """
+        while True:
+            try:
+                await target_geo.probe_cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("目标地区探测异常: %s", e)
+            await asyncio.sleep(TARGET_PROBE_INTERVAL)
+
     hb_task = asyncio.create_task(heartbeat_loop())
     sample_task = asyncio.create_task(traffic_sample_loop())
+    # 探测循环仅在地球可用时启动；禁用时连任务都不建（见上面的组装条件）
+    probe_task = asyncio.create_task(target_probe_loop()) if target_geo is not None else None
     loop = asyncio.get_running_loop()
 
     # 退出信号处理：Linux/systemd/docker 发 SIGTERM 时完成 stop_future 触发优雅退出
@@ -238,12 +295,15 @@ async def _run(
     try:
         await stop_future  # 永久运行（收到退出信号时完成）
     finally:
-        # 清理：停止心跳/采样/补测任务 → 关闭服务器 → 关闭 async session → 保存
+        # 清理：停止心跳/采样/探测/补测任务 → 关闭服务器 → 关闭 async session → 保存
         hb_task.cancel()
         sample_task.cancel()
+        if probe_task is not None:
+            probe_task.cancel()
         for t in retry_tasks.values():
             t.cancel()
-        await asyncio.gather(hb_task, sample_task, *retry_tasks.values(), return_exceptions=True)
+        await asyncio.gather(hb_task, sample_task, *([probe_task] if probe_task is not None else []),
+                             *retry_tasks.values(), return_exceptions=True)
         try:
             await server.close()
         except Exception as e:

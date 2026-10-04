@@ -15,7 +15,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_ip_geo.py                 # IP 归属三步编排与聚合
 │   ├── test_network_gate.py           # 本地链路门控（状态码/多目标/失败结论缓存/成功不缓存/并发共享）
 │   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化/超容量程
-│   ├── test_target_geo.py             # 目标地区探测（激活窗口/缓存 TTL/失败退避与上限/并发信号量/跳过规则/聚合纯函数，假端口不打网络）
+│   ├── test_target_geo.py             # 目标地区探测（激活窗口/缓存 TTL/失败退避与上限/并发信号量/跳过规则/聚合纯函数/build_flows 缓存读失败降级，假端口不打网络）
 │   └── test_use_cases.py              # fetch/get/record/request_with_retry/check_proxies
 ├── interfaces/                        # 接口适配器测试
 │   ├── __init__.py
@@ -45,13 +45,14 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_logbuffer.py              # 面板日志缓冲（环形裁剪/seq 游标/stack 采集/buffer_start）
 │   ├── test_loop.py                   # run_coro 跨循环桥接
 │   ├── test_view.py                   # view.py 数据层（缓存读取/行构建）
-│   ├── test_serve.py                  # serve 主循环辅助逻辑（补测任务表同步：先回收已结束任务再补启动）
-│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/日志增量与清空）
+│   ├── test_serve.py                  # serve 主循环辅助逻辑（补测任务表同步：先回收已结束任务再补启动；探测候选 bind→代理反查 _proxy_lookup）
+│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/3D 地球（/api/globe 组装与关闭态 404、globe_enabled）/日志增量与清空）
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
 │   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手，响应体可自定义以区分多上游）
 │   ├── test_serve_e2e.py              # serve 全链路（pproxy 启动→转发→心跳移除→sync→上游空时拒绝且不直连→不可用上游不被选中）
 │   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→失败代理随 sync 下发为 unhealthy→优雅退出）
+│   ├── test_target_geo_e2e.py         # 目标地区探测（mock DoH → 经代理流量 → /api/globe 出目标弧；无 /api/globe 请求时不探测落盘）
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
 │       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆（默认空闲端口，PP_E2E_* 可固定）+ 组件探针页 fixture

@@ -258,6 +258,19 @@ class StandbyQueueUseCase:
         )
         return pinned + others
 
+    def queue_rows(self) -> list[str]:
+        """当前服务队列展示视图：锁定代理置首 + 队列成员（按地址去重）
+
+        锁定代理已 move 出队列组，只有 upstream_proxies() 能取到，故并入；历史数据
+        可能在队列组留有副本，按地址去重避免同一代理出现两行。面板队列展示
+        （web/api）与地球探测候选查代理（serve）共用此口径。
+        """
+        rows = self.standby_members()
+        if self.is_locked():
+            locked = self.upstream_proxies()
+            rows = locked + [p for p in rows if p not in locked]
+        return rows
+
     def standby_proxies(self) -> list[str]:
         """进 pproxy 上游的队列候选 = 成员视图截断到 capacity
 

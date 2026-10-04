@@ -137,13 +137,18 @@ async def _wait_until(pred, timeout=5.0):
 
 
 def make_min_container(pool, standby):
-    """serve._run 的最小容器替身：真实 standby + 假 save/async_getter"""
+    """serve._run 的最小容器替身：真实 standby + 假 save/async_getter
+
+    geo=None = 3D 地球功能关闭（本文件覆盖主循环本身，地球探测在 test_target_geo_e2e）。
+    """
     return SimpleNamespace(
         pool=pool,
         standby=standby,
         save=lambda: None,
         save_full=lambda: None,
         async_getter=AsyncMock(),
+        store=None,
+        geo=None,
     )
 
 

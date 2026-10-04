@@ -27,6 +27,7 @@ from src.interfaces.speedtest import PspeedTester
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
+from src.use_cases.target_geo import TargetGeoUseCase
 from src.framework.web.panel_state import PanelTasks
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class PanelContext:
     geo: object | None                   # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）；geoip.enabled=false 时为 None
     speedtest: PspeedTester              # 测速实现（面板手动测速与入队筛选共用）
     tasks: PanelTasks                    # 面板任务状态（测速/纯净度检查进行中与终态，前端刷新后恢复）
+    target_geo: TargetGeoUseCase | None  # 目标地区探测用例；geoip/globe 关闭时为 None（/api/globe 不注册）
 
 
 # ------------------------------------------------------------------ 读取
@@ -79,19 +81,6 @@ def _purity_cached(ctx: PanelContext, proxy: str) -> dict | None:
     }
 
 
-def _standby_rows(ctx: PanelContext) -> list[str]:
-    """面板队列行：锁定代理置首 + 队列成员（去重）
-
-    锁定代理已 move 出队列组，只有 upstream_proxies() 能取到，故并入下发；历史数据
-    可能在队列组留有副本，按地址去重避免同一代理出现两行（前端以 proxy 为 :key）。
-    """
-    rows = list(ctx.standby.standby_members())
-    if ctx.standby.is_locked():
-        locked = ctx.standby.upstream_proxies()
-        rows = locked + [p for p in rows if p not in locked]
-    return rows
-
-
 def _geo_payload(geo: dict | None) -> dict | None:
     """IP 归属下发字段（只取展示需要的国家/省市，不带经纬度与缓存时间）"""
     if not geo:
@@ -102,6 +91,37 @@ def _geo_payload(geo: dict | None) -> dict | None:
         "province": geo.get("province"),
         "city": geo.get("city"),
     }
+
+
+def _geo_point(geo: dict | None) -> dict | None:
+    """地球节点的 IP 归属字段（含经纬度；_geo_payload 故意不带坐标，节点必须有）"""
+    if not geo:
+        return None
+    return {
+        "country": geo["country"],
+        "country_code": geo["country_code"],
+        "province": geo.get("province"),
+        "city": geo.get("city"),
+        "lat": geo.get("lat"),
+        "lng": geo.get("lng"),
+    }
+
+
+def _locked_proxy(ctx: PanelContext) -> str | None:
+    """锁定代理（已 move 出队列组，作为 pproxy 唯一上游）；未锁定为 None
+
+    队列行（queue_rows）把它置首下发，状态快照与地球节点都要标记 locked 行。
+    """
+    if not ctx.standby.is_locked():
+        return None
+    return ctx.standby.upstream_proxies()[0]
+
+
+def _self_point() -> dict | None:
+    """本机坐标（panel.toml [globe] 手填；缺省返回 None，前端不画本机节点与第一段弧）"""
+    if config.GLOBE_SELF_LAT is None:
+        return None
+    return {"lat": config.GLOBE_SELF_LAT, "lng": config.GLOBE_SELF_LNG}
 
 
 def _settings_snapshot(ctx: PanelContext) -> dict:
@@ -136,7 +156,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
 
     # 锁定代理作为 pproxy 唯一上游，物理上已移出队列组；面板把它显示为队列首行
     # （行内标记已锁定、其余行灰显），故并入 standby 下发，省得前端拼接两处数据。
-    locked_proxy = ctx.standby.upstream_proxies()[0] if ctx.standby.is_locked() else None
+    locked_proxy = _locked_proxy(ctx)
 
     def _standby_entry(p: str, *, locked: bool) -> dict:
         """队列行：单次 find_proxy 取全部条目字段（joined_at 供前端算入队时长）
@@ -159,7 +179,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
             "joined_at": info.get("joined_at"),
         }
 
-    standby = [_standby_entry(p, locked=(p == locked_proxy)) for p in _standby_rows(ctx)]
+    standby = [_standby_entry(p, locked=(p == locked_proxy)) for p in ctx.standby.queue_rows()]
     traffic_upload, traffic_download = ctx.server.traffic_total()
     sources = []
     for s in config.SOURCES:
@@ -178,6 +198,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "groups": groups,
         "available_count": len(available),
         "geo_enabled": ctx.geo is not None,  # 前端据此隐藏/显示 IP 分布地图区块
+        "globe_enabled": ctx.target_geo is not None,  # 前端据此隐藏/显示 3D 地球卡片
         # 纯净度检查源元数据（None = 未启用）；前端据此隐藏检查按钮并标注数据来源
         "purity_source": (
             {"name": ctx.purity.source, "label": ctx.purity.label} if ctx.purity else None
@@ -234,7 +255,7 @@ def _standby_series(ctx: PanelContext, since: float | None) -> dict:
     """
     series: dict[str, dict[str, list]] = {}
     cursor = since or 0.0
-    for proxy in _standby_rows(ctx):
+    for proxy in ctx.standby.queue_rows():
         bind = bind_of(proxy)
         lat = [[s.ts, s.latency] for s in ctx.standby.per_proxy_latency_history(bind)
                if since is None or s.ts > since]
@@ -375,11 +396,54 @@ async def _standby_geo(request: web.Request) -> web.Response:
     geoip 关闭时不注册本路由（前端按 geo_enabled 跳过）。
     """
     ctx = request.app[_PANEL_KEY]
-    proxies = _standby_rows(ctx)
+    proxies = ctx.standby.queue_rows()
     geo_map = await ctx.geo.resolve([proxy_to_ip(p) for p in proxies], label="standby")
     return web.json_response({
         "geo": {bind_of(p): _geo_payload(geo_map.get(proxy_to_ip(p))) for p in proxies},
     })
+
+
+# 地球节点速率的零值字段（无流量代理 / 新 bind 的缺省；与 active_pairs 字段同名）
+_ZERO_RATES = {"up_rate": 0.0, "down_rate": 0.0, "up_inst": 0.0, "down_inst": 0.0}
+
+
+async def _globe(request: web.Request) -> web.Response:
+    """3D 地球数据：本机坐标 + 代理节点（含速率/归属）+ 目标弧（探测缓存聚合）
+
+    touch() 刷新探测激活窗口——只有面板真正在看地球时后端才发起 DoH 探测。
+    nodes 覆盖服务队列全部成员（含锁定代理）；flows 只统计队列内 bind 的活跃 pair。
+    """
+    ctx = request.app[_PANEL_KEY]
+    ctx.target_geo.touch()
+    now = time.time()
+    pairs = ctx.server.active_pairs(now - config.METRICS_WINDOW)
+    # 节点速率：活跃 pair 按 bind 聚合（EMA 供线宽、瞬时供流速）
+    rates: dict[str, dict[str, float]] = {}
+    for pair in pairs:
+        agg = rates.setdefault(pair["bind"], dict(_ZERO_RATES))
+        for field in _ZERO_RATES:
+            agg[field] += pair.get(field, 0.0)
+    proxies = ctx.standby.queue_rows()
+    queue_binds = {bind_of(p) for p in proxies}
+    geo_map = await ctx.geo.resolve([proxy_to_ip(p) for p in proxies], label="globe")
+    locked_proxy = _locked_proxy(ctx)
+    nodes = []
+    for p in proxies:
+        bind = bind_of(p)
+        _, info = ctx.pool.find_proxy(p)
+        info = info or {}
+        nodes.append({
+            "bind": bind,
+            "geo": _geo_point(geo_map.get(proxy_to_ip(p))),
+            "latency": info.get("latency"),
+            "consecutive_fails": info.get("consecutive_fails", 0),
+            "pinned": info.get("pinned", False),
+            "locked": p == locked_proxy,
+            **rates.get(bind, _ZERO_RATES),
+        })
+    flows = ctx.target_geo.build_flows(
+        [pair for pair in pairs if pair["bind"] in queue_binds], config.GLOBE_MAX_FLOWS)
+    return web.json_response({"self": _self_point(), "nodes": nodes, "flows": flows})
 
 
 async def _group(request: web.Request) -> web.Response:
@@ -439,7 +503,7 @@ async def _proxy_history(request: web.Request) -> web.Response:
 # ------------------------------------------------------------------ 测速
 def _find_proxy_by_bind(ctx: PanelContext, bind: str) -> str | None:
     """从面板队列行（含锁定代理）按 bind（地址，不含 scheme）反查完整 proxy URL"""
-    return next((p for p in _standby_rows(ctx) if bind_of(p) == bind), None)
+    return next((p for p in ctx.standby.queue_rows() if bind_of(p) == bind), None)
 
 
 async def _do_speedtest(request: web.Request) -> web.Response:
@@ -807,6 +871,9 @@ def build_app(ctx: PanelContext) -> web.Application:
     if ctx.geo is not None:
         app.router.add_get("/api/geo/map", _geo_map)
         app.router.add_get("/api/standby/geo", _standby_geo)
+    # /api/globe 依赖目标探测用例（geoip 或 globe.enabled 关闭时为 None，不注册）
+    if ctx.target_geo is not None:
+        app.router.add_get("/api/globe", _globe)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)
     app.router.add_post("/api/proxy/move", _do_proxy_move)

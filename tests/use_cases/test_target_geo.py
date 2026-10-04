@@ -17,6 +17,8 @@ _BIND = "1.1.1.1:8080"
 _PROXY = "http://1.1.1.1:8080"
 _US_GEO = {"country": "美国", "country_code": "US", "province": None, "city": None,
            "lat": 37.75, "lng": -97.82}
+_US_ROW = {"ip": "1.2.3.4", "country": "美国", "country_code": "US",
+           "province": None, "city": "Ashburn", "lat": 39.0, "lng": -77.5}
 
 
 class FakeServer:
@@ -38,6 +40,7 @@ class FakeStore:
         self.rows = dict(rows or {})
         self.saved = []
         self.pruned = []
+        self.gets = []          # 每次批量读的 key 列表（验 build_flows 是否读缓存）
         self.get_error = None
         self.save_error = None
         self.prune_error = None
@@ -45,6 +48,8 @@ class FakeStore:
     def get_target_geo_batch(self, pairs):
         if self.get_error:
             raise self.get_error
+        pairs = list(pairs)
+        self.gets.append(pairs)
         return {k: self.rows[k] for k in pairs if k in self.rows}
 
     def save_target_geo_batch(self, rows):
@@ -386,6 +391,29 @@ class TestAggregateFlows(unittest.TestCase):
         flows = TargetGeoUseCase.aggregate_flows(pairs, rows, 2)
         self.assertEqual([f["bind"] for f in flows], ["2.2.2.2:8080", "3.3.3.3:8080"])
         self.assertEqual(flows[0]["up_rate"], 3.0)
+
+
+class TestBuildFlows(unittest.TestCase):
+    """/api/globe 用的 build_flows：批量读缓存后聚合；读失败降级为空、不抛"""
+
+    def test_aggregates_from_cache(self):
+        uc, _, store, *_ = _use_case(pairs=[], rows={(_BIND, "a.example"): dict(_US_ROW)})
+        flows = uc.build_flows([_pair("a.example", rate=7.0)], 10)
+        self.assertEqual(len(flows), 1)
+        self.assertEqual(flows[0]["city"], "Ashburn")
+        self.assertEqual(flows[0]["up_rate"], 7.0)
+        self.assertEqual(store.gets, [[(_BIND, "a.example")]])
+
+    def test_empty_pairs_skip_cache_read(self):
+        uc, _, store, *_ = _use_case(pairs=[])
+        self.assertEqual(uc.build_flows([], 10), [])
+        self.assertEqual(store.gets, [])
+
+    def test_cache_read_error_degrades_to_empty(self):
+        """单次 DB 读失败只丢本帧目标弧，不让整个地球请求打成 500"""
+        uc, _, store, *_ = _use_case(pairs=[], rows={(_BIND, "a.example"): dict(_US_ROW)})
+        store.get_error = RuntimeError("db locked")
+        self.assertEqual(uc.build_flows([_pair("a.example")], 10), [])
 
 
 if __name__ == "__main__":
