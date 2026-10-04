@@ -415,6 +415,18 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         body = await resp.text()
         assert "控制面板" in body and "<script>" in body
 
+    async def test_globe_texture_served(self):
+        """3D 地球贴图/缩略图：白名单内的文件走静态文件；文件名不带内容 hash，故不能 immutable"""
+        for name in ("earth-blue-marble.jpg", "thumb-earth-night.jpg"):
+            resp = await self.client.get(f"/globe/{name}")
+            assert resp.status == 200
+            assert resp.headers["Content-Type"] == "image/jpeg"
+            assert resp.headers["Cache-Control"] == "public, max-age=86400"
+            assert len(await resp.read()) > 0
+        # 白名单外（含目录穿越尝试）一律 404，不落到磁盘路径
+        for name in ("nope.jpg", "..%2Findex.html"):
+            assert (await self.client.get(f"/globe/{name}")).status == 404
+
     async def test_status_snapshot(self):
         self.pool.add_to_group(STANDBY_GROUP, "1.2.3.4:8080", consecutive_fails=0, latency=0.5)
         resp = await self.client.get("/api/status")

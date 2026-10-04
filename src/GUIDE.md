@@ -46,7 +46,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_loop.py                   # run_coro 跨循环桥接
 │   ├── test_view.py                   # view.py 数据层（缓存读取/行构建）
 │   ├── test_serve.py                  # serve 主循环辅助逻辑（补测任务表同步：先回收已结束任务再补启动；探测候选 bind→代理反查 _proxy_lookup）
-│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/3D 地球（/api/globe 组装与关闭态 404、globe_enabled）/日志增量与清空）
+│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/3D 地球（/api/globe 组装与关闭态 404、globe_enabled）/日志增量与清空/静态资源（/globe/{name} 贴图白名单））
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
 │   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手，响应体可自定义以区分多上游）

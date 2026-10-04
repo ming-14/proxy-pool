@@ -2,8 +2,11 @@
 /**
  * 3D 地球卡片：代理节点 + 本机→代理/代理→目标城市的流量飞线（globe.gl）。
  *
- * - globe.gl（含 three 链）与 world.json 都在卡片进入视口后才加载：主 chunk 与首屏
- *   不背 three；初始化失败（WebGL 不可用/构造异常）渲染降级文案，不影响面板其余功能。
+ * - globe.gl（含 three 链）在卡片进入视口后才加载：主 chunk 与首屏不背 three；
+ *   初始化失败（WebGL 不可用/构造异常）渲染降级文案，不影响面板其余功能。
+ * - 球面样式（贴图 / 经纬网 / 大气光晕）由设置页「地球样式」决定，见 stores/globeStyle：
+ *   默认真实地球贴图、无网格、无光晕（浅色卡片上深色贴图会显成暗球、默认光晕是一圈蓝雾）；
+ *   不用 ECharts 的 world.json 做矢量地球：省掉 ~1MB 地图拉取，也没有多边形三角化的开销。
  * - 不可见（IntersectionObserver）或页面切后台（document.hidden）时暂停动画并停 5s
  *   轮询——没有人在看地球时后端也不该为它探测（/api/globe 的 touch 即探测激活信号）。
  * - 主题切换读 CSS 变量重建配色；容器尺寸由 ResizeObserver 跟随。
@@ -11,6 +14,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '@/api/client';
 import { useThemeStore } from '@/stores/theme';
+import { globeTextureUrl, useGlobeStyleStore } from '@/stores/globeStyle';
 import {
   ARC_DOT_STYLE,
   buildPoints,
@@ -24,22 +28,11 @@ import type { GlobeInstance } from 'globe.gl';
 
 const POLL_INTERVAL_MS = 5_000;
 const CARD_HEIGHT_PX = 420;
-/** 初始视角：东亚上空（本机坐标只决定点位，不移动镜头） */
-const INITIAL_POV = { lat: 30, lng: 110, altitude: 2.2 };
-
-// world.json（~1MB）模块级懒加载：组件往返不重复拉取（与 GeoMap 的 registerMap 同口径）
-let featuresPromise: Promise<object[]> | null = null;
-
-function loadFeatures(): Promise<object[]> {
-  if (!featuresPromise) {
-    featuresPromise = fetch('/world.json')
-      .then((r) => r.json())
-      .then((json: { features?: object[] }) => json.features ?? []);
-  }
-  return featuresPromise;
-}
+/** 初始视角：东亚上空，altitude 1.8 ≈ 球体占满卡片可视高度的 3/4（本机坐标只决定点位，不移动镜头） */
+const INITIAL_POV = { lat: 30, lng: 110, altitude: 1.8 };
 
 const themeStore = useThemeStore();
+const globeStyle = useGlobeStyleStore();
 
 const el = ref<HTMLElement | null>(null);
 const failed = ref(false);
@@ -74,14 +67,14 @@ function readPalette(): GlobePalette {
   };
 }
 
-/** 球面配色（国家 cap/描边）：读 CSS 变量；赋新闭包触发 kapsule 重绘（函数引用变了才算变更） */
-function applySurfaceColors(): void {
+/** 应用球面样式（贴图/经纬网/大气光晕）：初始化与设置页改动共用一处 */
+function applySurfaceStyle(): void {
   if (!world) return;
-  const dark = themeStore.theme === 'dark';
-  const cap = cssVar('--color-line-light', dark ? '#1e293b' : '#f1f5f9');
-  const stroke = cssVar('--color-line', dark ? '#334155' : '#cbd5e1');
-  world.polygonCapColor(() => cap);
-  world.polygonStrokeColor(() => stroke);
+  const { texture, graticules, atmosphere } = globeStyle.style;
+  world
+    .globeImageUrl(globeTextureUrl(texture))
+    .showGraticules(graticules)
+    .showAtmosphere(atmosphere);
 }
 
 function applyData(data: GlobeData): void {
@@ -133,7 +126,7 @@ function ensureGlobe(): Promise<void> {
   if (initPromise) return initPromise;
   initPromise = (async () => {
     try {
-      const [{ default: Globe }, features] = await Promise.all([import('globe.gl'), loadFeatures()]);
+      const { default: Globe } = await import('globe.gl');
       const node = el.value; // 加载期间组件可能已卸载：此时不再建实例
       if (!node) return;
       const globe = new Globe(node);
@@ -141,10 +134,6 @@ function ensureGlobe(): Promise<void> {
         .width(node.clientWidth)
         .height(CARD_HEIGHT_PX)
         .backgroundColor('rgba(0,0,0,0)')
-        .showGraticules(true)
-        .polygonsData(features)
-        .polygonSideColor(() => 'rgba(0,0,0,0)')
-        .polygonAltitude(() => 0.008)
         .pointLat('lat').pointLng('lng').pointColor('color')
         .pointRadius('radius').pointAltitude('altitude').pointLabel('label')
         .arcStartLat('startLat').arcStartLng('startLng')
@@ -154,7 +143,7 @@ function ensureGlobe(): Promise<void> {
         .arcDashAnimateTime('dashTime').arcLabel('label')
         .pointOfView(INITIAL_POV);
       world = globe;
-      applySurfaceColors();
+      applySurfaceStyle();
       ready.value = true;
       if (lastData) applyData(lastData);
       updateActivity();
@@ -166,12 +155,17 @@ function ensureGlobe(): Promise<void> {
   return initPromise;
 }
 
-// 主题切换重建配色（数据层颜色烘焙在点位/弧里，重建数据即刷新；球面颜色单独重赋）
+// 主题切换重建配色（点位/弧的颜色烘焙在数据里，重建数据即刷新；球面为贴图不随主题变）
 watch(() => themeStore.theme, () => {
   palette = readPalette();
-  applySurfaceColors();
   if (lastData) applyData(lastData);
 });
+
+// 设置页「地球样式」改动即时生效（贴图/网格/光晕均为 kapsule prop，赋值即重绘）
+watch(
+  () => [globeStyle.style.texture, globeStyle.style.graticules, globeStyle.style.atmosphere],
+  () => applySurfaceStyle(),
+);
 
 onMounted(() => {
   const node = el.value!;

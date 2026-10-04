@@ -71,10 +71,8 @@ logs/
 build-artifacts/
 node_modules/
 
-# ---- Web 面板构建产物（已从 git 历史移除；旧版手写 static 不在此列）----
-src/framework/web/static/assets/
-src/framework/web/static/index.html
-src/framework/web/static/world.json
+# ---- Web 面板构建产物（frontend/ npm run build 整体输出；已从 git 历史移除）----
+src/framework/web/static/
 
 # ---- 离线数据库----
 vendor/geoip/

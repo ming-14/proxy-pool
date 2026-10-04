@@ -11,6 +11,7 @@
 | D2 | 目标归属缓存键 | **(代理 bind, 目标域名)**——不同出口的 CDN 解析结果不同，弧线指向该代理视角的真实落点 |
 | D3 | 本机（"我们"）位置 | **仅手填坐标**（`panel.toml [globe] self_lat/self_lng`）；不发起任何自动探测；未配置时不画本机节点与第一段弧 |
 | D4 | 探测激活时机 | **面板打开时激活**：最近 `activation_window` 秒内有 `/api/globe` 请求才消耗代理做 DoH 探测（仍限并发）；平时只记录，缓存持久 |
+| D5 | 球面渲染方式 | **three-globe 官方示例贴图（`globeImageUrl`）**，不用 ECharts 的 `world.json` 做矢量地球：贴图随 `three-globe` npm 包本地可得（`example/img/`），复制 `earth-blue-marble.jpg` 到 `frontend/public/globe/` 入库即完全离线；见 §4.5 |
 
 默认口径（未特别反对即按此实现）：
 
@@ -36,8 +37,8 @@
 | 地理数据管道 | `GeoLite2Locator`（`interfaces/geoip_client.py`）+ `ip_geo_cache` 表 + `IpGeoUseCase`（三步编排：query_cache/locate/save_cache、TTL、国家中心坐标兜底）直接复用。 |
 | 目标地区解析 | HTTP/SOCKS 代理**无法回读远端解析出的 IP**（SOCKS5 `rdns=True` 只有远端解析语义、HTTP 代理在隧道内）。唯一现实路径：**通过该代理请求 DoH JSON**（DNS 请求从代理出口发出），再对返回的 A 记录做 GeoLite2 定位。 |
 | DoH 端点 | Cloudflare `https://cloudflare-dns.com/dns-query?name=<host>&type=A`（`Accept: application/dns-json`）；Google `https://dns.google/resolve`；阿里 `https://223.5.5.5/resolve`（国内出口可用，缓解被墙）。响应为 JSON，`Answer[]` 中 `type==1` 的 `data` 即 A 记录（已查官方文档确认存在）。 |
-| globe.gl | npm 最新 **2.46.2**，与 `reference/globe.gl` 检出一致；`three` 是直接依赖（>=0.179 <1）。所需 API 全部现成：`pointsData`、`arcsData`（`arcStroke`/`arcDashLength`/`arcDashGap`/`arcDashAnimateTime` 均为逐弧 accessor）、`polygonsData`、`pauseAnimation()/resumeAnimation()`、`getScreenCoords` 等。**不需要改引擎源码**。 |
-| 离线纹理 | 官方示例贴图走 CDN，桌面/离线环境不可用。改用现有 `frontend/public/world.json`（标准 GeoJSON FeatureCollection，~250 features）喂 `polygonsData` 做**矢量地球**，零额外资源且与主题一致。 |
+| globe.gl | npm 最新 **2.46.2**，与 `reference/globe.gl` 检出一致；`three` 是直接依赖（>=0.179 <1）。所需 API 全部现成：`globeImageUrl`、`pointsData`、`arcsData`（`arcStroke`/`arcDashLength`/`arcDashGap`/`arcDashAnimateTime` 均为逐弧 accessor）、`showGraticules`/`showAtmosphere`、`pauseAnimation()/resumeAnimation()`、`getScreenCoords` 等。**不需要改引擎源码**。 |
+| 离线纹理 | 官方示例贴图虽走 CDN 链接，但**贴图文件本身随 `three-globe` npm 包分发**（`node_modules/three-globe/example/img/`），离线可取。故把 4 张官方贴图（`earth-blue-marble` / `earth-night` / `earth-day` / `earth-dark`）降采样到 ≤2048 宽入库 `frontend/public/globe/`（含设置页缩略图 `thumb-earth-*.jpg`，合计 ~1.1MB），由设置页「地球样式」任选。**默认真实地球（earth-blue-marble）**：本卡片底色是浅色，官方点位/飞线示例常用的 `earth-night`/`earth-dark` 依赖深色星空底衬，浅色卡片上会呈现为一颗暗球。**不用 `world.json` 做矢量地球**（见 §4.5）。 |
 | 测试基建 | `tests/e2e/mock_upstream.py` 支持自定义响应体（可模拟 DoH JSON）；web e2e 用临时配置目录 + serve 子进程；前端 vitest 可测纯映射函数（无 WebGL）。 |
 | 前端构建 | Vite 产物输出到 `src/framework/web/static/`；globe 组件用动态 import 拆独立 chunk（three 约 1MB，gzip ~250KB），桌面打包随之带上。 |
 
@@ -244,7 +245,7 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
   - 数据轮询 `/api/globe` 固定 5s（不进 2s status 热路径）；组件卸载停止并 `dispose`（globe.gl `_destructor()`）+ 断开 RO。
   - `ResizeObserver` 跟随容器尺寸；主题切换重建配色（读 CSS 变量，同 `GeoMap.vue` 口径）。
   - WebGL 不可用/初始化异常：捕获并渲染降级文案（不弹全局错误）。
-  - 地球：`polygonsData(world.json.features)` 矢量国家（深色 cap + 无侧面）+ `showGraticules(true)` + `backgroundColor('rgba(0,0,0,0)')`；`pointOfView({lat: 30, lng: 110, altitude: 2.2})`。
+  - 地球：球面样式（贴图/经纬网/大气光晕）由设置页「地球样式」决定（`stores/globeStyle`，纯前端 localStorage），默认 `globeImageUrl('/globe/earth-blue-marble.jpg')` + `showAtmosphere(false)`（浅色卡片上 alpha 光晕会显成蓝雾）+ `showGraticules(false)`（官方带贴图示例均不画网格）+ `backgroundColor('rgba(0,0,0,0)')`；`pointOfView({lat: 30, lng: 110, altitude: 1.8})`（≈ 球体占卡片可视高度 3/4）。
 - `globeData.ts`（纯函数，vitest 单测）：
   - `buildPoints(self, nodes)` → 代理点数据（含颜色/大小/标签；self 单独色）。
   - `buildProxyArcs(self, nodes)` → 第一段弧（本机→代理）。
@@ -278,11 +279,27 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
   不随画面最大值漂移）、`ARC_DOT_STYLE={dashLength:0.02, dashGap:0.96}`。
 - **弧组装**：`buildProxyArcs` 无 `self` 返回空（整层隐藏）；`buildTargetArcs` 以节点 `bind → 坐标`
   关联起点，bind 已离队/坐标缺失不产弧——即第二段弧只画「队列内代理 → 其目标城市」。
-- **激活链路**：滚动进入视口才 `import('globe.gl')` + 拉 `world.json`（模块级 Promise 缓存），
+- **激活链路**：滚动进入视口才 `import('globe.gl')`（球面贴图由 `globeImageUrl` 自行拉取，不再拉 `world.json`），
   同时开始 5s 轮询 `/api/globe`；不可见或 `document.hidden` 时 `pauseAnimation()` + 停轮询，
   于是停止 touch、后端探测随之休眠（D4 的整条链路闭合）。
 - **实测构建体积**：`globe.gl` chunk 1,931.90 kB（gzip 547.56）独立 chunk，
   DashboardPage 621.38 kB，主 chunk 187.08 kB——`WebGLRenderer` 只在 globe chunk 中，主 chunk 不含 three。
+
+### 4.5 球面贴图与「只剩中国可见」缺陷修复（D5）
+
+初版把 ECharts 的 `world.json`（~1083 个 polygon）喂 `polygonsData` 画矢量地球，上线后仪表盘地球**只显示中国及数据顺序上更早的 41 个国家，其余大洲全黑**。根因：
+
+1. `frontend/public/world.json` 的 `China` 是 MultiPolygon，第 13 个条目为 `[]`（空环，非法 GeoJSON；全文件仅此一处）；
+2. three-globe 逐 polygon 构造 `ConicPolygonGeometry` → 空环在 `d3-geo` 的 `geoBounds` 抛 `TypeError: Cannot set properties of undefined (setting '0')`；
+3. 多边形层用 `data-bind-mapper` 的 digest（先建全部对象、再按数据顺序逐个建几何体），异常使 update 中断——**其后的 821 个 polygon 永远拿不到几何体**；
+4. kapsule 的渲染更新是 `debounce(fn, 1)`（下一事件循环执行），异常逃出组件的 `try/catch` 只记 console，因此地球仍"初始化成功"、不显示降级文案。
+
+修复：改用官方贴图渲染球面（D5），**删除 `polygonsData` 与 `world.json` 拉取**——既回到官方示例口径，也彻底移除该崩溃面；`world.json` 仍由 2D 的 `GeoMap.vue` 使用。配套改动：
+
+- `frontend/public/globe/`：4 张官方贴图（≤2048 宽，合计 ~1.1MB）+ 4 张设置页缩略图（`thumb-earth-*.jpg`，各 4~11KB）——卡片球体仅约 320px，4K 贴图要多占 ~33MB 显存且无视觉收益；
+- `api.py` 新增白名单路由 `GET /globe/{name}`（与 `/world.json` 同模式，面板无静态目录通配；白名单外的文件名与目录穿越一律 404），缓存 `max-age=86400`（文件名无内容 hash，不能 immutable）；
+- `stores/globeStyle.ts` + `components/GlobeStyleCard.vue`：设置页「地球样式」（贴图 4 选 1 + 经纬网/大气光晕开关，localStorage 持久化，`GlobePanel` 监听后即时刷新球面）；
+- 单测：`tests/framework/test_web_api.py::test_globe_texture_served`。
 
 ## 5. 错误处理与边界
 
@@ -325,7 +342,7 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 | `tests/interfaces/test_doh_resolver.py`（新增） | mock AsyncHttpGetter：端点顺序/首端点失败换下一个/JSON 解析（A 与 CNAME 混排）/非 200/坏 JSON/IDN |
 | `tests/use_cases/test_target_geo.py`（新增） | 激活窗口；TTL 命中不探测；失败退避与上限；并发信号量；IP 字面量/内网/单标签跳过；无 A 结果落盘；bind 缺失跳过；`aggregate_flows` 纯函数；`stats` 观测（成功/失败/退避/超批量 pending/未激活快照清零/IP 字面量不计入） |
 | `tests/framework/test_config.py`（增补） | `[globe]` 键校验（缺省、非法坐标、空端点表、节归属） |
-| `tests/framework/test_web_api.py`（增补） | `/api/globe` 响应形状；`globe_enabled`；touch 更新；geo/globe 关闭时 404 |
+| `tests/framework/test_web_api.py`（增补） | `/api/globe` 响应形状；`globe_enabled`；touch 更新；geo/globe 关闭时 404；`/globe/{name}` 贴图路由（白名单内 200 + image/jpeg + 一天缓存，白名单外/穿越尝试 404） |
 | `tests/framework/test_serve.py`（增补） | probe 循环任务取消路径（如可拆） |
 
 ### 7.2 e2e（tests/e2e/）
@@ -336,12 +353,14 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 ### 7.3 前端
 
 - `frontend/tests/unit/globe-data.test.ts`：映射单调性/上下界/空数据安全/坐标缺失容错。
+- `frontend/tests/unit/globe-style.test.ts`：地球样式偏好的默认值、非法/坏 JSON 回退、持久化与恢复默认。
 - `npm run test`、`npm run build`（vue-tsc）必须通过。
-- 浏览器实测：点/弧渲染、动画速度与粗细随流量变化、切页暂停、主题切换、无 console 错误。
+- 浏览器实测：点/弧渲染、动画速度与粗细随流量变化、切页暂停、主题切换、设置页改样式即时生效、无 console 错误。
 
 > 实现注记（已落地）：`globe-data.test.ts` 覆盖速率映射单调性/上下界/非法值、`withAlpha` 解析与
-> 回退、空数据与缺坐标容错、两段弧组装（含“只为会画的弧归一”）、dash 样式；`npm run test`
-> （226 项）与 `npm run build` 均通过。**浏览器实测（真实代理 + 实际流量）尚未执行**，见阶段 4。
+> 回退、空数据与缺坐标容错、两段弧组装（含“只为会画的弧归一”）、dash 样式；`globe-style.test.ts`
+> 覆盖地球样式偏好的默认值/脏数据回退/持久化；`npm run test`（234 项，24 个文件）与
+> `npm run build` 均通过。**浏览器实测（真实代理 + 实际流量）尚未执行**，见阶段 4。
 
 ## 8. 分阶段计划
 
@@ -393,7 +412,7 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 | 风险 | 影响 | 缓解/验证 |
 |---|---|---|
 | 免费代理 DoH 成功率低（死代理/被墙端点） | 目标弧出现慢或缺 | 三端点回退（含国内 alidns）；失败退避；不影响其余功能；地球卡片脚注已给出成功率统计口径（`/api/globe` 的 `stats`） |
-| `world.json` polygons 渲染性能（~250 多边形） | 地球初始化/帧率 | 实现时实测；备选（hexPolygons / 仅经纬网 + 点弧）；必要时裁剪分辨率 |
+| ~~`world.json` polygons 渲染性能~~（已去除 polygons 图层） | — | 已消除（D5/§4.5）：球面改贴图后不再拉 ~1MB 地图、无 1083 个 polygon 的三角化开销；残留风险仅贴图加载失败（断面不渲染，点位/弧仍在） |
 | three 与 Vite/vue-tsc 构建兼容 | 构建失败 | 阶段 3 第一步先 `npm install + build` 空跑验证 |
 | Playwright headless WebGL 不可用 | e2e 断言方式 | e2e 只断言卡片/canvas 或降级文案存在，不依赖渲染结果 |
 | 目标域名落盘隐私 | 本机浏览目标暴露给能读 `.cache.db` 的进程 | TTL + 30 天清理；面板监听址可在 `[web].host` 收紧（默认 `0.0.0.0`）；README/architecture 写清关闭与清理方式（`[globe].enabled=false` 停探测；删除 `target_geo_cache` 表内容） |

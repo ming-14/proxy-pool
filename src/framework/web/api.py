@@ -309,10 +309,16 @@ async def _group_detail(ctx: PanelContext, name: str) -> dict | None:
 
 # ------------------------------------------------------------------ 路由
 # static/ 为 Vite 构建产物目录（frontend/ 工程 npm run build 输出，
-# emptyOutDir 整体替换）：index.html + /assets/*（文件名带内容 hash）+ world.json。
+# emptyOutDir 整体替换）：index.html + /assets/*（文件名带内容 hash）+ world.json
+# + globe/（3D 地球球面贴图）。
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 _ASSETS_DIR = os.path.join(_STATIC_DIR, "assets")
 _WORLD_JSON = os.path.join(_STATIC_DIR, "world.json")
+# 3D 地球可选贴图（与前端 stores/globeStyle 的清单一致）：球面 earth-<id>.jpg + 设置页缩略图 thumb-earth-<id>.jpg
+_GLOBE_TEXTURE_IDS = ("blue-marble", "night", "day", "dark")
+_GLOBE_ASSETS = frozenset(
+    f"{prefix}earth-{tid}.jpg" for tid in _GLOBE_TEXTURE_IDS for prefix in ("", "thumb-")
+)
 
 _index_cache: tuple[float, str] | None = None  # (mtime, 内容)：按 mtime 失效，免每请求读盘
 
@@ -335,6 +341,17 @@ async def _index(request: web.Request) -> web.Response:
 async def _world_json(request: web.Request) -> web.StreamResponse:
     """世界地图 GeoJSON（ECharts registerMap 数据，约 1MB，前端懒加载一次）"""
     return web.FileResponse(_WORLD_JSON)
+
+
+async def _globe_texture(request: web.Request) -> web.StreamResponse:
+    """3D 地球球面贴图/缩略图（three-globe 官方示例资源，随构建产物分发，离线可用）。
+
+    文件名走白名单：这批静态资源直接映射磁盘文件，不做目录遍历。
+    """
+    name = request.match_info["name"]
+    if name not in _GLOBE_ASSETS:
+        raise web.HTTPNotFound()
+    return web.FileResponse(os.path.join(_STATIC_DIR, "globe", name))
 
 
 async def _logs(request: web.Request) -> web.Response:
@@ -847,6 +864,9 @@ async def _static_cache_middleware(request: web.Request, handler: Callable) -> w
         response.headers["Expires"] = "0"
     elif request.path.startswith("/assets/"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif request.path.startswith("/globe/"):
+        # 贴图文件名不带内容 hash，不能 immutable：给一天缓存，换贴图后至多滞后一天
+        response.headers["Cache-Control"] = "public, max-age=86400"
     return response
 
 
@@ -854,7 +874,8 @@ def build_app(ctx: PanelContext) -> web.Application:
     """构造 aiohttp 应用并注册路由（serve 通过 WebPanel 挂载到事件循环）
 
     前端为 Vite 构建产物：/ 返回 index.html，/assets/* 为带 hash 的 JS/CSS，
-    /world.json 为地图数据；API 路由与前端解耦，契约见 frontend/src/types/api.ts。
+    /world.json 为地图数据、/globe/* 为地球贴图；API 路由与前端解耦，契约见
+    frontend/src/types/api.ts。
     """
     app = web.Application(middlewares=[_static_cache_middleware])
     app[_PANEL_KEY] = ctx
@@ -889,5 +910,6 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_post("/api/standby/unlock", _do_standby_unlock)
     app.router.add_post("/api/settings", _do_settings)
     app.router.add_get("/world.json", _world_json)
+    app.router.add_get("/globe/{name}", _globe_texture)
     app.router.add_static("/assets", _ASSETS_DIR, name="assets")
     return app
