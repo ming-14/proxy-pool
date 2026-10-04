@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 # schema：proxies 复合主键支持跨组副本；group_meta 存组 ttl；source_paused 存源暂停；
-# ippure_cache 存 IP 纯净度检查结果（按 (源名, IP) 分区，TTL 由用例层判断）。
+# ippure_cache 存 IP 纯净度检查结果（按 (源名, IP) 分区，TTL 由用例层判断）；
+# target_geo_cache 存 (代理, 目标域名) 的穿代理解析结果，TTL/清理阈值由用例层判断。
 # ip_purity_cache 为旧纯净度缓存表（键位与字段已变），启动即删，不做迁移。
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS proxies (
@@ -61,6 +62,19 @@ CREATE TABLE IF NOT EXISTS ip_geo_cache (
     lat          REAL,
     lng          REAL,
     cached_at    REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS target_geo_cache (
+    bind         TEXT NOT NULL,     -- 上游代理地址（bind_of，不含 scheme 前缀）
+    host         TEXT NOT NULL,     -- 归一化目标域名（IP 字面量原样）
+    ip           TEXT,              -- 穿代理 DoH 解析出的 A 记录（取首个可用）
+    country      TEXT,
+    country_code TEXT,
+    province     TEXT,
+    city         TEXT,
+    lat          REAL,
+    lng          REAL,
+    cached_at    REAL NOT NULL,     -- 解析完成时间（TTL 判定在用例层）
+    PRIMARY KEY (bind, host)
 );
 CREATE TABLE IF NOT EXISTS app_kv (
     key   TEXT PRIMARY KEY,
@@ -295,3 +309,64 @@ class SqliteProxyStore:
     def clear_geo_cache(self) -> None:
         """清空归属缓存（切换 GeoLite2 库类型/版本时调用，防止旧粒度数据复用）"""
         self._conn.execute("DELETE FROM ip_geo_cache")
+
+    # ------------------------------------------------------------------ 目标归属缓存
+    def get_target_geo_batch(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+        """批量读取 (bind, host) 目标归属缓存；无记录的不包含在返回 dict 中
+
+        返回 {(bind, host): {ip, country, country_code, province, city, lat, lng, cached_at}}。
+        按 400 对一批分查：SQLite 变量上限老版本为 999，一批 800 个参数留足余量。
+        """
+        if not pairs:
+            return {}
+        result: dict[tuple[str, str], dict] = {}
+        chunk = 400
+        for i in range(0, len(pairs), chunk):
+            part = pairs[i:i + chunk]
+            where = " OR ".join("(bind=? AND host=?)" for _ in part)
+            params = [v for pair in part for v in pair]
+            rows = self._conn.execute(
+                f"SELECT bind, host, ip, country, country_code, province, city, lat, lng, cached_at "
+                f"FROM target_geo_cache WHERE {where}", params
+            ).fetchall()
+            for r in rows:
+                result[(r["bind"], r["host"])] = {
+                    "ip": r["ip"],
+                    "country": r["country"],
+                    "country_code": r["country_code"],
+                    "province": r["province"],
+                    "city": r["city"],
+                    "lat": r["lat"],
+                    "lng": r["lng"],
+                    "cached_at": r["cached_at"],
+                }
+        return result
+
+    def save_target_geo_batch(self, rows: dict[tuple[str, str], dict]) -> None:
+        """批量写入/更新目标归属缓存（upsert by (bind, host)，事务内一次落盘）
+
+        rows: {(bind, host): {ip, country, country_code, province, city, lat, lng}}；
+        "已探测无结果"行照常落盘（ip/geo 全 None），cached_at 统一取写入时刻。
+        """
+        if not rows:
+            return
+        now = time.time()
+        records = [
+            (bind, host, d.get("ip"), d.get("country"), d.get("country_code"),
+             d.get("province"), d.get("city"), d.get("lat"), d.get("lng"), now)
+            for (bind, host), d in rows.items()
+        ]
+        with self._tx():
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO target_geo_cache "
+                "(bind, host, ip, country, country_code, province, city, lat, lng, cached_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", records
+            )
+
+    def prune_target_geo(self, before_ts: float) -> int:
+        """删除 cached_at 早于 before_ts 的目标归属缓存行，返回删除数
+
+        目标域名落盘有隐私属性，长期未刷新的行不应一直留存（serve 每小时调用一次）。
+        """
+        cur = self._conn.execute("DELETE FROM target_geo_cache WHERE cached_at < ?", (before_ts,))
+        return cur.rowcount

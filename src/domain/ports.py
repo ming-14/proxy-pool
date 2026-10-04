@@ -162,6 +162,26 @@ class GeoCacheStore(Protocol):
         ...
 
 
+class TargetGeoStore(Protocol):
+    """(代理, 目标域名) 归属缓存存储端口：TTL/清理阈值判断在用例层，store 只做纯读写
+
+    "已探测无结果"行（ip/geo 全空）照常保存，TTL 内不重复探测；地球只使用
+    lat/lng 非空的行。
+    """
+
+    def get_target_geo_batch(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+        """批量读取；返回 {(bind, host): {ip, country, country_code, province, city, lat, lng, cached_at}}"""
+        ...
+
+    def save_target_geo_batch(self, rows: dict[tuple[str, str], dict]) -> None:
+        """批量写入/更新（upsert by (bind, host)）"""
+        ...
+
+    def prune_target_geo(self, before_ts: float) -> int:
+        """删除 cached_at 早于 before_ts 的行，返回删除数"""
+        ...
+
+
 class ProxySpeedTester(Protocol):
     """代理测速端口：测 Cloudflare 下载速率（Mbps）
 

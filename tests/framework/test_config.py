@@ -117,6 +117,9 @@ def _run_config(tmp_path: Path, *, env_file: str | None = None,
         "print('FILTER', [(r.source_glob, r.pattern.pattern, r.reason) for r in c.FETCH_FILTER_RULES]);"
         "print('ENQUEUE', [(r.metric, r.priority, r.enabled, dict(r.params)) for r in c.ENQUEUE_RULES]);"
         "print('REJECT', c.ENQUEUE_REJECT_GROUP);"
+        "print('GLOBE', (c.GLOBE_ENABLED, c.GLOBE_SELF_LAT, c.GLOBE_SELF_LNG, c.GLOBE_MAX_FLOWS,"
+        " c.GLOBE_PROBE_CONCURRENCY, c.GLOBE_PROBE_TIMEOUT, c.GLOBE_TARGET_CACHE_TTL,"
+        " c.GLOBE_ACTIVATION_WINDOW, c.GLOBE_PROBE_WINDOW, c.GLOBE_PRUNE_AFTER, c.GLOBE_DOH_ENDPOINTS));"
         f"print('KEY', repr(__import__('os').environ.get({_ENV_KEY!r})))"
     )
     env = dict(os.environ, PROXY_POOL_CONFIG=str(cfg_dir))
@@ -438,6 +441,88 @@ def test_enqueue_reject_group_requestable_fails_fast(tmp_path) -> None:
     r = _run_config(tmp_path, reject_group_requestable=True)
     assert r.returncode != 0
     assert "requestable_groups" in r.stderr
+
+
+# ---------------------------------------------------------------- panel.toml（3D 地球与目标地区探测）
+_GLOBE_PANEL = (
+    "[geoip]\nenabled = false\n"
+    "[globe]\n"
+    "enabled = false\n"
+    "self_lat = 31.23\n"
+    "self_lng = 121.47\n"
+    "max_flows = 10\n"
+    "probe_concurrency = 1\n"
+    "probe_timeout = 2.5\n"
+    "target_cache_ttl = 3600\n"
+    "activation_window = 30\n"
+    "probe_window = 120\n"
+    "prune_after = 86400\n"
+    'doh_endpoints = ["https://doh.example/resolve"]\n'
+)
+
+
+def test_globe_defaults_when_section_absent(tmp_path) -> None:
+    """[globe] 缺省：探测开启、本机坐标未配置、默认三端点按序回退"""
+    r = _run_config(tmp_path, panel="[geoip]\nenabled = false\n")
+    assert r.returncode == 0, r.stderr
+    assert "GLOBE (True, None, None, 60, 3, 8.0, 86400.0, 60.0, 600.0, 2592000.0," in r.stdout
+    assert "'https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve', 'https://223.5.5.5/resolve'" in r.stdout
+
+
+def test_globe_parsed(tmp_path) -> None:
+    """[globe] 全键解析：开关/本机坐标/数值/自定义端点（断言用例自带内容）"""
+    r = _run_config(tmp_path, panel=_GLOBE_PANEL)
+    assert r.returncode == 0, r.stderr
+    assert ("GLOBE (False, 31.23, 121.47, 10, 1, 2.5, 3600.0, 30.0, 120.0, 86400.0, "
+            "('https://doh.example/resolve',))") in r.stdout
+
+
+def test_globe_unknown_key_fails_fast(tmp_path) -> None:
+    """[globe] 未知键报错（防拼错静默失效）"""
+    r = _run_config(tmp_path, panel="[geoip]\nenabled = false\n[globe]\nprobe_concurency = 2\n")
+    assert r.returncode != 0
+    assert "probe_concurency" in r.stderr
+
+
+def test_globe_single_coordinate_fails_fast(tmp_path) -> None:
+    """本机坐标只填一个报错（无法定位本机）"""
+    r = _run_config(tmp_path, panel="[geoip]\nenabled = false\n[globe]\nself_lat = 31.23\n")
+    assert r.returncode != 0
+    assert "成对配置" in r.stderr
+
+
+def test_globe_coordinate_out_of_range_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, panel=(
+        "[geoip]\nenabled = false\n[globe]\nself_lat = 91.0\nself_lng = 0.0\n"))
+    assert r.returncode != 0
+    assert "self_lat 越界" in r.stderr
+
+
+def test_globe_empty_endpoints_fails_fast(tmp_path) -> None:
+    """DoH 端点表为空报错（无处发查询）"""
+    r = _run_config(tmp_path, panel="[geoip]\nenabled = false\n[globe]\ndoh_endpoints = []\n")
+    assert r.returncode != 0
+    assert "doh_endpoints" in r.stderr
+
+
+def test_globe_bad_endpoint_scheme_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, panel=(
+        "[geoip]\nenabled = false\n[globe]\ndoh_endpoints = [\"ftp://doh.example\"]\n"))
+    assert r.returncode != 0
+    assert "doh_endpoints" in r.stderr
+
+
+def test_globe_non_positive_value_fails_fast(tmp_path) -> None:
+    r = _run_config(tmp_path, panel="[geoip]\nenabled = false\n[globe]\nprobe_concurrency = 0\n")
+    assert r.returncode != 0
+    assert "probe_concurrency" in r.stderr
+
+
+def test_globe_section_in_other_file_fails_fast(tmp_path) -> None:
+    """[globe] 归属 panel.toml：写到 serve.toml 直接报错（防放错文件静默失效）"""
+    r = _run_config(tmp_path, enqueue_rules="[globe]\nenabled = false")
+    assert r.returncode != 0
+    assert "不属于本文件" in r.stderr
 
 
 if __name__ == "__main__":

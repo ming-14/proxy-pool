@@ -4,7 +4,7 @@
     pool.toml     [pool] [groups]             池策略与分组定义
     sources.toml  [fetch] [[sources]] [[fetch_filter]]   代理源、拉取调度与入池筛选规则
     serve.toml    [server]                    serve 端口/队列/心跳/链路门控/metrics
-    panel.toml    [geoip]                     面板功能（IP 归属地图）
+    panel.toml    [geoip] [globe]             面板功能（IP 归属地图 / 3D 地球与目标地区探测）
     ippure.toml   [ippure] [[plugins]] ...    IP 纯净度检查（插件节名由插件自声明）
     logging.toml  [logging]                   日志双通道级别分档 + 逐 logger 覆盖
     .env          密钥（KEY=VALUE，git 忽略）——加载时注入进程环境变量
@@ -90,7 +90,7 @@ _SECTION_OWNERSHIP: dict[str, set] = {
     "pool.toml": {"pool", "groups"},
     "sources.toml": {"fetch", "sources", "fetch_filter"},
     "serve.toml": {"server"},
-    "panel.toml": {"geoip"},
+    "panel.toml": {"geoip", "globe"},
     "ippure.toml": {"ippure", "plugins", "proxy_rules", _PLUGIN_SECTIONS},
     "logging.toml": {"logging"},
 }
@@ -423,3 +423,54 @@ _geoip_cfg = _toml.get("geoip", {})
 GEOIP_ENABLED = bool(_geoip_cfg.get("enabled", True))  # 地图/归属定位开关；false 时不加载 mmdb 定位器
 GEOIP_DB_FILE = str(_PROJECT_ROOT / _geoip_cfg.get("db_file", "vendor/geoip/GeoLite2-City.mmdb"))
 GEOIP_CACHE_TTL = int(_geoip_cfg.get("cache_ttl", 7776000))  # 默认 90 天
+
+# ---------------------------------------------------------------- 3D 地球与目标地区探测（panel.toml）
+# 依赖 geoip.enabled：地理库关闭时整个地球功能不可用（不构造用例、不注册端点）。
+# 探测数据源是 PproxyServer 的 (bind, host) 流量维度；DoH 端点顺序即回退顺序。
+_GLOBE_KEYS = {"enabled", "self_lat", "self_lng", "max_flows", "probe_concurrency",
+               "probe_timeout", "target_cache_ttl", "activation_window",
+               "probe_window", "prune_after", "doh_endpoints"}
+# 默认 DoH 端点：Cloudflare/Google 走国际出口，alidns 供国内出口兜底（国外端点可能被阻断）
+_DEFAULT_DOH_ENDPOINTS = (
+    "https://cloudflare-dns.com/dns-query",
+    "https://dns.google/resolve",
+    "https://223.5.5.5/resolve",
+)
+_globe_cfg = _toml.get("globe", {})
+_globe_unknown = set(_globe_cfg) - _GLOBE_KEYS
+if _globe_unknown:
+    raise ValueError(f"panel.toml [globe] 含未知键 {sorted(_globe_unknown)}（可选 {sorted(_GLOBE_KEYS)}）")
+
+GLOBE_ENABLED = bool(_globe_cfg.get("enabled", True))
+GLOBE_MAX_FLOWS = int(_globe_cfg.get("max_flows", 60))                    # 下发给地球的最大弧分组数
+GLOBE_PROBE_CONCURRENCY = int(_globe_cfg.get("probe_concurrency", 3))    # DoH 探测并发上限
+GLOBE_PROBE_TIMEOUT = float(_globe_cfg.get("probe_timeout", 8))          # 单次 DoH 超时秒
+GLOBE_TARGET_CACHE_TTL = float(_globe_cfg.get("target_cache_ttl", 86400))  # (代理,目标) 缓存有效期秒
+GLOBE_ACTIVATION_WINDOW = float(_globe_cfg.get("activation_window", 60))  # 面板活跃才探测的窗口秒
+GLOBE_PROBE_WINDOW = float(_globe_cfg.get("probe_window", 600))           # 窗口内有流量才作为候选秒
+GLOBE_PRUNE_AFTER = float(_globe_cfg.get("prune_after", 2592000))         # 缓存行清理阈值秒（30 天）
+GLOBE_DOH_ENDPOINTS: tuple[str, ...] = tuple(
+    str(endpoint).strip() for endpoint in _globe_cfg.get("doh_endpoints", _DEFAULT_DOH_ENDPOINTS)
+)
+
+# 本机坐标仅手填（不发起任何自动探测）；须成对配置，否则无法定位本机
+_self_lat, _self_lng = _globe_cfg.get("self_lat"), _globe_cfg.get("self_lng")
+if (_self_lat is None) != (_self_lng is None):
+    raise ValueError("panel.toml [globe] self_lat/self_lng 须成对配置（只填一个无法定位本机）")
+GLOBE_SELF_LAT: float | None = float(_self_lat) if _self_lat is not None else None
+GLOBE_SELF_LNG: float | None = float(_self_lng) if _self_lng is not None else None
+if GLOBE_SELF_LAT is not None and not -90 <= GLOBE_SELF_LAT <= 90:
+    raise ValueError(f"panel.toml [globe].self_lat 越界: {GLOBE_SELF_LAT}（应在 -90..90）")
+if GLOBE_SELF_LNG is not None and not -180 <= GLOBE_SELF_LNG <= 180:
+    raise ValueError(f"panel.toml [globe].self_lng 越界: {GLOBE_SELF_LNG}（应在 -180..180）")
+
+for _key, _value in (("max_flows", GLOBE_MAX_FLOWS), ("probe_concurrency", GLOBE_PROBE_CONCURRENCY),
+                     ("probe_timeout", GLOBE_PROBE_TIMEOUT), ("target_cache_ttl", GLOBE_TARGET_CACHE_TTL),
+                     ("activation_window", GLOBE_ACTIVATION_WINDOW), ("probe_window", GLOBE_PROBE_WINDOW),
+                     ("prune_after", GLOBE_PRUNE_AFTER)):
+    if _value <= 0:
+        raise ValueError(f"panel.toml [globe].{_key} 须为正数: {_value}")
+if not GLOBE_DOH_ENDPOINTS or any(not e.startswith(("http://", "https://")) for e in GLOBE_DOH_ENDPOINTS):
+    raise ValueError(
+        f"panel.toml [globe].doh_endpoints 须为非空 http(s) URL 列表: {GLOBE_DOH_ENDPOINTS!r}"
+    )

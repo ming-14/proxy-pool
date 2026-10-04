@@ -23,8 +23,8 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_http_client.py            # http_client 的 socks 路由（socks4/socks5 走 ProxyConnector 且 rdns=True，http/https 复用共享 session）+ get_json（解析/非 200/坏 JSON）
 │   ├── test_proxy_scheduler.py        # 异步调度器
 │   ├── test_proxy_scheme.py           # 出站协议描述表（engine_uri 上游 URI 映射 / verify_target 证书校验策略）
-│   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False/上游存活标记）
-│   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/ippure 缓存按源分区/旧表丢弃）
+│   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False/上游存活标记/（bind,host）pair 字节·EMA 速率·窗口清理·容量淘汰）
+│   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/ippure 缓存按源分区/target_geo 缓存（bind,host）批量读写与清理/旧表丢弃）
 │   ├── test_ua_generator.py           # 确定性 UA 生成
 │   ├── ippure/                        # 纯净度插件测试（mock requests，不打真实网络）
 │   │   ├── __init__.py
@@ -38,7 +38,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 ├── framework/                         # 框架层测试
 │   ├── __init__.py
 │   ├── test_cli.py                    # argparse 全命令 + setup_logging(debug) 透传
-│   ├── test_config.py                 # 配置加载（.env 注入与优先级/节归属与跨文件重名/ippure.toml 校验，子进程）
+│   ├── test_config.py                 # 配置加载（.env 注入与优先级/节归属与跨文件重名/ippure.toml 与 panel.toml [globe] 校验，子进程）
 │   ├── test_container.py              # 组合根降级（缺环境变量/未知源名/插件参数非法/缺 mmdb/web 门控）+ 链路门控配置校验（子进程）+ 惰性导入守卫（子进程）
 │   ├── test_logging.py                # logging.toml 双通道分档/逐 logger 覆盖
 │   ├── test_logbuffer.py              # 面板日志缓冲（环形裁剪/seq 游标/stack 采集/buffer_start）
