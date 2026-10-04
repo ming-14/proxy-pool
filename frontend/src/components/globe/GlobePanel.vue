@@ -217,8 +217,9 @@ onBeforeUnmount(() => {
     </div>
     <!-- 高度由 JS 常量驱动（与 globe.height()/RO 同一来源），避免模板里再写一份字面量 -->
     <div v-else ref="el" data-testid="globe-canvas" class="w-full" :style="{ height: `${CARD_HEIGHT_PX}px` }" />
-    <!-- 探测观测脚注：只显示计数（不含目标域名），用来评估穿免费代理的 DoH 成功率 -->
-    <div v-if="!failed" data-testid="globe-probe-stats" class="mt-2 text-xs text-[var(--color-t-muted)]">
+    <!-- 探测观测脚注：只显示计数（不含目标域名），用来评估穿免费代理的 DoH 成功率；
+         首帧数据到达前不占位（避免卡片多出一段空白） -->
+    <div v-if="probeText" data-testid="globe-probe-stats" class="mt-2 text-xs text-[var(--color-t-muted)]">
       {{ probeText }}
     </div>
     <div v-if="showSelfHint && !failed" class="mt-2 text-xs text-[var(--color-t-muted)]">

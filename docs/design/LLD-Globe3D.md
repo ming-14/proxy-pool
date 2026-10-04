@@ -323,7 +323,7 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 | `tests/interfaces/test_proxy_server.py`（增补） | modstat 写 pair last_seen/字节；采样后 EMA/瞬时速率正确；容量淘汰；过期清理；`active_pairs` 字段 |
 | `tests/interfaces/test_sqlite_store.py`（增补） | `target_geo_cache` upsert/批量读/主键分区/`prune_target_geo` |
 | `tests/interfaces/test_doh_resolver.py`（新增） | mock AsyncHttpGetter：端点顺序/首端点失败换下一个/JSON 解析（A 与 CNAME 混排）/非 200/坏 JSON/IDN |
-| `tests/use_cases/test_target_geo.py`（新增） | 激活窗口；TTL 命中不探测；失败退避与上限；并发信号量；IP 字面量/内网/单标签跳过；无 A 结果落盘；bind 缺失跳过；`aggregate_flows` 纯函数 |
+| `tests/use_cases/test_target_geo.py`（新增） | 激活窗口；TTL 命中不探测；失败退避与上限；并发信号量；IP 字面量/内网/单标签跳过；无 A 结果落盘；bind 缺失跳过；`aggregate_flows` 纯函数；`stats` 观测（成功/失败/退避/超批量 pending/未激活快照清零/IP 字面量不计入） |
 | `tests/framework/test_config.py`（增补） | `[globe]` 键校验（缺省、非法坐标、空端点表、节归属） |
 | `tests/framework/test_web_api.py`（增补） | `/api/globe` 响应形状；`globe_enabled`；touch 更新；geo/globe 关闭时 404 |
 | `tests/framework/test_serve.py`（增补） | probe 循环任务取消路径（如可拆） |
