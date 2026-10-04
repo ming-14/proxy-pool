@@ -4,7 +4,7 @@
  * 数据全部来自 statusStore（2s 轮询 + 历史增量），图表 option 为纯 computed——
  * 旧版增量渲染状态机与 innerHTML 重建补丁全部移除。
  */
-import { computed } from 'vue';
+import { computed, defineAsyncComponent } from 'vue';
 import ChartBox from '@/components/charts/ChartBox.vue';
 import GeoMap from '@/components/charts/GeoMap.vue';
 import { lineChartOption } from '@/components/charts/chartOptions';
@@ -13,6 +13,9 @@ import { useStatusStore } from '@/stores/status';
 import { fmtBytesSpaced, fmtTime } from '@/utils/format';
 import { diffRates, matchPrevAvg } from '@/utils/series';
 import type { TrafficHistoryPoint } from '@/types/api';
+
+// 3D 地球：异步组件（globe.gl/three 链在卡片进入视口后才由组件内动态加载）
+const GlobePanel = defineAsyncComponent(() => import('@/components/globe/GlobePanel.vue'));
 
 const store = useStatusStore();
 const theme = useLineTheme();
@@ -183,6 +186,9 @@ const trafficKpi = computed(() => {
 
     <!-- IP 分布地图（geoip.enabled=false 时后端不下发 geo_enabled，区块隐藏） -->
     <GeoMap v-if="status.geo_enabled" />
+
+    <!-- 3D 地球（globe/geoip 关闭时后端不注册 /api/globe，区块隐藏） -->
+    <GlobePanel v-if="status.globe_enabled" />
   </template>
   </div>
 </template>

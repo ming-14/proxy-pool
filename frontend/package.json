@@ -15,6 +15,7 @@
   "dependencies": {
     "@tanstack/vue-virtual": "^3.13.37",
     "echarts": "^6.1.0",
+    "globe.gl": "^2.46.2",
     "pinia": "^4.0.3",
     "vue": "^3.5.42",
     "vue-router": "^4.6.4"

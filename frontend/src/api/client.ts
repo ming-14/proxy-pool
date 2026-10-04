@@ -4,6 +4,7 @@
  */
 import type {
   GeoMapData,
+  GlobeData,
   GroupDetail,
   LogsResponse,
   SettingsPatch,
@@ -115,6 +116,9 @@ export const api = {
   purity: (bind: string) => post<Record<string, unknown>>('/api/proxy/purity', { bind }),
 
   geoMap: () => request<GeoMapData>('/api/geo/map'),
+
+  /** 3D 地球数据（节点 + 目标弧）；每次请求即刷新后端探测激活窗口 */
+  globe: () => request<GlobeData>('/api/globe'),
 
   logs: (since?: number) =>
     request<LogsResponse>(`/api/logs${since ? `?since=${encodeURIComponent(since)}` : ''}`),

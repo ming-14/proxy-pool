@@ -149,6 +149,7 @@ export interface StatusSnapshot {
   groups: Record<string, GroupStat>;
   available_count: number;
   geo_enabled: boolean;
+  globe_enabled: boolean;  // 3D 地球可用（geoip + [globe].enabled 均开启）；前端据此隐藏地球卡片
   purity_source: PuritySource | null;  // 纯净度检查源（前端据此隐藏检查按钮并标注来源）
   standby: StandbyEntry[];
   standby_count: number;
@@ -192,6 +193,52 @@ export interface GeoInfo {
   country_code: string;
   province: string | null;
   city: string | null;
+}
+
+/** GET /api/globe 代理节点归属（含经纬度，地球亮点定位用；未解析出为 null） */
+export interface GlobeGeo {
+  country: string;
+  country_code: string;
+  province: string | null;
+  city: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+/** GET /api/globe 代理节点（地球亮点；速率取自 PproxyServer 的 pair 聚合） */
+export interface GlobeNode {
+  bind: string;
+  geo: GlobeGeo | null;
+  latency: number | null;
+  consecutive_fails: number;
+  pinned: boolean;
+  locked: boolean;
+  up_rate: number;   // 聚合 EMA 速率（B/s，弧线宽）
+  down_rate: number;
+  up_inst: number;   // 瞬时速率（B/s，光点流速）
+  down_inst: number;
+}
+
+/** GET /api/globe 目标弧（代理 → 目标城市；lat/lng 必有，无坐标的行不上弧） */
+export interface GlobeFlow {
+  bind: string;
+  country: string | null;
+  country_code: string | null;
+  city: string | null;
+  lat: number;
+  lng: number;
+  up_rate: number;
+  down_rate: number;
+  up_inst: number;
+  down_inst: number;
+  hosts: string[];
+}
+
+/** GET /api/globe（globe_enabled=false 时该路由不存在） */
+export interface GlobeData {
+  self: { lat: number; lng: number } | null;  // panel.toml [globe] 手填坐标；null=未配置
+  nodes: GlobeNode[];
+  flows: GlobeFlow[];
 }
 
 export interface GroupProxyEntry {

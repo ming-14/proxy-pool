@@ -84,7 +84,7 @@ proxy-pool/
 │   ├── probe/                     # LogPanel 探针应用（固定种子合成日志源 + window.__probe 驱动器，只读组件 DOM）
 │   ├── index.html                 # 入口模板（主题防闪屏内联脚本）
 │   ├── public/world.json          # 地图数据源文件
-│   ├── tests/unit/                # Vitest 单测（format/merge/csv/series/status-store/standby-series/useLogPanel/logpanel-filter/logpanel-format/logpanel-defaults/logpanel-sheet/chart-options/menu-position）
+│   ├── tests/unit/                # Vitest 单测（format/merge/csv/series/status-store/standby-series/useLogPanel/logpanel-filter/logpanel-format/logpanel-follow/logpanel-defaults/logpanel-sheet/chart-options/menu-position/prune/cache-prune/request-timeout/run-action/usePurity/useSpeedTest/onmounted-listener-scope/watch-scope/globe-data 共 23 个文件，均为纯逻辑）
 │   └── src/
 │       ├── main.ts                # 应用装配（pinia/router/轮询启动）
 │       ├── App.vue                # 壳：侧边栏（含底部控制台日志按钮）+ 顶栏（暂停/连接态/主题）+ 路由视图 + Toast
@@ -95,7 +95,7 @@ proxy-pool/
 │       ├── utils/                 # 纯函数：format / csv / merge（顺序冻结）/ series（降采样·速率差分·共享时间窗口·sparkline 坐标）/ menuPosition（右键菜单屏内摆放：夹取 + 子菜单翻边）
 │       ├── composables/           # useRowSelection（框选）/ usePurity（纯净度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+面板可见与页面前台双节流+主题联动）
 │       ├── vendor/logpanel/       # 日志视窗组件（vendored Vue 3 + TS，可整体复用到其它 Vue 3 项目）：默认值/契约类型 + LogPanel 外壳（悬浮窗/底部抽屉双形态）+ parts（TitleBar/ToolBar/SidePanel/LogLine/VirtualList/ToastStack/IconSvg）+ composables（useLogView 视图状态机、useWindowGeometry 悬浮窗几何、useSheetDetent 抽屉档位、useViewport 布局/可视视口度量、useMediaQuery、useToasts）+ utils（filter/format/tagColor/storage/clipboard/icons/sheet）；样式 scoped + --lp-* 变量，虚拟列表用 @tanstack/vue-virtual
-│       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
+│       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、globe（GlobePanel 3D 地球 + globeData 数据纯函数）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
 │       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
 ├── desktop/                       # 桌面封装（Electron + 内嵌 Python 3.11；构建产物不入库，见 desktop/.gitignore）
@@ -127,7 +127,7 @@ proxy-pool/
 │   ├── pproxy/                    # pproxy 代理库（fork 自 pproxy 2.7.9，本地维护: sslwrap 静默 / sslcontexts 弱引用 / modstat 传 roption / SOCKS5 认证应答与 UDP ASSOCIATE / SOCKS5 未实现 CMD 回 0x07 / SOCKS4 应答推迟与失败应答与 4a 双向 / HTTP 404 / WebSocket 握手修复 / 通道空闲回收改会话双向静默（修复流式长连接被单向 60s 读超时误杀）/ 无上游不回退直连（direct_fallback） 等内化进源码；proxy_server.py 通过 sys.path 导入）
 │   └── pspeed/                    # 代理测速工具（TCP/IP/下载/上传带宽，JSON 输出；api.py 通过 sys.path 导入 probe_one）
 ├── logs/                          # 日志目录（毫秒时间戳命名：proxy-pool-{YYYYMMDD-HHMMSS-mmm}.log）
-└── .cache.db                      # 代理池状态持久化 SQLite 数据库（WAL 模式，proxies + source_paused + group_meta）
+└── .cache.db                      # 代理池状态持久化 SQLite 数据库（WAL 模式，proxies + source_paused + group_meta + ip_geo / ippure / target_geo 缓存）
 ```
 
 > 说明：项目采用干净架构四层（洋葱模型），依赖只能从外层指向内层。组合根 `src/framework/container.py` 是唯一组装点，构造 `ProxyPool` → 从 `.cache.db` 恢复状态 → 组装各用例 → 暴露给 CLI。

@@ -1,6 +1,6 @@
 # LLD：3D 地球（globe.gl）与目标服务器地区探测
 
-> 状态：设计定稿（决策已与用户对齐）· 待实现
+> 状态：阶段 0~3 已实现（后端探测链路 + 前端地球）；阶段 4 文档已同步，真实环境验收待人工完成
 > 关联：`src/interfaces/proxy_server.py`、`src/framework/serve.py`、`src/framework/web/api.py`、`frontend/src/pages/DashboardPage.vue`
 
 ## 0. 决策记录（已与用户对齐）
@@ -262,6 +262,23 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 | 弧 2：代理→目标 | flows 分组 | 线宽 ∝ 分组 EMA；dash 流速 ∝ 瞬时；tooltip=城市+hosts+速率 |
 | 目标点 | flows 坐标 | 小圆点（可并入弧终点渲染；不额外画标签层） |
 
+### 4.4 实现注记（已落地）
+
+- **文件落点**：`frontend/src/components/globe/globeData.ts`（纯函数 + 视觉常量，Vitest 直测）、
+  `frontend/src/components/globe/GlobePanel.vue`（渲染/可见性/主题/降级）、
+  `frontend/src/types/api.ts`（`GlobeData`/`GlobeNode`/`GlobeFlow`/`GlobeGeo`，`StatusSnapshot.globe_enabled`）、
+  `frontend/src/api/client.ts`（`api.globe()`）、`frontend/src/pages/DashboardPage.vue`（`defineAsyncComponent` + `v-if="status.globe_enabled"` 挂到 GeoMap 之后）。
+- **映射常量**：`MIN_STROKE=0.15`/`MAX_STROKE=0.9`（对数归一分母取画面内最大速率）、
+  `DASH_TIME_SLOW_MS=12000`/`DASH_TIME_FAST_MS=800`、`DASH_RATE_REF=1_000_000`（流速参考固定，
+  不随画面最大值漂移）、`ARC_DOT_STYLE={dashLength:0.02, dashGap:0.96}`。
+- **弧组装**：`buildProxyArcs` 无 `self` 返回空（整层隐藏）；`buildTargetArcs` 以节点 `bind → 坐标`
+  关联起点，bind 已离队/坐标缺失不产弧——即第二段弧只画「队列内代理 → 其目标城市」。
+- **激活链路**：滚动进入视口才 `import('globe.gl')` + 拉 `world.json`（模块级 Promise 缓存），
+  同时开始 5s 轮询 `/api/globe`；不可见或 `document.hidden` 时 `pauseAnimation()` + 停轮询，
+  于是停止 touch、后端探测随之休眠（D4 的整条链路闭合）。
+- **实测构建体积**：`globe.gl` chunk 1,931.90 kB（gzip 547.56）独立 chunk，
+  DashboardPage 621.38 kB，主 chunk 187.08 kB——`WebGLRenderer` 只在 globe chunk 中，主 chunk 不含 three。
+
 ## 5. 错误处理与边界
 
 | 场景 | 处理 |
@@ -317,6 +334,10 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 - `npm run test`、`npm run build`（vue-tsc）必须通过。
 - 浏览器实测：点/弧渲染、动画速度与粗细随流量变化、切页暂停、主题切换、无 console 错误。
 
+> 实现注记（已落地）：`globe-data.test.ts` 覆盖速率映射单调性/上下界/非法值、`withAlpha` 解析与
+> 回退、空数据与缺坐标容错、两段弧组装（含“只为会画的弧归一”）、dash 样式；`npm run test`
+> （226 项）与 `npm run build` 均通过。**浏览器实测（真实代理 + 实际流量）尚未执行**，见阶段 4。
+
 ## 8. 分阶段计划
 
 ### 阶段 0：调研与定稿（本文档）✅
@@ -324,41 +345,43 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 - 产出：本 LLD + 决策记录。
 - 验收：四项决策已由用户确认；globe.gl/DoH/sqlite/tests 集成点全部核对完毕。
 
-### 阶段 1：流量维度与存储（后端基座）
+### 阶段 1：流量维度与存储（后端基座）✅
 
 - 任务：PproxyServer per-pair 计数/速率/清理；`target_geo_cache` 表与 store 方法；`TargetGeoStore` 端口；config `[globe]` 解析与校验。
-- 验收：新增单测全绿；既有 `pytest` 全绿（per-proxy 流量/队列行为无回归）。
-- 验证：`python -m pytest tests/interfaces/test_proxy_server.py tests/interfaces/test_sqlite_store.py tests/framework/test_config.py`。
+- 验收：新增单测全绿；既有 `pytest` 全绿（per-proxy 流量/队列行为无回归）。✅
+- 验证：`python -m pytest tests/interfaces/test_proxy_server.py tests/interfaces/test_sqlite_store.py tests/framework/test_config.py`。✅
 
-### 阶段 2：探测链路与 API
+### 阶段 2：探测链路与 API ✅
 
 - 任务：`AsyncHttpGetter.get_json` 抽取；`DohResolver`；`TargetGeoUseCase`；serve `target_probe_loop` 接线；`PanelContext.target_geo`；`/api/globe` + `globe_enabled`；e2e mock DoH。
-- 验收：单测 + e2e 绿；未激活时不产生探测；激活后 mock DoH 结果出现在 `/api/globe`。
-- 验证：`python -m pytest tests/` 全量。
+- 验收：单测 + e2e 绿；未激活时不产生探测；激活后 mock DoH 结果出现在 `/api/globe`。✅
+- 验证：`python -m pytest tests/` 全量（主链 923 passed / 1 skipped，浏览器 e2e 跳过）。✅
 
-### 阶段 3：前端地球
+### 阶段 3：前端地球 ✅（浏览器实测待阶段 4）
 
 - 任务：安装 globe.gl；`globeData.ts` 纯函数 + 单测；`GlobePanel.vue`（懒加载/可见性暂停/RO/降级）；types + client；DashboardPage 挂载；`npm run build`。
-- 验收：`npm run test`/`npm run build` 通过；浏览器实测点、两层弧、动画与粗细随流量变化、切页与后台暂停；主 chunk 不含 three。
+- 验收：`npm run test`/`npm run build` 通过（226 项）✅；主 chunk 不含 three ✅（§4.4 实测体积）；浏览器实测点、两层弧、动画与粗细随流量变化、切页与后台暂停 ⏳。
 - 验证：`cd frontend && npm run test && npm run build` + 手动浏览器检查（真实 serve 或 mock）。
 
-### 阶段 4：验收与文档
+### 阶段 4：验收与文档 ⏳
 
 - 任务：真实环境验收（真实代理 + 实际流量 + 手填坐标）；README/docs/architecture/docs/filestree/src/GUIDE.md 同步（含测试树）；清理隐私说明（缓存清理方式）。
-- 验收：文档检查单全勾；全量 `pytest` + 前端 test/build 通过；真实链路观察到目标弧。
+- 验收：文档检查单全勾 ✅；全量 `pytest` + 前端 test/build 通过 ✅；真实链路观察到目标弧 ⏳（需人工，见 §10 头号风险）。
 - 验证：`python -m pytest -v`、`cd frontend && npm run test && npm run build`。
+
+未去做的可选顶：Playwright 地球卡片断言（§7.2 标注为可选；当前本地约定不跑浏览器 e2e）。
 
 工作量粗估：阶段 1 ≈ 0.5~1 人日，阶段 2 ≈ 1.5~2 人日，阶段 3 ≈ 1.5~2 人日，阶段 4 ≈ 0.5~1 人日。
 
 ## 9. 文档与产物同步清单
 
-- [ ] `README.md`（功能段落 + 依赖/配置说明）
-- [ ] `docs/architecture.md`（新增「3D 地球与目标地区探测」一节：modstat pair 维度、探测队列、缓存表）
-- [ ] `docs/cli.md`（若 serve/配置说明受影响则同步）
-- [ ] `docs/filestree.md`（新增文件：`use_cases/target_geo.py`、`interfaces/doh_resolver.py`、前端 globe 组件等）
-- [ ] `src/GUIDE.md`（测试树补新测试文件）
-- [ ] `docs/design/LLD-Globe3D.md`（本文档，实现过程中按需修订）
-- [ ] `frontend/` 构建产物（`npm run build` 后 `static/` 更新；不入库）
+- [x] `README.md`（功能段落 + 依赖/配置说明）
+- [x] `docs/architecture.md`（新增「3D 地球与目标地区探测」一节：modstat pair 维度、探测队列、缓存表 + 隐私边界与清理方式）
+- [x] `docs/cli.md`（若 serve/配置说明受影响则同步）
+- [x] `docs/filestree.md`（新增文件：`use_cases/target_geo.py`、`interfaces/doh_resolver.py`、前端 globe 组件等）
+- [x] `src/GUIDE.md`（测试树补新测试文件；前端单测不在 Python 树内，故不列入）
+- [x] `docs/design/LLD-Globe3D.md`（本文档，实现过程中按需修订）
+- [x] `frontend/` 构建产物（`npm run build` 后 `static/` 更新；不入库）
 
 ## 10. 风险与待实测项
 
@@ -368,5 +391,6 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 | `world.json` polygons 渲染性能（~250 多边形） | 地球初始化/帧率 | 实现时实测；备选（hexPolygons / 仅经纬网 + 点弧）；必要时裁剪分辨率 |
 | three 与 Vite/vue-tsc 构建兼容 | 构建失败 | 阶段 3 第一步先 `npm install + build` 空跑验证 |
 | Playwright headless WebGL 不可用 | e2e 断言方式 | e2e 只断言卡片/canvas 或降级文案存在，不依赖渲染结果 |
-| 目标域名落盘隐私 | 本机浏览目标暴露给能读 `.cache.db` 的进程 | TTL + 30 天清理；面板默认仅 127.0.0.1；README 提示 |
+| 目标域名落盘隐私 | 本机浏览目标暴露给能读 `.cache.db` 的进程 | TTL + 30 天清理；面板监听址可在 `[web].host` 收紧（默认 `0.0.0.0`）；README/architecture 写清关闭与清理方式（`[globe].enabled=false` 停探测；删除 `target_geo_cache` 表内容） |
+| 真实代理的 DoH 成功率与渲染观感 | 目标弧数量/可读性 | 待阶段 4 人工验收；失败退避保证不拖慢其余功能 |
 | 激活窗口内大量新 pair 突发 | 探测排队 | 每轮限 `concurrency*2`、按最近活跃优先、容量封顶 |
