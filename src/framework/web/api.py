@@ -408,10 +408,11 @@ _ZERO_RATES = {"up_rate": 0.0, "down_rate": 0.0, "up_inst": 0.0, "down_inst": 0.
 
 
 async def _globe(request: web.Request) -> web.Response:
-    """3D 地球数据：本机坐标 + 代理节点（含速率/归属）+ 目标弧（探测缓存聚合）
+    """3D 地球数据：本机坐标 + 代理节点（含速率/归属）+ 目标弧（探测缓存聚合）+ 探测统计
 
     touch() 刷新探测激活窗口——只有面板真正在看地球时后端才发起 DoH 探测。
-    nodes 覆盖服务队列全部成员（含锁定代理）；flows 只统计队列内 bind 的活跃 pair。
+    nodes 覆盖服务队列全部成员（含锁定代理）；flows 只统计队列内 bind 的活跃 pair；
+    stats 只有计数（成功/失败/退避/最近一轮候选），不含 host。
     """
     ctx = request.app[_PANEL_KEY]
     ctx.target_geo.touch()
@@ -443,7 +444,8 @@ async def _globe(request: web.Request) -> web.Response:
         })
     flows = ctx.target_geo.build_flows(
         [pair for pair in pairs if pair["bind"] in queue_binds], config.GLOBE_MAX_FLOWS)
-    return web.json_response({"self": _self_point(), "nodes": nodes, "flows": flows})
+    return web.json_response({"self": _self_point(), "nodes": nodes, "flows": flows,
+                              "stats": ctx.target_geo.stats(now)})
 
 
 async def _group(request: web.Request) -> web.Response:

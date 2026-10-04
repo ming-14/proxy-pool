@@ -268,6 +268,9 @@ class TargetGeoE2E(unittest.TestCase):
                                      (TARGET_GEO["lat"], TARGET_GEO["lng"]))
                     self.assertEqual([n["bind"] for n in payload["nodes"]],
                                      [f"127.0.0.1:{mock_port}"])
+                    stats = payload["stats"]
+                    self.assertTrue(stats["active"], "有 /api/globe 请求即处于激活窗口")
+                    self.assertGreaterEqual(stats["probe_ok"], 1, "穿代理 DoH 应至少成功一次")
             finally:
                 await close_server(upstream)
 

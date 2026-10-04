@@ -9,12 +9,13 @@ import {
   buildPoints,
   buildProxyArcs,
   buildTargetArcs,
+  formatProbeStats,
   rateToDashTime,
   rateToStroke,
   withAlpha,
   type GlobePalette,
 } from '@/components/globe/globeData';
-import type { GlobeData, GlobeFlow, GlobeNode } from '@/types/api';
+import type { GlobeData, GlobeFlow, GlobeNode, GlobeStats } from '@/types/api';
 
 const PALETTE: GlobePalette = {
   self: '#06b6d4',
@@ -57,8 +58,22 @@ function flow(overrides: Partial<GlobeFlow> = {}): GlobeFlow {
   };
 }
 
+function stats(overrides: Partial<GlobeStats> = {}): GlobeStats {
+  return {
+    active: true,
+    probe_ok: 0,
+    probe_fail: 0,
+    backoff: 0,
+    candidates: 0,
+    probed: 0,
+    pending: 0,
+    cycle_ts: 0,
+    ...overrides,
+  };
+}
+
 function data(overrides: Partial<GlobeData> = {}): GlobeData {
-  return { self: null, nodes: [], flows: [], ...overrides };
+  return { self: null, nodes: [], flows: [], stats: stats(), ...overrides };
 }
 
 describe('rateToStroke', () => {
@@ -122,6 +137,25 @@ describe('withAlpha', () => {
   it('不可解析的颜色原样返回（不产非法值）', () => {
     expect(withAlpha('rgb(1, 2, 3)', 0.5)).toBe('rgb(1, 2, 3)');
     expect(withAlpha('', 0.5)).toBe('');
+  });
+});
+
+describe('formatProbeStats', () => {
+  it('还没有探测结果时给出无结果文案', () => {
+    expect(formatProbeStats(stats())).toBe('DoH 探测：尚无结果');
+  });
+
+  it('成功/失败与取整后的成功率', () => {
+    expect(formatProbeStats(stats({ probe_ok: 3, probe_fail: 1 })))
+      .toBe('DoH 探测：成功 3 · 失败 1（成功率 75%）');
+    expect(formatProbeStats(stats({ probe_ok: 1, probe_fail: 2 })))
+      .toBe('DoH 探测：成功 1 · 失败 2（成功率 33%）');
+  });
+
+  it('退避中与待探测只在非零时附上', () => {
+    expect(formatProbeStats(stats({ probe_ok: 2 }))).toBe('DoH 探测：成功 2 · 失败 0（成功率 100%）');
+    expect(formatProbeStats(stats({ probe_ok: 2, backoff: 4, pending: 3 })))
+      .toBe('DoH 探测：成功 2 · 失败 0（成功率 100%） · 退避中 4 · 待探测 3');
   });
 });
 

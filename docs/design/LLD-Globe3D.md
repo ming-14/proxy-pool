@@ -215,14 +215,18 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
   - `self`: `{lat, lng}` 或 `null`（来自配置）。
   - `nodes`: 队列行每行 → geo（含经纬度，`ctx.geo.resolve`，缓存毫秒级）+ `latency/pinned/locked/consecutive_fails` + 该 bind 的聚合速率（`server.active_pairs` 按 bind 求和）。
   - `flows`: `ctx.server.active_pairs(now - METRICS_WINDOW)` ∩ 当前队列 bind，批量读 `target_geo_cache`，`aggregate_flows(...)` top N。
-  - `probed_pairs` / `pending_pairs`: 观测用计数（可选，便于排查）。
+  - `stats`: 探测观测计数——`{active, probe_ok, probe_fail, backoff, candidates, probed,
+    pending, cycle_ts}`（只有计数，不含 host；用于评估穿免费代理的 DoH 成功率）。
 - `/api/status` 增加 `globe_enabled`（前端据此显示/隐藏卡片，复用 `geo_enabled` 模式）。
 - 响应体量控制：nodes ≤ 队列上限（~30），flows ≤ `max_flows`（60），单次 < 20KB。
 
 > 实现注记（已落地）：flows 组装经 `TargetGeoUseCase.build_flows(pairs, max_flows)`
 > （批量读缓存 + 读失败降级：读失败只丢本帧目标弧，不把整个地球请求打成 500）；
 > nodes 的归属字段带经纬度（`_geo_point`，地图/归属路由的 `_geo_payload` 故意不带）；
-> `probed_pairs` / `pending_pairs` 为可选项，暂未实现。
+> 观测计数已落地为 `TargetGeoUseCase.stats(now)`：`probe_ok/probe_fail` 为进程内累计的
+> DoH 结果（IP 字面量直接定位不计入），`backoff` 为此刻仍在退避中的 pair 数，
+> `candidates/probed/pending/cycle_ts` 为最近一轮快照（未激活时计数清零），
+> 前端由 `formatProbeStats` 渲染成卡片脚注。
 
 ## 4. 前端设计
 
@@ -261,6 +265,7 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 | 弧 1：本机→代理 | 每节点聚合速率 | 线宽 ∝ 聚合 EMA；dash 流速 ∝ 瞬时；无本机坐标时整层隐藏 |
 | 弧 2：代理→目标 | flows 分组 | 线宽 ∝ 分组 EMA；dash 流速 ∝ 瞬时；tooltip=城市+hosts+速率 |
 | 目标点 | flows 坐标 | 小圆点（可并入弧终点渲染；不额外画标签层） |
+| 卡片脚注 | `stats` 探测计数 | DoH 成功/失败与取整成功率；退避中/待探测仅在非零时附上 |
 
 ### 4.4 实现注记（已落地）
 
@@ -387,7 +392,7 @@ doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/res
 
 | 风险 | 影响 | 缓解/验证 |
 |---|---|---|
-| 免费代理 DoH 成功率低（死代理/被墙端点） | 目标弧出现慢或缺 | 三端点回退（含国内 alidns）；失败退避；不影响其余功能；实现后统计成功率 |
+| 免费代理 DoH 成功率低（死代理/被墙端点） | 目标弧出现慢或缺 | 三端点回退（含国内 alidns）；失败退避；不影响其余功能；地球卡片脚注已给出成功率统计口径（`/api/globe` 的 `stats`） |
 | `world.json` polygons 渲染性能（~250 多边形） | 地球初始化/帧率 | 实现时实测；备选（hexPolygons / 仅经纬网 + 点弧）；必要时裁剪分辨率 |
 | three 与 Vite/vue-tsc 构建兼容 | 构建失败 | 阶段 3 第一步先 `npm install + build` 空跑验证 |
 | Playwright headless WebGL 不可用 | e2e 断言方式 | e2e 只断言卡片/canvas 或降级文案存在，不依赖渲染结果 |

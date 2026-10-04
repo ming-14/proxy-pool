@@ -234,11 +234,24 @@ export interface GlobeFlow {
   hosts: string[];
 }
 
+/** GET /api/globe 探测观测：只有计数、不含目标域名（评估穿代理 DoH 成功率用） */
+export interface GlobeStats {
+  active: boolean;    // 最近 activation_window 秒内有 /api/globe 请求（有请求才探测）
+  probe_ok: number;   // 进程内累计 DoH 成功（含无 A 记录的负结果）
+  probe_fail: number; // 累计 DoH 失败（IP 字面量直接定位不计入）
+  backoff: number;    // 此刻仍在失败退避中的 (代理, 目标) 对
+  candidates: number; // 最近一轮候选 pair 数
+  probed: number;     // 最近一轮发起的探测数
+  pending: number;    // 最近一轮想做但没排上的 pair 数（下轮继续）
+  cycle_ts: number;   // 最近一轮探测循环时刻（秒；0 = 尚未跑过）
+}
+
 /** GET /api/globe（globe_enabled=false 时该路由不存在） */
 export interface GlobeData {
   self: { lat: number; lng: number } | null;  // panel.toml [globe] 手填坐标；null=未配置
   nodes: GlobeNode[];
   flows: GlobeFlow[];
+  stats: GlobeStats;
 }
 
 export interface GroupProxyEntry {

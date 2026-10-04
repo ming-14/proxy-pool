@@ -16,6 +16,7 @@ import {
   buildPoints,
   buildProxyArcs,
   buildTargetArcs,
+  formatProbeStats,
   type GlobePalette,
 } from './globeData';
 import type { GlobeData } from '@/types/api';
@@ -44,6 +45,7 @@ const el = ref<HTMLElement | null>(null);
 const failed = ref(false);
 const ready = ref(false);
 const statsText = ref('');
+const probeText = ref('');
 const showSelfHint = ref(false);
 
 let world: GlobeInstance | null = null;
@@ -85,6 +87,7 @@ function applySurfaceColors(): void {
 function applyData(data: GlobeData): void {
   lastData = data;
   statsText.value = `代理节点 ${data.nodes.length} · 目标弧 ${data.flows.length}`;
+  probeText.value = formatProbeStats(data.stats);
   showSelfHint.value = data.self === null;
   if (!world) return;
   world
@@ -214,6 +217,10 @@ onBeforeUnmount(() => {
     </div>
     <!-- 高度由 JS 常量驱动（与 globe.height()/RO 同一来源），避免模板里再写一份字面量 -->
     <div v-else ref="el" data-testid="globe-canvas" class="w-full" :style="{ height: `${CARD_HEIGHT_PX}px` }" />
+    <!-- 探测观测脚注：只显示计数（不含目标域名），用来评估穿免费代理的 DoH 成功率 -->
+    <div v-if="!failed" data-testid="globe-probe-stats" class="mt-2 text-xs text-[var(--color-t-muted)]">
+      {{ probeText }}
+    </div>
     <div v-if="showSelfHint && !failed" class="mt-2 text-xs text-[var(--color-t-muted)]">
       未配置本机坐标：在 config/panel.toml 的 [globe] 填 self_lat / self_lng 后显示「本机 → 代理」飞线
     </div>

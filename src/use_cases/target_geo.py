@@ -10,7 +10,9 @@ DoH 解析（HostResolver，DNS 查询从代理出口发出）→ GeoLite2 定�
 - 失败退避：pair 级内存指数退避（60s 起，封顶 15min），成功清零；
 - 并发：Semaphore 限制 probe_concurrency，每轮最多 probe_concurrency * 2 个（最近活跃优先）；
 - 跳过：内网/保留地址、单标签主机名、.local 后缀不探测不落盘；IP 字面量跳过 DoH
-  直接定位（无解析语义）。
+  直接定位（无解析语义）；
+- 观测：/api/globe 附带 stats()（累计 DoH 成功/失败、退避中 pair 数、最近一轮候选/
+  发起/待探测计数）——只有计数，不带 host，评估探测成功率不额外暴露浏览目标。
 
 并发模型：probe_cycle 全部在事件循环单线程内执行；store 的批量读/写在 gather 前后
 同步完成（SQLite 连接线程绑定），并发任务只做网络与内存操作。
@@ -95,6 +97,10 @@ class TargetGeoUseCase:
         # pair → (下次可尝试时刻, 下次失败后的退避秒数)；成功后删除
         self._backoff: dict[tuple[str, str], tuple[float, float]] = {}
         self._last_prune = 0.0
+        # 观测计数：DoH 探测结果累计（IP 字面量直接定位不计）+ 最近一轮候选快照
+        self._probe_ok = 0
+        self._probe_fail = 0
+        self._last_cycle = {"candidates": 0, "probed": 0, "pending": 0, "cycle_ts": 0.0}
 
     # ------------------------------------------------------------------ 激活
     def touch(self) -> None:
@@ -113,10 +119,14 @@ class TargetGeoUseCase:
         只丢本次持久化、不中断循环（同 IpGeoUseCase 的三步降级口径）。
         """
         now = time.time()
+        self._last_cycle["cycle_ts"] = now
         if not self.is_active():
+            # 未激活时清掉本轮快照，避免面板显示上一轮遗留的待探测数
+            self._last_cycle.update(candidates=0, probed=0, pending=0)
             return 0
         self._housekeeping(now)
         candidates = self._pick_candidates(now)
+        self._last_cycle.update(candidates=len(candidates), probed=0, pending=0)
         if not candidates:
             return 0
         keys = [(pair["bind"], pair["host"]) for pair in candidates]
@@ -135,6 +145,7 @@ class TargetGeoUseCase:
         # 最近活跃优先；每轮只发 limit 个，避免一次请求洪峰后的突发新 pair 撞满代理
         due.sort(key=lambda pair: pair["last_seen"], reverse=True)
         batch = due[:self._probe_concurrency * 2]
+        self._last_cycle.update(probed=len(batch), pending=len(due) - len(batch))
         semaphore = asyncio.Semaphore(self._probe_concurrency)
         results = await asyncio.gather(*(self._probe_pair(pair, semaphore, now) for pair in batch))
         rows = {key: row for key, row in results if row is not None}
@@ -183,9 +194,12 @@ class TargetGeoUseCase:
                     logger.debug("跳过非法主机名: %s (%s) err=%s", host, bind, exc)
                     return key, None
                 except Exception as exc:
+                    self._probe_fail += 1
                     self._note_failure(key, now)
                     logger.debug("目标 DNS 探测失败: %s (%s) err=%s", host, bind, exc)
                     return key, None
+                # DoH 查询本身成功（含无 A 记录的负结果）；IP 字面量不走这里，不计入
+                self._probe_ok += 1
                 if not addresses:
                     # 解析成功但无 A 记录：负结果照常落盘，TTL 内不重探
                     self._note_success(key)
@@ -215,6 +229,23 @@ class TargetGeoUseCase:
                     "lng": entry.get("lng"),
                 }
         return {"ip": addresses[0]}
+
+    # ------------------------------------------------------------------ 观测
+    def stats(self, now: float | None = None) -> dict:
+        """探测观测快照（/api/globe 下发；只有计数，不含 host）
+
+        probe_ok/probe_fail 为进程内累计的 DoH 探测结果（IP 字面量直接定位不计）；
+        backoff 为此刻仍在退避等待中的 pair 数；candidates/probed/pending 为最近一轮
+        候选、本轮发起与"想做但未排上"的数量；cycle_ts 为最近一轮探测循环时刻。
+        """
+        now = time.time() if now is None else now
+        return {
+            "active": self.is_active(),
+            "probe_ok": self._probe_ok,
+            "probe_fail": self._probe_fail,
+            "backoff": sum(1 for next_ts, _ in self._backoff.values() if next_ts > now),
+            **self._last_cycle,
+        }
 
     # ------------------------------------------------------------------ 退避与清理
     def _note_failure(self, key: tuple[str, str], now: float) -> None:

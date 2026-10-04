@@ -338,6 +338,60 @@ class TestProbeCycle(unittest.TestCase):
         self.assertEqual(len(store.pruned), 1, "清理失败只记日志，不影响循环")
 
 
+class TestStats(unittest.TestCase):
+    """探测观测：累计成功/失败、退避计数与最近一轮快照（/api/globe 下发，不含 host）"""
+
+    def test_inactive_snapshot_is_zeroed(self):
+        uc, *_ = _use_case(pairs=[_pair("example.com")])
+        st = uc.stats()
+        self.assertFalse(st["active"])
+        self.assertEqual((st["probe_ok"], st["probe_fail"], st["backoff"]), (0, 0, 0))
+        self.assertEqual((st["candidates"], st["probed"], st["pending"]), (0, 0, 0))
+
+    def test_success_and_failure_counters_with_backoff(self):
+        resolver = FakeResolver({"bad.example": RuntimeError("dns down")})
+        uc, *_ = _use_case(pairs=[_pair("ok.example"), _pair("bad.example")], resolver=resolver)
+        uc.touch()
+        self.assertEqual(asyncio.run(uc.probe_cycle()), 2)
+        st = uc.stats()
+        self.assertTrue(st["active"])
+        self.assertEqual((st["probe_ok"], st["probe_fail"]), (1, 1))
+        self.assertEqual(st["backoff"], 1)
+        self.assertEqual((st["candidates"], st["probed"], st["pending"]), (2, 2, 0))
+        self.assertGreater(st["cycle_ts"], 0)
+
+    def test_ip_literal_probe_not_counted_as_doh(self):
+        """IP 字面量直接定位不算 DoH 探测（成功率分母只含真的 DoH 查询）"""
+        geo = FakeGeo({"8.8.8.8": _US_GEO})
+        uc, *_ = _use_case(pairs=[_pair("8.8.8.8")], geo=geo)
+        uc.touch()
+        self.assertEqual(asyncio.run(uc.probe_cycle()), 1)
+        st = uc.stats()
+        self.assertEqual((st["probe_ok"], st["probe_fail"]), (0, 0))
+        self.assertEqual(st["probed"], 1)
+
+    def test_pending_counts_due_beyond_batch_cap(self):
+        now = time.time()
+        pairs = [_pair(f"h{i}.example", last_seen=now + i) for i in range(5)]
+        uc, *_ = _use_case(pairs=pairs, concurrency=1)  # 每轮上限 concurrency*2 = 2
+        uc.touch()
+        self.assertEqual(asyncio.run(uc.probe_cycle()), 2)
+        st = uc.stats()
+        self.assertEqual((st["candidates"], st["probed"], st["pending"]), (5, 2, 3))
+
+    def test_snapshot_resets_but_counters_keep_when_inactive(self):
+        uc, *_ = _use_case(pairs=[_pair("example.com")], activation_window=10.0)
+        uc.touch()
+        asyncio.run(uc.probe_cycle())
+        future = time.time() + 999
+        with patch("src.use_cases.target_geo.time.time", return_value=future):
+            self.assertFalse(uc.stats()["active"])
+            self.assertEqual(uc.stats()["probe_ok"], 1)   # 累计计数保留
+            asyncio.run(uc.probe_cycle())                  # 未激活的一轮：清掉本轮快照
+            st = uc.stats()
+        self.assertEqual((st["candidates"], st["probed"], st["pending"]), (0, 0, 0))
+
+
 class TestAggregateFlows(unittest.TestCase):
     """纯函数聚合：(bind, 城市) 分组、hosts 排序截断、无坐标不产弧、top N 截断"""
 

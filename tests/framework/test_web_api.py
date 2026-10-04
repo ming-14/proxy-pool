@@ -1225,6 +1225,8 @@ class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
         self.target_geo = MagicMock()
         self.target_geo.build_flows = MagicMock(
             return_value=[{"bind": "1.2.3.4:8080", "city": "Ashburn"}])
+        self.target_geo.stats = MagicMock(
+            return_value={"active": True, "probe_ok": 3, "probe_fail": 1})
         self.ctx, _, _, self.server = make_ctx(self.pool, target_geo=self.target_geo)
         self.ctx.geo.result["1.2.3.4"] = _GLOBE_US_GEO
         self.server.active_pairs = MagicMock(return_value=[
@@ -1264,6 +1266,8 @@ class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
         assert idle["locked"] is False and idle["geo"] is None
         assert (idle["up_rate"], idle["down_rate"]) == (0.0, 0.0)  # 无流量代理速率全 0
         assert data["flows"] == [{"bind": "1.2.3.4:8080", "city": "Ashburn"}]
+        assert data["stats"]["probe_ok"] == 3  # 探测观测随同一帧下发
+        self.target_geo.stats.assert_called_once()
         # flows 只统计队列内 bind（9.9.9.9:1 不在队列，不参与聚合）
         passed_pairs, max_flows = self.target_geo.build_flows.call_args.args
         assert [p["bind"] for p in passed_pairs] == ["1.2.3.4:8080"]
