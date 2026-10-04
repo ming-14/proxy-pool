@@ -110,6 +110,7 @@ class PproxyServer:
         self._pair_upload: dict[tuple[str, str], int] = {}
         self._pair_download: dict[tuple[str, str], int] = {}
         self._pair_rate_ema: dict[tuple[str, str], tuple[float, float]] = {}
+        self._pair_rate_inst: dict[tuple[str, str], tuple[float, float]] = {}
         self._pair_prev: dict[tuple[str, str], tuple[int, int]] = {}
         self._pair_sample_ts: float | None = None
 
@@ -263,7 +264,7 @@ class PproxyServer:
             self._evict_pairs()
 
     def _evict_pairs(self) -> None:
-        """超容量时按 last_seen 最旧批量淘汰（五个 dict 同步删，不清 per-proxy 累计）"""
+        """超容量时按 last_seen 最旧批量淘汰（六个 dict 同步删，不清 per-proxy 累计）"""
         over = len(self._pair_last_seen) - _MAX_PAIRS
         count = min(len(self._pair_last_seen), over + _PAIR_EVICT_BATCH)
         victims = sorted(self._pair_last_seen, key=self._pair_last_seen.get)[:count]
@@ -277,6 +278,7 @@ class PproxyServer:
         self._pair_upload.pop(key, None)
         self._pair_download.pop(key, None)
         self._pair_rate_ema.pop(key, None)
+        self._pair_rate_inst.pop(key, None)
         self._pair_prev.pop(key, None)
 
     def _add_upload(self, bind: str, host: str, n: int) -> None:
@@ -315,9 +317,10 @@ class PproxyServer:
                 ema_up + _PAIR_RATE_EMA_ALPHA * (rate_up - ema_up),
                 ema_down + _PAIR_RATE_EMA_ALPHA * (rate_down - ema_down),
             )
+            self._pair_rate_inst[key] = (rate_up, rate_down)
             self._pair_prev[key] = (up, down)
         self._pair_sample_ts = now
-        # pair 过期清理：last_seen 超出留存窗口即删（连带四个附属 dict）
+        # pair 过期清理：last_seen 超出留存窗口即删（连带五个附属 dict）
         cutoff = now - self._metrics_window
         stale = [key for key, ts in self._pair_last_seen.items() if ts < cutoff]
         for key in stale:
@@ -362,14 +365,16 @@ class PproxyServer:
     def active_pairs(self, since_ts: float) -> list[dict]:
         """窗口内活跃的 (bind, host) 列表（last_seen ≥ since_ts），供目标地区探测与 /api/globe
 
-        返回 [{bind, host, up, down, up_rate, down_rate, last_seen}]，速率为 EMA（B/s），
-        无序（排序/筛选由消费方按需处理）。仅内存实时数据，重启清零。
+        返回 [{bind, host, up, down, up_rate, down_rate, up_inst, down_inst, last_seen}]：
+        up_rate/down_rate 为 EMA（防抖，线宽用），up_inst/down_inst 为最近一个采样窗口的
+        瞬时速率（B/s，流速用）；无序（排序/筛选由消费方按需处理）。仅内存实时，重启清零。
         """
         out: list[dict] = []
         for key, last_seen in self._pair_last_seen.items():
             if last_seen < since_ts:
                 continue
             ema_up, ema_down = self._pair_rate_ema.get(key, (0.0, 0.0))
+            inst_up, inst_down = self._pair_rate_inst.get(key, (0.0, 0.0))
             out.append({
                 "bind": key[0],
                 "host": key[1],
@@ -377,6 +382,8 @@ class PproxyServer:
                 "down": self._pair_download.get(key, 0),
                 "up_rate": ema_up,
                 "down_rate": ema_down,
+                "up_inst": inst_up,
+                "down_inst": inst_down,
                 "last_seen": last_seen,
             })
         return out

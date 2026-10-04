@@ -80,14 +80,15 @@ GlobePanel.vue（懒加载）→ globe.gl：点 + 两层弧（细/粗、快/慢�
 _MAX_PAIRS = 2000                                     # pair 容量上限，防浏览产生无限 key
 _pair_last_seen: dict[tuple[str, str], float]         # (bind, host) → 最近一次会话建立时间（modstat 时写入）
 _pair_upload / _pair_download: dict[tuple[str, str], int]   # 累计字节
-_pair_rate_ema: dict[tuple[str, str], tuple[float, float]]  # (up_rate, down_rate) EMA，采样时更新
+_pair_rate_ema: dict[tuple[str, str], tuple[float, float]]  # (up_rate, down_rate) EMA，线宽用
+_pair_rate_inst: dict[tuple[str, str], tuple[float, float]] # 最近一个采样窗口的瞬时速率，流速用
 _pair_prev: dict[tuple[str, str], tuple[int, int]]    # 上次采样累计值（算瞬时差分）
 ```
 
 - `_make_modstat` 内：每次会话开始 `_note_target(bind, host)`；按方向的 lambda 改为 `_add_upload(bind, host, n)` / `_add_download(bind, host, n)`。
 - `sample_traffic()`（每 2s 已存在）扩展：对每个 pair 差分 → 瞬时速率与 EMA（α=0.3）；清理 `last_seen` 超过 `metrics_window` 的 pair（连带三个 dict）。
 - host 归一化：小写、去首尾空白/结尾点；空串跳过。
-- 新增访问器 `active_pairs(since_ts)` → `[{bind, host, up, down, up_rate, down_rate, last_seen}]`（供探测候选与 /api/globe）。
+- 新增访问器 `active_pairs(since_ts)` → `[{bind, host, up, down, up_rate, down_rate, up_inst, down_inst, last_seen}]`（供探测候选与 /api/globe；EMA 用于线宽，瞬时用于流速）。
 - 容量控制：超 `_MAX_PAIRS` 时按 `last_seen` 最旧淘汰（三个 dict 同步删）。
 
 ### 3.2 SQLite：`target_geo_cache` 表（interfaces/sqlite_store.py）
@@ -140,7 +141,7 @@ class TargetGeoStore(Protocol):
 ```python
 class TargetGeoUseCase:
     def __init__(self, *, server, store, resolver, geo, proxy_lookup,
-                 max_flows, probe_concurrency, probe_timeout, cache_ttl,
+                 probe_concurrency, cache_ttl,
                  activation_window, probe_window, prune_after): ...
 
     # 激活
@@ -154,6 +155,11 @@ class TargetGeoUseCase:
     @staticmethod
     def aggregate_flows(pairs, target_rows, max_flows) -> list[dict]
 ```
+
+> 实现注记：`probe_timeout` 由 DohResolver 构造持有（HostResolver 接口不含超时参数）；
+> `max_flows` 是 `aggregate_flows` 的参数（API 从 `config.GLOBE_MAX_FLOWS` 传入），
+> 均不进用例构造器。`probe_cycle` 的跳过判定放在候选过滤阶段——跳过项不占每轮
+> `probe_concurrency * 2` 的探测名额。
 
 `probe_cycle` 流程：
 

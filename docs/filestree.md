@@ -34,7 +34,8 @@ proxy-pool/
 │   │   ├── request_with_retry.py  # 带重试换代理的请求
 │   │   ├── check_proxies.py       # 并发测试代理（证书校验策略经组合根注入 proxy_scheme.verify_target）
 │   │   ├── network_gate.py        # 本地链路门控（链路可用性判定；只缓存失败结论，成功结论每次真实探测）
-│   │   └── standby.py             # 代理服务队列维护（fill 补入/心跳/退避补测，含链路门控 + per-proxy 延时历史）
+│   │   ├── standby.py             # 代理服务队列维护（fill 补入/心跳/退避补测，含链路门控 + per-proxy 延时历史）
+│   │   └── target_geo.py          # 目标地区探测（激活窗口 + 缓存 TTL + pair 级退避 + 限并发穿代理 DoH；IP 字面量/内网名跳过；聚合「代理→目标城市」弧）
 │   ├── interfaces/                # 接口适配器层：实现 domain 端口
 │   │   ├── __init__.py
 │   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert；ip_geo/ippure/target_geo 缓存）

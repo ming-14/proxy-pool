@@ -389,6 +389,9 @@ class TestPairTraffic(unittest.TestCase):
         self.assertEqual((pair["up"], pair["down"]), (300, 210))
         self.assertAlmostEqual(pair["up_rate"], 0.3 * 200 / 2)
         self.assertAlmostEqual(pair["down_rate"], 0.3 * 210 / 2)
+        # 瞬时速率：最近一个采样窗口的差分（线宽用 EMA，流速用瞬时）
+        self.assertAlmostEqual(pair["up_inst"], 200 / 2)
+        self.assertAlmostEqual(pair["down_inst"], 210 / 2)
 
     def test_stale_pairs_cleaned_with_window(self):
         """last_seen 超出 metrics_window 的 pair 连五个 dict 一起清，不留孤儿"""
@@ -405,10 +408,11 @@ class TestPairTraffic(unittest.TestCase):
         self.assertEqual(server._pair_upload, {})
         self.assertEqual(server._pair_download, {})
         self.assertEqual(server._pair_rate_ema, {})
+        self.assertEqual(server._pair_rate_inst, {})
         self.assertEqual(server._pair_prev, {})
 
     def test_capacity_evicts_oldest_pairs(self):
-        """超 _MAX_PAIRS 时按 last_seen 批量淘汰最旧，五个 dict 同步"""
+        """超 _MAX_PAIRS 时按 last_seen 批量淘汰最旧，六个 dict 同步"""
         with patch("src.interfaces.proxy_server._MAX_PAIRS", 3), \
              patch("src.interfaces.proxy_server._PAIR_EVICT_BATCH", 1):
             for i, ts in enumerate((100.0, 200.0, 300.0, 400.0)):

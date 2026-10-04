@@ -15,6 +15,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_ip_geo.py                 # IP 归属三步编排与聚合
 │   ├── test_network_gate.py           # 本地链路门控（状态码/多目标/失败结论缓存/成功不缓存/并发共享）
 │   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化/超容量程
+│   ├── test_target_geo.py             # 目标地区探测（激活窗口/缓存 TTL/失败退避与上限/并发信号量/跳过规则/聚合纯函数，假端口不打网络）
 │   └── test_use_cases.py              # fetch/get/record/request_with_retry/check_proxies
 ├── interfaces/                        # 接口适配器测试
 │   ├── __init__.py
