@@ -25,7 +25,7 @@ proxy-pool/
 │   │   ├── models.py              # 值对象：SourceSpec/FpwConfig、normalize_proxy/to_proxy_dict
 │   │   ├── purity.py              # 纯净度契约：UsageType 枚举、插件元数据/注入配置、ProxyRule + resolve_proxy、normalize_result
 │   │   ├── source_filter.py       # 入池筛选规则：FilterRule + match_rule（正则命中完整代理 URL 即拉黑，纯匹配无 IO）
-│   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/TaskScheduler/IpPurityChecker/PurityCacheStore
+│   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/HostResolver/TaskScheduler/IpPurityChecker/PurityCacheStore/GeoLocator/GeoCacheStore/ProxySpeedTester
 │   ├── use_cases/                 # 用例层：应用业务逻辑，构造注入
 │   │   ├── __init__.py
 │   │   ├── fetch_proxies.py       # 拉取用例（三阶段：拉取/去重入组/去重率暂停）
@@ -38,7 +38,8 @@ proxy-pool/
 │   ├── interfaces/                # 接口适配器层：实现 domain 端口
 │   │   ├── __init__.py
 │   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert）
-│   │   ├── http_client.py         # HttpGetter（requests，函数级惰性导入，不校验证书 + 多 IP 重试）+ AsyncHttpGetter（aiohttp，心跳/门控高频路径；socks4/socks5 走 ProxyConnector）
+│   │   ├── http_client.py         # HttpGetter（requests，函数级惰性导入，不校验证书 + 多 IP 重试）+ AsyncHttpGetter（aiohttp，心跳/门控高频路径；socks4/socks5 走 ProxyConnector；get_json 供 DoH 等 JSON 接口）
+│   │   ├── doh_resolver.py        # DohResolver（HostResolver 端口实现：穿代理 DoH JSON 查 A 记录，端点顺序回退/IDN/证书策略复用 proxy_scheme；失败退避在用例层）
 │   │   ├── scheduler.py           # ProxyScheduler 异步调度器（asyncio）
 │   │   ├── proxy_server.py        # PproxyServer（rserver 动态同步 + rc 调度 + 上游存活标记（心跳判定→pproxy alive）+ 绝不直连（direct_fallback=False，无上游回错误）+ 全局/per-proxy 流量计数 + per-proxy 流量历史）
 │   │   ├── proxy_scheme.py        # 出站协议机制描述表（engine_uri 上游 URI 映射 / needs_socks_connector 探测客户端选择 / verify_target 证书校验策略；协议知识的唯一归属）

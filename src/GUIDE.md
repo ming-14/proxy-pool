@@ -18,8 +18,9 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   └── test_use_cases.py              # fetch/get/record/request_with_retry/check_proxies
 ├── interfaces/                        # 接口适配器测试
 │   ├── __init__.py
+│   ├── test_doh_resolver.py           # DohResolver（端点顺序回退/正负结果解析/IDN punycode/证书策略，假 getter 不打网络）
 │   ├── test_geoip_client.py           # GeoLite2Locator City/Country 自动识别（真实 mmdb）
-│   ├── test_http_client.py            # http_client 的 socks 路由（socks4/socks5 走 ProxyConnector 且 rdns=True，http/https 复用共享 session）
+│   ├── test_http_client.py            # http_client 的 socks 路由（socks4/socks5 走 ProxyConnector 且 rdns=True，http/https 复用共享 session）+ get_json（解析/非 200/坏 JSON）
 │   ├── test_proxy_scheduler.py        # 异步调度器
 │   ├── test_proxy_scheme.py           # 出站协议描述表（engine_uri 上游 URI 映射 / verify_target 证书校验策略）
 │   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False/上游存活标记）

@@ -68,6 +68,18 @@ class HttpGetter(Protocol):
     ) -> Any: ...
 
 
+class HostResolver(Protocol):
+    """域名解析端口：穿指定代理做远端 DNS 查询（返回 A 记录）
+
+    实现方须从代理出口发出查询（如 DoH）——同一域名在不同出口的解析落点
+    可能不同（CDN 就近调度），本机直连解析的结果不代表代理视角。
+    失败抛异常；返回空列表表示**查询成功但无 A 记录**（调用方可据此落盘
+    "已探测无结果"并缓存，避免反复重探）。
+    """
+
+    async def resolve(self, host: str, *, proxy: str) -> list[str]: ...
+
+
 class TaskScheduler(Protocol):
     """并发任务调度器端口（CheckProxiesUseCase 只用到 run）"""
 

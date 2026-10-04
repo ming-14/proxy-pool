@@ -19,10 +19,11 @@ AsyncHttpGetter：原生 aiohttp async 客户端，SSL 在事件循环管理（�
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
 from src.interfaces.proxy_scheme import needs_socks_connector
@@ -171,6 +172,33 @@ class AsyncHttpGetter:
             proxy:  代理 URL 字符串（"http://..." / "socks4://..." / "socks5://..."），None 直连
             verify: 是否校验 SSL 证书
         """
+        status, _ = await self._request(url, timeout=timeout, headers=headers,
+                                        proxy=proxy, verify=verify)
+        return _AsyncResponse(status)
+
+    async def get_json(self, url: str, *, timeout: float, headers: dict | None = None,
+                       proxy: str | None = None, verify: bool = False) -> Any:
+        """async GET 并解析 JSON 响应体（DoH 等 JSON 接口用）
+
+        非 200 与非法 JSON 都抛异常（含 url），由调用方按端点回退处理；
+        本方法不重试（是否重试/换端点属调用方决策）。
+        """
+        status, body = await self._request(url, timeout=timeout, headers=headers,
+                                           proxy=proxy, verify=verify, read_body=True)
+        if status != 200:
+            raise RuntimeError(f"GET {url} 返回 HTTP {status}")
+        try:
+            return json.loads(body or "")
+        except ValueError as exc:
+            raise ValueError(f"GET {url} 响应体不是合法 JSON: {exc}") from exc
+
+    async def _request(self, url: str, *, timeout: float, headers: dict | None,
+                       proxy: str | None, verify: bool,
+                       read_body: bool = False) -> tuple[int, str | None]:
+        """执行 GET 并（可选）读取响应体文本——get 与 get_json 的公共链路
+
+        read_body=True 时在响应上下文内读完文本（临时 socks session 关闭后无法再读）。
+        """
         # aiohttp ssl 语义：True=校验证书, False=不校验, None=默认校验(=True)。
         # verify=False 时须传 ssl=False（None 仍校验，免费代理自签证书会握手失败）。
         ssl_ctx = bool(verify)
@@ -186,13 +214,15 @@ class AsyncHttpGetter:
             connector = ProxyConnector.from_url(proxy, rdns=True)
             async with aiohttp.ClientSession(connector=connector, timeout=aio_timeout) as sess:
                 async with sess.get(url, headers=hdrs, ssl=ssl_ctx) as resp:
-                    return _AsyncResponse(resp.status)
+                    body = await resp.text() if read_body else None
+                    return resp.status, body
         else:
             # http/https 代理或直连：复用共享 session
             sess = await self._get_session()
             async with sess.get(url, headers=hdrs, proxy=proxy, ssl=ssl_ctx,
                                 timeout=aio_timeout) as resp:
-                return _AsyncResponse(resp.status)
+                body = await resp.text() if read_body else None
+                return resp.status, body
 
     async def close(self) -> None:
         """关闭共享 session（serve 退出时调用）"""
