@@ -2,6 +2,10 @@
 
 > 状态：阶段 0~3 已实现（后端探测链路 + 前端地球）；阶段 4 文档已同步，真实环境验收待人工完成
 > 关联：`src/interfaces/proxy_server.py`、`src/framework/serve.py`、`src/framework/web/api.py`、`frontend/src/pages/DashboardPage.vue`
+> **后续变更**：流量统计已从 `PproxyServer` 整体迁到
+> `src/use_cases/traffic_stats.py::TrafficStatsUseCase`（见 `LLD-TrafficStats.md`）——
+> 本文中 `PproxyServer.sample_traffic` / `PproxyServer.active_pairs` / `_pair_*` 等描述
+> 均为迁移前的形态，现由 `TrafficStatsUseCase` 提供同名能力。
 
 ## 0. 决策记录（已与用户对齐）
 

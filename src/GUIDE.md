@@ -16,6 +16,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_network_gate.py           # 本地链路门控（状态码/多目标/失败结论缓存/成功不缓存/并发共享）
 │   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化/超容量程
 │   ├── test_target_geo.py             # 目标地区探测（激活窗口/缓存 TTL/失败退避与上限/并发信号量/跳过规则/聚合纯函数/build_flows 缓存读失败降级/stats 观测计数与快照清零，假端口不打网络）
+│   ├── test_traffic_stats.py          # 流量统计（三维计数与采样速率/EMA、pair 容量淘汰与窗口清理、连接级计数含钳零与归零即删、历史条目增量累加与 IP 变动分条、落盘节流/写失败保留/保留期清理）
 │   └── test_use_cases.py              # fetch/get/record/request_with_retry/check_proxies
 ├── interfaces/                        # 接口适配器测试
 │   ├── __init__.py
@@ -24,7 +25,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_http_client.py            # http_client 的 socks 路由（socks4/socks5 走 ProxyConnector 且 rdns=True，http/https 复用共享 session）+ get_json（解析/非 200/坏 JSON）
 │   ├── test_proxy_scheduler.py        # 异步调度器
 │   ├── test_proxy_scheme.py           # 出站协议描述表（engine_uri 上游 URI 映射 / verify_target 证书校验策略）
-│   ├── test_proxy_server.py           # PproxyServer（流量计数/历史/上游同步/绝不直连 direct_fallback=False/上游存活标记/（bind,host）pair 字节·EMA 速率·窗口清理·容量淘汰）
+│   ├── test_proxy_server.py           # PproxyServer（上游同步/绝不直连 direct_fallback=False/上游存活标记/modstat 字节与连接事件的转发契约——统计口径已迁往 use_cases）
 │   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/ippure 缓存按源分区/target_geo 缓存（bind,host）批量读写与清理/旧表丢弃）
 │   ├── test_ua_generator.py           # 确定性 UA 生成
 │   ├── ippure/                        # 纯净度插件测试（mock requests，不打真实网络）
@@ -46,10 +47,11 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_loop.py                   # run_coro 跨循环桥接
 │   ├── test_view.py                   # view.py 数据层（缓存读取/行构建）
 │   ├── test_serve.py                  # serve 主循环辅助逻辑（补测任务表同步：先回收已结束任务再补启动；探测候选 bind→代理反查 _proxy_lookup）
-│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/3D 地球（/api/globe 组装与关闭态 404、globe_enabled）/日志增量与清空/静态资源（/globe/{name} 贴图白名单））
+│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/3D 地球（/api/globe 组装与关闭态 404、globe_enabled）/流量统计（/api/traffic/live|history|summary）/日志增量与清空/静态资源（/globe/{name} 贴图白名单））
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
 │   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手，响应体可自定义以区分多上游）
+│   ├── server_factory.py              # 测试用 PproxyServer 工厂（注入真实流量统计用例 + 空历史存储，serve e2e 共用）
 │   ├── test_serve_e2e.py              # serve 全链路（pproxy 启动→转发→心跳移除→sync→上游空时拒绝且不直连→不可用上游不被选中）
 │   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→失败代理随 sync 下发为 unhealthy→优雅退出）
 │   ├── test_target_geo_e2e.py         # 目标地区探测（mock DoH → 经代理流量 → /api/globe 出目标弧；无 /api/globe 请求时不探测落盘）

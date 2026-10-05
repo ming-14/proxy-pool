@@ -14,6 +14,9 @@ import type {
   StandbySeries,
   StatusHistory,
   StatusSnapshot,
+  TrafficHistoryResponse,
+  TrafficLiveResponse,
+  TrafficSummary,
 } from '@/types/api';
 
 export class ApiError extends Error {
@@ -119,6 +122,15 @@ export const api = {
 
   /** 3D 地球数据（节点 + 目标弧）；每次请求即刷新后端探测激活窗口 */
   globe: () => request<GlobeData>('/api/globe'),
+
+  /** 实时流量：此刻仍开着的连接（连接级口径，按「代理, 域名」汇总） */
+  trafficLive: () => request<TrafficLiveResponse>('/api/traffic/live'),
+
+  /** 历史流量条目（按流量总计降序，条数上限由后端配置决定） */
+  trafficHistory: () => request<TrafficHistoryResponse>('/api/traffic/history'),
+
+  /** 流量统计摘要（活跃连接数 / 历史条目数 / 全局累计字节） */
+  trafficSummary: () => request<TrafficSummary>('/api/traffic/summary'),
 
   logs: (since?: number) =>
     request<LogsResponse>(`/api/logs${since ? `?since=${encodeURIComponent(since)}` : ''}`),

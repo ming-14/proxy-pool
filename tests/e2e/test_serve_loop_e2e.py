@@ -24,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 logging.disable(logging.WARNING)
 
 from src.domain.proxy_pool import ProxyPool
-from src.interfaces.proxy_server import PproxyServer
 from src.use_cases.enqueue_filter import EnqueueFilterUseCase
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.framework import config
@@ -32,6 +31,7 @@ from src.framework.serve import _run
 from src.use_cases.standby import StandbyQueueUseCase
 
 from tests.e2e.mock_upstream import MOCK_BODY, start_mock_upstream
+from tests.e2e.server_factory import make_server
 
 
 async def close_server(srv):
@@ -107,10 +107,9 @@ class _FakeCheck:
 
 
 class _FakeServer:
-    """serve._run 内的 PproxyServer 替身：记录 sync 调用与 sample_traffic 时刻（monotonic）"""
+    """serve._run 内的 PproxyServer 替身：记录 sync 调用"""
 
     def __init__(self, *args, **kwargs):
-        self.sample_ts: list[float] = []
         self.sync_calls: list[tuple] = []  # 每次 sync 的 (proxies, unhealthy)
 
     def sync(self, proxies, unhealthy=()):
@@ -119,10 +118,20 @@ class _FakeServer:
     async def start(self, proxies):
         pass
 
-    def sample_traffic(self):
+    async def close(self):
+        pass
+
+
+class _FakeTraffic:
+    """serve._run 内的 TrafficStatsUseCase 替身：记录采样时刻（monotonic）"""
+
+    def __init__(self, *args, **kwargs):
+        self.sample_ts: list[float] = []
+
+    def sample(self, now):
         self.sample_ts.append(time.monotonic())
 
-    async def close(self):
+    def flush(self, now, *, force=False):
         pass
 
 
@@ -170,7 +179,7 @@ class TestServeMainLoop(unittest.TestCase):
             record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
             check = _FakeCheck([good])
 
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start([])
 
             # 1. 补入：good 入代理服务队列，死代理拉黑
@@ -226,7 +235,6 @@ class TestServeMainLoop(unittest.TestCase):
             pool.add_to_group("default-http", "http://127.0.0.1:8080")
             record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
             check = _FakeCheck(["http://127.0.0.1:8080"])
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
 
             c = make_standby(pool, record, check)
             task = asyncio.create_task(
@@ -253,8 +261,10 @@ class TestServeMainLoop(unittest.TestCase):
             record = RecordProxyUseCase(pool=pool, standby_group=config.STANDBY_GROUP)
             standby = make_standby(pool, record, _FakeCheck([good]))
             fake_server = _FakeServer()
+            fake_traffic = _FakeTraffic()
 
-            with patch("src.framework.serve.PproxyServer", return_value=fake_server):
+            with patch("src.framework.serve.PproxyServer", return_value=fake_server), \
+                 patch("src.framework.serve.TrafficStatsUseCase", return_value=fake_traffic):
                 c = make_min_container(pool, standby)
                 task = asyncio.create_task(
                     _run(c, interval=2, probe_url="http://probe.local", allowed_types={"http"},
@@ -273,7 +283,7 @@ class TestServeMainLoop(unittest.TestCase):
                 # 干净退出：采样循环在 cancel 时正常终止（CancelledError 传播，无其它异常）
                 self.assertTrue(task.cancelled(), "serve._run 应被取消干净退出")
 
-            after = [t for t in fake_server.sample_ts if t >= lock_ts]
+            after = [t for t in fake_traffic.sample_ts if t >= lock_ts]
             self.assertGreaterEqual(len(after), 2, "锁定期间流量采样应持续产生点")
             gaps = [b - a for a, b in zip(after, after[1:])]
             self.assertTrue(all(g < 5.0 for g in gaps), f"锁定期间采样间隔应 ~2s，实际 {gaps}")
@@ -301,8 +311,10 @@ class TestUpstreamHealthWiring(unittest.TestCase):
             check = _FakeCheck([good, flaky])   # 先都存活 → 两个都入队
             standby = make_standby(pool, record, check)
             fake_server = _FakeServer()
+            fake_traffic = _FakeTraffic()
 
-            with patch("src.framework.serve.PproxyServer", return_value=fake_server):
+            with patch("src.framework.serve.PproxyServer", return_value=fake_server), \
+                 patch("src.framework.serve.TrafficStatsUseCase", return_value=fake_traffic):
                 c = make_min_container(pool, standby)
                 task = asyncio.create_task(
                     _run(c, interval=0.2, probe_url="http://probe.local", allowed_types={"http"},

@@ -4,7 +4,7 @@
     pool.toml     [pool] [groups]             池策略与分组定义
     sources.toml  [fetch] [[sources]] [[fetch_filter]]   代理源、拉取调度与入池筛选规则
     serve.toml    [server]                    serve 端口/队列/心跳/链路门控/metrics
-    panel.toml    [geoip] [globe]             面板功能（IP 归属地图 / 3D 地球与目标地区探测）
+    panel.toml    [geoip] [globe] [traffic]   面板功能（IP 归属地图 / 3D 地球 / 流量统计）
     ippure.toml   [ippure] [[plugins]] ...    IP 纯净度检查（插件节名由插件自声明）
     logging.toml  [logging]                   日志双通道级别分档 + 逐 logger 覆盖
     .env          密钥（KEY=VALUE，git 忽略）——加载时注入进程环境变量
@@ -90,7 +90,7 @@ _SECTION_OWNERSHIP: dict[str, set] = {
     "pool.toml": {"pool", "groups"},
     "sources.toml": {"fetch", "sources", "fetch_filter"},
     "serve.toml": {"server"},
-    "panel.toml": {"geoip", "globe"},
+    "panel.toml": {"geoip", "globe", "traffic"},
     "ippure.toml": {"ippure", "plugins", "proxy_rules", _PLUGIN_SECTIONS},
     "logging.toml": {"logging"},
 }
@@ -474,3 +474,22 @@ if not GLOBE_DOH_ENDPOINTS or any(not e.startswith(("http://", "https://")) for 
     raise ValueError(
         f"panel.toml [globe].doh_endpoints 须为非空 http(s) URL 列表: {GLOBE_DOH_ENDPOINTS!r}"
     )
+
+# ---------------------------------------------------------------- 流量统计（panel.toml）
+# 历史流量条目的保留期/落盘节流/下发上限；统计口径与内存窗口见 serve.toml 的 [server].metrics_window
+_TRAFFIC_KEYS = {"history_limit", "flush_interval", "retention"}
+_traffic_cfg = _toml.get("traffic", {})
+_traffic_unknown = set(_traffic_cfg) - _TRAFFIC_KEYS
+if _traffic_unknown:
+    raise ValueError(
+        f"panel.toml [traffic] 含未知键 {sorted(_traffic_unknown)}（可选 {sorted(_TRAFFIC_KEYS)}）"
+    )
+
+TRAFFIC_HISTORY_LIMIT = int(_traffic_cfg.get("history_limit", 500))       # 历史条目下发上限（按流量降序取）
+TRAFFIC_FLUSH_INTERVAL = float(_traffic_cfg.get("flush_interval", 15))    # 历史条目落盘节流秒
+TRAFFIC_RETENTION = float(_traffic_cfg.get("retention", 2592000))         # 历史条目保留期秒（超过即删）
+for _key, _value in (("history_limit", TRAFFIC_HISTORY_LIMIT),
+                     ("flush_interval", TRAFFIC_FLUSH_INTERVAL),
+                     ("retention", TRAFFIC_RETENTION)):
+    if _value <= 0:
+        raise ValueError(f"panel.toml [traffic].{_key} 须为正数: {_value}")

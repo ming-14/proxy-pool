@@ -26,3 +26,10 @@ activation_window = 60         # 最近多少秒内有 /api/globe 请求才探�
 probe_window = 600             # 窗口内有流量的 pair 才作为探测候选
 prune_after = 2592000          # 缓存行清理阈值秒（30 天未刷新即删，目标域名不留长期痕迹）
 doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/resolve", "https://223.5.5.5/resolve"]  # 顺序即回退顺序
+
+# ---------------------------------------------------------------- 流量统计
+# 历史流量条目（按「代理-域名-IP」分区，IP 变动即新条目）；全局/按代理的实时计数不落盘。
+[traffic]
+history_limit = 500            # 历史条目下发上限（按流量总计降序取前 N 条）
+flush_interval = 15            # 历史条目落盘节流秒（越小越实时，写库越频繁）
+retention = 2592000            # 历史条目保留期秒（30 天无活动即删，防表无限增长）

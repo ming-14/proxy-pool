@@ -43,7 +43,7 @@ from src.framework.web.api import build_app, PanelContext, _do_fetch
 from src.framework.web.panel_state import PanelTasks
 from src.framework import logbuffer
 from src.use_cases.standby import ProxyLatencySample
-from src.interfaces.proxy_server import TrafficSample
+from src.use_cases.traffic_stats import TrafficSample
 
 
 def make_pool():
@@ -181,10 +181,16 @@ def make_ctx(pool, target_geo=None):
     server = MagicMock()
     server.sync = MagicMock()
     server.set_salgorithm = AsyncMock()
-    server.traffic_history = MagicMock(return_value=[])
-    server.traffic_total = MagicMock(return_value=(0, 0))
-    server.per_proxy_traffic_history = MagicMock(return_value=[])
-    server.active_pairs = MagicMock(return_value=[])
+    # 流量统计已迁出 PproxyServer：面板读的是注入的 TrafficStatsUseCase
+    traffic = MagicMock()
+    traffic.traffic_history = MagicMock(return_value=[])
+    traffic.total = MagicMock(return_value=(0, 0))
+    traffic.per_proxy_traffic_history = MagicMock(return_value=[])
+    traffic.active_pairs = MagicMock(return_value=[])
+    traffic.live_connections = MagicMock(return_value=[])
+    traffic.history_entries = MagicMock(return_value=[])
+    traffic.history_count = MagicMock(return_value=0)
+    traffic.connection_count = MagicMock(return_value=0)
     control = ServeControl(
         interval=60, concurrency=4, timeout=5, probe_url="https://probe.local/ip",
         allowed_types={"http", "socks5"},
@@ -195,7 +201,7 @@ def make_ctx(pool, target_geo=None):
     geo = FakeGeo()  # 默认无归属数据（group detail 正常路径，归属字段为 null）
     ctx = PanelContext(pool=pool, fetch=fetch, record=record, standby=standby,
                        control=control, enqueue_settings=EnqueueRuleSettings(()),
-                       server=server, save=MagicMock(), capacity=5,
+                       server=server, traffic=traffic, save=MagicMock(), capacity=5,
                        purity=purity, geo=geo, speedtest=PspeedTester(), tasks=PanelTasks(),
                        target_geo=target_geo)
     return ctx, fetch, standby, server
@@ -406,6 +412,49 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.client = TestClient(TestServer(build_app(self.ctx)))
         await self.client.start_server()
 
+    async def test_traffic_live_entries_with_geo(self):
+        """实时流量：连接级条目下发 + 按 IP 补归属"""
+        self.ctx.traffic.live_connections = MagicMock(return_value=[
+            {"bind": "1.2.3.4:8080", "host": "a.example", "ip": "5.6.7.8",
+             "connections": 2, "up_rate": 1.0, "down_rate": 2.0,
+             "first_seen": 1000.0, "last_seen": 1001.0}])
+        self.ctx.geo.result = {"5.6.7.8": {"country": "美国", "country_code": "US",
+                                           "province": None, "city": "Ashburn"}}
+        resp = await self.client.get("/api/traffic/live")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["entries"][0]["connections"] == 2
+        assert data["entries"][0]["geo"]["country"] == "美国"
+
+    async def test_traffic_geo_null_when_geoip_disabled(self):
+        """geoip 关闭时条目 geo 为 null（流量部分照常下发）"""
+        self.ctx.geo = None
+        self.ctx.traffic.live_connections = MagicMock(return_value=[
+            {"bind": "1.2.3.4:8080", "host": "a.example", "ip": None,
+             "connections": 1, "up_rate": 0.0, "down_rate": 0.0,
+             "first_seen": 1.0, "last_seen": 2.0}])
+        resp = await self.client.get("/api/traffic/live")
+        data = await resp.json()
+        assert data["entries"][0]["geo"] is None
+
+    async def test_traffic_history_and_summary(self):
+        """历史条目下发（含 total_entries）+ 摘要（连接数/条目数/累计字节）"""
+        self.ctx.traffic.history_entries = MagicMock(return_value=[
+            {"bind": "1.2.3.4:8080", "host": "a.example", "ip": "5.6.7.8",
+             "upload": 10, "download": 20, "last_seen": 1000.0}])
+        self.ctx.traffic.history_count = MagicMock(return_value=7)
+        self.ctx.traffic.connection_count = MagicMock(return_value=3)
+        self.ctx.traffic.total = MagicMock(return_value=(100, 200))
+
+        resp = await self.client.get("/api/traffic/history")
+        data = await resp.json()
+        assert data["total_entries"] == 7
+        assert data["entries"][0]["host"] == "a.example"
+
+        resp = await self.client.get("/api/traffic/summary")
+        assert await resp.json() == {
+            "connections": 3, "entries": 7, "total": {"upload": 100, "download": 200}}
+
     async def asyncTearDown(self):
         await self.client.close()
 
@@ -474,7 +523,7 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0)
         self.standby.per_proxy_latency_history = MagicMock(return_value=[
             ProxyLatencySample(1000.0, 0.2), ProxyLatencySample(1002.0, None)])
-        self.server.per_proxy_traffic_history = MagicMock(return_value=[
+        self.ctx.traffic.per_proxy_traffic_history = MagicMock(return_value=[
             TrafficSample(1000.0, 10, 20), TrafficSample(1002.0, 30, 40)])
         resp = await self.client.get("/api/standby/series")
         assert resp.status == 200
@@ -1241,7 +1290,7 @@ class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
             return_value={"active": True, "probe_ok": 3, "probe_fail": 1})
         self.ctx, _, _, self.server = make_ctx(self.pool, target_geo=self.target_geo)
         self.ctx.geo.result["1.2.3.4"] = _GLOBE_US_GEO
-        self.server.active_pairs = MagicMock(return_value=[
+        self.ctx.traffic.active_pairs = MagicMock(return_value=[
             {"bind": "1.2.3.4:8080", "host": "a.example", "up": 10, "down": 20,
              "up_rate": 10.0, "down_rate": 20.0, "up_inst": 11.0, "down_inst": 21.0,
              "last_seen": time.time()},

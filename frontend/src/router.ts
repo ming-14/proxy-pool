@@ -10,6 +10,7 @@ const routes = [
   { path: '/dashboard', name: 'dashboard', component: () => import('@/pages/DashboardPage.vue'), meta: { title: '仪表盘' } },
   { path: '/groups', name: 'groups', component: () => import('@/pages/GroupsPage.vue'), meta: { title: '代理组' } },
   { path: '/standby', name: 'standby', component: () => import('@/pages/StandbyPage.vue'), meta: { title: '代理服务队列' } },
+  { path: '/traffic', name: 'traffic', component: () => import('@/pages/TrafficPage.vue'), meta: { title: '流量统计' } },
   { path: '/sources', name: 'sources', component: () => import('@/pages/SourcesPage.vue'), meta: { title: '代理源' } },
   { path: '/settings', name: 'settings', component: () => import('@/pages/SettingsPage.vue'), meta: { title: '设置' } },
   { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

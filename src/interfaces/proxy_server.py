@@ -15,9 +15,7 @@ import asyncio
 import logging
 import os
 import sys
-import time
-from collections import deque
-from typing import Iterable, NamedTuple
+from typing import Iterable
 
 # pproxy 已 vendor 化（vendor/pproxy/），本地维护，修复已内化进源码，无需 monkey-patch：
 #   - proto.sslwrap：verbose=None 时静默（原退化为 print 刷 stdout）
@@ -33,33 +31,9 @@ if _VENDOR_DIR not in sys.path:
 import pproxy
 
 from src.interfaces.proxy_scheme import engine_uri
+from src.use_cases.traffic_stats import TrafficStatsUseCase
 
 logger = logging.getLogger(__name__)
-
-# (bind, host) 维度 pair 上限：浏览类流量会不断产生新 host，不设上限就是内存泄漏；
-# 超限按 last_seen 批量淘汰最旧的一批——批量而非逐个淘汰，避免高频 churn 下每次
-# 新建 pair 都做一次 O(n) 扫描。
-_MAX_PAIRS = 2000
-_PAIR_EVICT_BATCH = 256
-
-# pair 速率 EMA 平滑系数：线宽用 EMA（防抖动），瞬时速率只用于流速
-_PAIR_RATE_EMA_ALPHA = 0.3
-
-
-def _normalize_host(host: str) -> str:
-    """目标主机名归一化：小写、去首尾空白与结尾点；空串表示不记录
-
-    同一目标可能以 "Example.COM." / "example.com" 等不同形式出现（不同客户端/协议），
-    不归一会把一个目标拆成多个 pair。
-    """
-    return host.strip().rstrip(".").lower()
-
-
-class TrafficSample(NamedTuple):
-    """流量采样点（累计字节），与 StandbySample 同机制：NamedTuple 紧凑存储 + deque 按时间窗口清理"""
-    ts: float
-    total_upload: int       # 累计上行字节（客户端→远程）
-    total_download: int     # 累计下行字节（远程→客户端）
 
 
 def listen_uri(host: str, port: int, protocols: tuple[str, ...]) -> str:
@@ -74,19 +48,20 @@ def listen_uri(host: str, port: int, protocols: tuple[str, ...]) -> str:
 class PproxyServer:
     """pproxy 本地代理服务器封装：管理上游 rserver 的动态同步"""
 
-    def __init__(self, listen_uri: str, *, salgorithm: str = "rc", metrics_window: float = 1800) -> None:
+    def __init__(self, listen_uri: str, *, traffic: TrafficStatsUseCase,
+                 salgorithm: str = "rc") -> None:
         """
         Args:
             listen_uri: 本地监听 URI，如 "http+socks4+socks5://127.0.0.1:8080"
+            traffic:    流量统计用例：modstat 钩子把字节与连接事件转发给它，
+                        统计状态全在该用例内，本类不再持有任何统计结构
             salgorithm: 上游调度算法（fa=first_available, rr=轮询, rc=随机, lc=最少连接）。
                         默认 rc（随机）：每次请求随机选存活代理，坏代理有概率被跳过，
                         避免 fa 固定用第一个坏代理导致持续失败。
-            metrics_window: 采样数据留存时长秒（全局），流量采样点按此清理，
-                           与队列指标共用同一留存窗口
         """
         self._listen_uri = listen_uri
         self._salgorithm = salgorithm
-        self._metrics_window = metrics_window
+        self._traffic = traffic
         self._server = pproxy.Server(listen_uri)
         self._handler = None
         self._rserver: list = []
@@ -96,23 +71,6 @@ class PproxyServer:
         # scheme 前缀，直接用 bind 比较会导致 http+ssl:// 上游每轮全量增删 → SSLContext 雪崩泄漏）
         self._uri_index: dict[str, object] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._traffic_upload = 0       # 累计上行字节
-        self._traffic_download = 0     # 累计下行字节
-        self._traffic_history: deque[TrafficSample] = deque()
-        # 按上游代理地址（roption.bind）的累计上下行字节；显式 direct:// 上游的 bind 为 "DIRECT"
-        self._per_proxy_upload: dict[str, int] = {}
-        self._per_proxy_download: dict[str, int] = {}
-        # 按上游代理地址的流量采样历史（与 _traffic_history 同机制），供按 IP 查流量趋势
-        self._per_proxy_traffic_history: dict[str, deque[TrafficSample]] = {}
-        # (bind, host) 维度：目标地区探测的数据源。modstat 每次会话建立时记 last_seen，
-        # 按方向累计字节；sample_traffic 差分出瞬时速率并算 EMA（线宽/流速用）。
-        self._pair_last_seen: dict[tuple[str, str], float] = {}
-        self._pair_upload: dict[tuple[str, str], int] = {}
-        self._pair_download: dict[tuple[str, str], int] = {}
-        self._pair_rate_ema: dict[tuple[str, str], tuple[float, float]] = {}
-        self._pair_rate_inst: dict[tuple[str, str], tuple[float, float]] = {}
-        self._pair_prev: dict[tuple[str, str], tuple[int, int]] = {}
-        self._pair_sample_ts: float | None = None
 
     async def start(self, proxies: list[str]) -> None:
         """启动服务器，用给定代理初始化上游列表"""
@@ -225,172 +183,31 @@ class PproxyServer:
 
     # ------------------------------------------------------------------ 流量统计
     def _make_modstat(self):
-        """构造 pproxy modstat 钩子：按方向 i 分发到上行/下行计数器
+        """构造 pproxy modstat 钩子：把字节与连接事件转发到流量统计用例
 
         pproxy stream_handler 选定上游 roption 后调 modstat(user, remote_ip, host_name, roption)
        （vendor/pproxy 已内化该签名，原版不传 roption 导致无法按代理统计流量）。
         pproto.channel 转发数据时调 stat_bytes(len(data))：
           i ∈ {0,1}（roption.direct=0 代理 / 1 直连）→ 上行（客户端→远程）
           i ∈ {2,3} → 下行（远程→客户端）
-          i ∈ {4,5} → 连接数变化（不统计）
+          i ∈ {4,5} → 连接数变化：会话建立 +1 / 结束 -1（连接级统计的数据源）
 
-        per-proxy 维度：roption.bind（上游代理地址，直连上游为 "DIRECT"）作 key 分发到 per-proxy 计数器。
         pproxy 选定上游后才会调 modstat（无上游直接回错误，不进入统计），故 roption 恒非 None。
+        统计状态与口径全在 TrafficStatsUseCase（含 host 归一化与空值处理），本方法只做转发。
         """
+        traffic = self._traffic
+
         def modstat(user, remote_ip, host_name, roption):
             bind = roption.bind
-            host = _normalize_host(host_name)
-            if host:
-                self._note_target(bind, host)
+            traffic.note_pair(bind, host_name)
+
             def m(i):
                 if i in (0, 1):
-                    return lambda n: self._add_upload(bind, host, n)
+                    return lambda n: traffic.record_bytes(bind, host_name, n, 0)
                 if i in (2, 3):
-                    return lambda n: self._add_download(bind, host, n)
+                    return lambda n: traffic.record_bytes(bind, host_name, 0, n)
+                if i in (4, 5):
+                    return lambda n: traffic.record_conn(bind, host_name, n)
                 return lambda n: None
             return m
         return modstat
-
-    def _note_target(self, bind: str, host: str) -> None:
-        """记录 (bind, host) 的会话活跃时间（modstat 时调用，事件循环内单线程无锁）
-
-        last_seen 是“最近一次会话建立”而非字节时间：探测候选只关心最近被请求过的
-        目标，长时间只读的长连接会随窗口滑出候选（其 host 通常还有其它新会话）。
-        """
-        key = (bind, host)
-        self._pair_last_seen[key] = time.time()
-        self._pair_prev.setdefault(key, (0, 0))
-        if len(self._pair_last_seen) > _MAX_PAIRS:
-            self._evict_pairs()
-
-    def _evict_pairs(self) -> None:
-        """超容量时按 last_seen 最旧批量淘汰（六个 dict 同步删，不清 per-proxy 累计）"""
-        over = len(self._pair_last_seen) - _MAX_PAIRS
-        count = min(len(self._pair_last_seen), over + _PAIR_EVICT_BATCH)
-        victims = sorted(self._pair_last_seen, key=self._pair_last_seen.get)[:count]
-        for key in victims:
-            self._drop_pair(key)
-        logger.debug("pair 超容量，淘汰最旧 %d 个（当前 %d）", count, len(self._pair_last_seen))
-
-    def _drop_pair(self, key: tuple[str, str]) -> None:
-        """删除一个 pair 的全部内存记录"""
-        self._pair_last_seen.pop(key, None)
-        self._pair_upload.pop(key, None)
-        self._pair_download.pop(key, None)
-        self._pair_rate_ema.pop(key, None)
-        self._pair_rate_inst.pop(key, None)
-        self._pair_prev.pop(key, None)
-
-    def _add_upload(self, bind: str, host: str, n: int) -> None:
-        self._traffic_upload += n
-        self._per_proxy_upload[bind] = self._per_proxy_upload.get(bind, 0) + n
-        if host:
-            key = (bind, host)
-            self._pair_upload[key] = self._pair_upload.get(key, 0) + n
-
-    def _add_download(self, bind: str, host: str, n: int) -> None:
-        self._traffic_download += n
-        self._per_proxy_download[bind] = self._per_proxy_download.get(bind, 0) + n
-        if host:
-            key = (bind, host)
-            self._pair_download[key] = self._pair_download.get(key, 0) + n
-
-    def sample_traffic(self) -> None:
-        """采当前累计流量到历史并按时间窗口清理过期点（与 StandbyQueueUseCase._sample 同机制）
-
-        同时为每个有流量的上游代理（bind）采一笔 per-proxy 历史，供按 IP 查流量趋势。
-        """
-        now = time.time()
-        # pair 速率：与上次采样的差分；首采 dt=0 记 0，避免把建连以来的累计冲量当瞬时速率
-        dt = now - self._pair_sample_ts if self._pair_sample_ts is not None else 0.0
-        for key in self._pair_last_seen:
-            up = self._pair_upload.get(key, 0)
-            down = self._pair_download.get(key, 0)
-            prev_up, prev_down = self._pair_prev[key]
-            if dt > 0:
-                rate_up = max(0, up - prev_up) / dt
-                rate_down = max(0, down - prev_down) / dt
-            else:
-                rate_up = rate_down = 0.0
-            ema_up, ema_down = self._pair_rate_ema.get(key, (0.0, 0.0))
-            self._pair_rate_ema[key] = (
-                ema_up + _PAIR_RATE_EMA_ALPHA * (rate_up - ema_up),
-                ema_down + _PAIR_RATE_EMA_ALPHA * (rate_down - ema_down),
-            )
-            self._pair_rate_inst[key] = (rate_up, rate_down)
-            self._pair_prev[key] = (up, down)
-        self._pair_sample_ts = now
-        # pair 过期清理：last_seen 超出留存窗口即删（连带五个附属 dict）
-        cutoff = now - self._metrics_window
-        stale = [key for key, ts in self._pair_last_seen.items() if ts < cutoff]
-        for key in stale:
-            self._drop_pair(key)
-        if stale:
-            logger.debug("清理过期 pair %d 个（窗口 %.0fs）", len(stale), self._metrics_window)
-        # 全局
-        self._traffic_history.append(TrafficSample(now, self._traffic_upload, self._traffic_download))
-        while self._traffic_history and self._traffic_history[0].ts < cutoff:
-            self._traffic_history.popleft()
-        # per-proxy：为每个有流量的 bind 各采一笔
-        for bind in set(self._per_proxy_upload) | set(self._per_proxy_download):
-            dq = self._per_proxy_traffic_history.get(bind)
-            if dq is None:
-                dq = deque()
-                self._per_proxy_traffic_history[bind] = dq
-            dq.append(TrafficSample(now, self._per_proxy_upload.get(bind, 0),
-                                    self._per_proxy_download.get(bind, 0)))
-            while dq and dq[0].ts < cutoff:
-                dq.popleft()
-
-    def traffic_history(self) -> list[TrafficSample]:
-        """流量采样历史（按时间正序），供 /api/status 下发前端图表重绘"""
-        return list(self._traffic_history)
-
-    def traffic_total(self) -> tuple[int, int]:
-        """当前累计上行/下行字节"""
-        return self._traffic_upload, self._traffic_download
-
-    def per_proxy_traffic(self) -> dict[str, dict[str, int]]:
-        """按上游代理地址（bind）的累计上下行字节，供 /api/status 下发前端按 IP 展示流量
-
-        key 为 roption.bind（上游代理地址如 "1.2.3.4:8080"；显式 direct:// 上游为 "DIRECT"），
-        value 为 {"upload": int, "download": int}。仅内存实时计数，重启清零。
-        """
-        binds = set(self._per_proxy_upload) | set(self._per_proxy_download)
-        return {bind: {
-            "upload": self._per_proxy_upload.get(bind, 0),
-            "download": self._per_proxy_download.get(bind, 0),
-        } for bind in binds}
-
-    def active_pairs(self, since_ts: float) -> list[dict]:
-        """窗口内活跃的 (bind, host) 列表（last_seen ≥ since_ts），供目标地区探测与 /api/globe
-
-        返回 [{bind, host, up, down, up_rate, down_rate, up_inst, down_inst, last_seen}]：
-        up_rate/down_rate 为 EMA（防抖，线宽用），up_inst/down_inst 为最近一个采样窗口的
-        瞬时速率（B/s，流速用）；无序（排序/筛选由消费方按需处理）。仅内存实时，重启清零。
-        """
-        out: list[dict] = []
-        for key, last_seen in self._pair_last_seen.items():
-            if last_seen < since_ts:
-                continue
-            ema_up, ema_down = self._pair_rate_ema.get(key, (0.0, 0.0))
-            inst_up, inst_down = self._pair_rate_inst.get(key, (0.0, 0.0))
-            out.append({
-                "bind": key[0],
-                "host": key[1],
-                "up": self._pair_upload.get(key, 0),
-                "down": self._pair_download.get(key, 0),
-                "up_rate": ema_up,
-                "down_rate": ema_down,
-                "up_inst": inst_up,
-                "down_inst": inst_down,
-                "last_seen": last_seen,
-            })
-        return out
-
-    def per_proxy_traffic_history(self, bind: str) -> list[TrafficSample]:
-        """指定上游代理地址的流量采样历史（按时间正序），供 /api/proxy/history 按需查询
-
-        与 traffic_history() 同机制：累计字节序列，前端差分算速率。仅内存，重启清零。
-        """
-        return list(self._per_proxy_traffic_history.get(bind, ()))

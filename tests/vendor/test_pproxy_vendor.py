@@ -65,6 +65,24 @@ import pproxy  # noqa: E402
 from src.interfaces.proxy_server import PproxyServer  # noqa: E402
 
 
+class _NullTraffic:
+    """流量统计用例的空实现：本文件只回归 pproxy 协议行为，不关心统计"""
+
+    def note_pair(self, bind, host):
+        pass
+
+    def record_bytes(self, bind, host, up, down):
+        pass
+
+    def record_conn(self, bind, host, delta):
+        pass
+
+
+def _make_server(uri: str) -> PproxyServer:
+    """构造 PproxyServer 并注入空统计用例（统计已迁出，构造须显式传入）"""
+    return PproxyServer(uri, traffic=_NullTraffic())
+
+
 def _free_port() -> int:
     """获取一个当前可用的本地端口（bind 0 探测后释放，测试串行无竞争）"""
     with socket.socket() as s:
@@ -613,7 +631,7 @@ class TestConnectTimeoutErrorReply(unittest.TestCase):
     TIMEOUT = 0.3
 
     async def _drive(self, listen_uri: str, drive):
-        server = PproxyServer(f"{listen_uri}://127.0.0.1:0")
+        server = _make_server(f"{listen_uri}://127.0.0.1:0")
         # 显式 direct:// 上游：本项目默认不回退直连（no-direct），本用例要打的是
         # "上游连接卡住"的超时路径，故把直连作为**显式上游**放进去（等价于旧用例
         # 依赖的隐式回退，但不触发 no-direct 拒绝）
@@ -825,12 +843,10 @@ class TestSessionIdleReclaim(unittest.TestCase):
             await writer.drain()
             writer.close()
 
-        from src.interfaces.proxy_server import PproxyServer
-
         origin = await asyncio.start_server(lambda r, w: origin_handler(r, w), "127.0.0.1", 0)
         origin_port = origin.sockets[0].getsockname()[1]
         proxy_port = _free_port()
-        server = PproxyServer(f"http://127.0.0.1:{proxy_port}")
+        server = _make_server(f"http://127.0.0.1:{proxy_port}")
         await server.start(["direct://"])  # 显式直连上游（no-direct 下唯一允许直连的途径）
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", proxy_port)
@@ -895,7 +911,7 @@ class TestNoDirectFallback(unittest.TestCase):
 
     async def _serve_serve_path(self, upstreams: list[str]):
         """本项目 serve 路径（PproxyServer，恒 direct_fallback=False）→ (server, port)"""
-        server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+        server = _make_server("http+socks4+socks5://127.0.0.1:0")
         await server.start(upstreams)
         return server, server._handler.sockets[0].getsockname()[1]
 
@@ -1053,7 +1069,7 @@ class TestNoDirectFallback(unittest.TestCase):
 
 async def _socks5_command_reply(cmd: int) -> bytes:
     """对本地 socks5 代理发一次指定 CMD 的请求，返回服务端应答（10 字节）"""
-    server = PproxyServer("socks5://127.0.0.1:0")
+    server = _make_server("socks5://127.0.0.1:0")
     await server.start([])
     port = server._handler.sockets[0].getsockname()[1]
     try:
@@ -1109,7 +1125,7 @@ class TestSocks4a(unittest.TestCase):
     """
 
     async def _serve(self, upstreams: list[str]):
-        server = PproxyServer("socks4://127.0.0.1:0")
+        server = _make_server("socks4://127.0.0.1:0")
         await server.start(upstreams)
         return server, server._handler.sockets[0].getsockname()[1]
 
@@ -1178,7 +1194,7 @@ class TestSocks4a(unittest.TestCase):
 
             upstream = await asyncio.start_server(socks4_upstream, "127.0.0.1", 0)
             up_port = upstream.sockets[0].getsockname()[1]
-            server = PproxyServer("http://127.0.0.1:0")
+            server = _make_server("http://127.0.0.1:0")
             await server.start([f"socks4://127.0.0.1:{up_port}"])
             port = server._handler.sockets[0].getsockname()[1]
             try:
@@ -1211,7 +1227,7 @@ class TestSocks4ReplyDeferred(unittest.TestCase):
 
     async def _serve(self):
         """显式 direct:// 上游（测握手时序，与 no-direct 语义无关）→ (server, port)"""
-        server = PproxyServer("socks4://127.0.0.1:0")
+        server = _make_server("socks4://127.0.0.1:0")
         await server.start(["direct://"])
         return server, server._handler.sockets[0].getsockname()[1]
 

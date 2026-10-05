@@ -41,6 +41,7 @@ const NAV: { name: string; label: string; icon: IconName }[] = [
   { name: 'dashboard', label: '仪表盘', icon: 'dashboard' },
   { name: 'groups', label: '代理组', icon: 'groups' },
   { name: 'standby', label: '代理服务队列', icon: 'activity' },
+  { name: 'traffic', label: '流量统计', icon: 'traffic' },
   { name: 'sources', label: '代理源', icon: 'sources' },
   { name: 'settings', label: '设置', icon: 'settings' },
 ];

@@ -182,6 +182,30 @@ class TargetGeoStore(Protocol):
         ...
 
 
+class TrafficHistoryStore(Protocol):
+    """历史流量条目存储端口（按 (代理,域名,IP) 分区）：保留期判断在用例层，store 只做纯读写
+
+    写入是**增量累加**语义（见实现），不是绝对值覆盖——进程重启后内存增量归零，
+    写绝对值会把已落盘的历史冲掉。
+    """
+
+    def add_traffic_history(self, deltas: dict[tuple[str, str, str], dict]) -> None:
+        """按增量累加写入；deltas: {(bind, host, ip): {up, down, last_seen}}"""
+        ...
+
+    def get_traffic_history(self, limit: int) -> list[dict]:
+        """按流量总计降序读取前 limit 条"""
+        ...
+
+    def count_traffic_history(self) -> int:
+        """条目总数（不受 limit 截断影响）"""
+        ...
+
+    def prune_traffic_history(self, before_ts: float) -> int:
+        """删除 last_seen 早于 before_ts 的行，返回删除数"""
+        ...
+
+
 class ProxySpeedTester(Protocol):
     """代理测速端口：测 Cloudflare 下载速率（Mbps）
 

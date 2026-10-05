@@ -28,6 +28,7 @@ from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
 from src.use_cases.target_geo import TargetGeoUseCase
+from src.use_cases.traffic_stats import TrafficStatsUseCase
 from src.framework.web.panel_state import PanelTasks
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class PanelContext:
     control: object            # ServeControl
     enqueue_settings: object   # EnqueueRuleSettings：入队筛选运行时设置（启停/阈值）
     server: PproxyServer
+    traffic: TrafficStatsUseCase         # 流量统计（实时计数/采样序列/活跃连接/历史条目）
     save: Callable[[], None]   # 落盘回调（c.save）
     capacity: int              # 代理服务队列容量
     purity: CheckPurityUseCase | None    # IP 纯净度检查；禁用时为 None
@@ -180,7 +182,7 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         }
 
     standby = [_standby_entry(p, locked=(p == locked_proxy)) for p in ctx.standby.queue_rows()]
-    traffic_upload, traffic_download = ctx.server.traffic_total()
+    traffic_upload, traffic_download = ctx.traffic.total()
     sources = []
     for s in config.SOURCES:
         # 一次调用同时得到「是否暂停」与剩余时长，不必再调一次判定重算
@@ -230,8 +232,8 @@ def _status_history(ctx: PanelContext, since: float | None) -> dict:
     （心跳 2s，锁定单一上游时 30s），点数上限与留存时长不等价。
     """
     standby_history = [s._asdict() for s in ctx.standby.history() if since is None or s.ts > since]
-    traffic_history = [s._asdict() for s in ctx.server.traffic_history() if since is None or s.ts > since]
-    traffic_upload, traffic_download = ctx.server.traffic_total()
+    traffic_history = [s._asdict() for s in ctx.traffic.traffic_history() if since is None or s.ts > since]
+    traffic_upload, traffic_download = ctx.traffic.total()
     return {
         "standby_history": standby_history,
         "traffic_history": traffic_history,
@@ -260,7 +262,7 @@ def _standby_series(ctx: PanelContext, since: float | None) -> dict:
         lat = [[s.ts, s.latency] for s in ctx.standby.per_proxy_latency_history(bind)
                if since is None or s.ts > since]
         # 仅统计有流量的代理（无流量代理的序列为空，前端显示"无流量"）
-        traffic = [s for s in ctx.server.per_proxy_traffic_history(bind)
+        traffic = [s for s in ctx.traffic.per_proxy_traffic_history(bind)
                    if since is None or s.ts > since]
         if not lat and not traffic:
             continue
@@ -434,7 +436,7 @@ async def _globe(request: web.Request) -> web.Response:
     ctx = request.app[_PANEL_KEY]
     ctx.target_geo.touch()
     now = time.time()
-    pairs = ctx.server.active_pairs(now - config.METRICS_WINDOW)
+    pairs = ctx.traffic.active_pairs(now - config.METRICS_WINDOW)
     # 节点速率：活跃 pair 按 bind 聚合（EMA 供线宽、瞬时供流速）
     rates: dict[str, dict[str, float]] = {}
     for pair in pairs:
@@ -463,6 +465,56 @@ async def _globe(request: web.Request) -> web.Response:
         [pair for pair in pairs if pair["bind"] in queue_binds], config.GLOBE_MAX_FLOWS)
     return web.json_response({"self": _self_point(), "nodes": nodes, "flows": flows,
                               "stats": ctx.target_geo.stats(now)})
+
+
+# ------------------------------------------------------------------ 流量统计
+async def _fill_entry_geo(ctx: PanelContext, entries: list[dict]) -> None:
+    """就地给流量条目补地理信息（按目标 IP 查归属；geoip 关闭或 IP 为空时为 null）
+
+    未命中的 IP 由 IpGeoUseCase 自行定位并落缓存，调用方无感。
+    """
+    ips = [ip for ip in dict.fromkeys(entry["ip"] for entry in entries) if ip]
+    if ctx.geo is None or not ips:
+        for entry in entries:
+            entry["geo"] = None
+        return
+    geo_map = await ctx.geo.resolve(ips, label="traffic")
+    for entry in entries:
+        entry["geo"] = _geo_payload(geo_map.get(entry["ip"])) if entry["ip"] else None
+
+
+async def _traffic_live(request: web.Request) -> web.Response:
+    """实时流量：此刻仍开着的连接（连接级口径），按 (代理, 域名) 汇总
+
+    目标 IP 来自探测缓存（尚未解析为 null），地理信息按 IP 补齐。
+    """
+    ctx = request.app[_PANEL_KEY]
+    entries = ctx.traffic.live_connections()
+    await _fill_entry_geo(ctx, entries)
+    return web.json_response({"entries": entries})
+
+
+async def _traffic_history(request: web.Request) -> web.Response:
+    """历史流量条目（按流量总计降序，上限取 panel.toml [traffic].history_limit）
+
+    条目按 (代理, 域名, IP) 分区：IP 变了就是新条目，旧条目冻结在切换前的累计值。
+    """
+    ctx = request.app[_PANEL_KEY]
+    entries = ctx.traffic.history_entries(config.TRAFFIC_HISTORY_LIMIT)
+    await _fill_entry_geo(ctx, entries)
+    return web.json_response({"entries": entries,
+                              "total_entries": ctx.traffic.history_count()})
+
+
+async def _traffic_summary(request: web.Request) -> web.Response:
+    """流量统计摘要：活跃连接数 + 历史条目数 + 全局累计字节"""
+    ctx = request.app[_PANEL_KEY]
+    upload, download = ctx.traffic.total()
+    return web.json_response({
+        "connections": ctx.traffic.connection_count(),
+        "entries": ctx.traffic.history_count(),
+        "total": {"upload": upload, "download": download},
+    })
 
 
 async def _group(request: web.Request) -> web.Response:
@@ -515,7 +567,7 @@ async def _proxy_history(request: web.Request) -> web.Response:
     return web.json_response({
         "bind": bind,
         "latency_history": [s._asdict() for s in ctx.standby.per_proxy_latency_history(bind)],
-        "traffic_history": [s._asdict() for s in ctx.server.per_proxy_traffic_history(bind)],
+        "traffic_history": [s._asdict() for s in ctx.traffic.per_proxy_traffic_history(bind)],
     })
 
 
@@ -888,6 +940,9 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/api/group/{name}", _group)
     app.router.add_post("/api/group/{name}/add", _do_group_add)
     app.router.add_get("/api/proxy/history", _proxy_history)
+    app.router.add_get("/api/traffic/live", _traffic_live)
+    app.router.add_get("/api/traffic/history", _traffic_history)
+    app.router.add_get("/api/traffic/summary", _traffic_summary)
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
     app.router.add_post("/api/proxy/purity", _do_purity)
     # geoip.enabled=false 时不注册地图/归属路由（前端按 /api/status 的 geo_enabled 跳过）

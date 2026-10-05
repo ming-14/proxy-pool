@@ -17,6 +17,7 @@ import os
 import socket
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock
 
@@ -24,7 +25,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 logging.disable(logging.WARNING)
 
 from src.domain.proxy_pool import ProxyPool
-from src.interfaces.proxy_server import PproxyServer
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.framework.config import (
     PROXY_GROUPS,
@@ -46,6 +46,7 @@ from src.use_cases.enqueue_filter import EnqueueFilterUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 
 from tests.e2e.mock_upstream import MOCK_BODY, start_mock_upstream
+from tests.e2e.server_factory import make_server
 
 
 async def close_server(srv):
@@ -191,7 +192,7 @@ class TestServeE2E(ServeE2EBase):
             check = make_check({proxy_uri: True})
             c = make_standby(self.pool, self.record, check)
             await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start(standby_list(self.pool))
             listen_port = server._handler.sockets[0].getsockname()[1]
 
@@ -212,14 +213,14 @@ class TestServeE2E(ServeE2EBase):
             check = make_check({proxy_uri: True})
             c = make_standby(self.pool, self.record, check)
             await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start(standby_list(self.pool))
             listen_port = server._handler.sockets[0].getsockname()[1]
 
             await http_request_via_proxy(listen_port)
             await asyncio.sleep(0.3)  # 等转发 task 完成计数
 
-            up, down = server.traffic_total()
+            up, down = server._traffic.total()
             # pproxy modstat 只统计 channel 转发的 body：GET 请求头在 connected 回调里
             # 直接写不经 stat_bytes，故上行可能为 0；响应 body 经 channel 转发必计数
             self.assertGreater(down, 0)
@@ -239,7 +240,7 @@ class TestServeE2E(ServeE2EBase):
             check = make_check({proxy_uri: True})
             c = make_standby(self.pool, self.record, check)
             await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start(standby_list(self.pool))
             listen_port = server._handler.sockets[0].getsockname()[1]
 
@@ -247,7 +248,7 @@ class TestServeE2E(ServeE2EBase):
             await asyncio.sleep(0.3)
 
             bind = f"127.0.0.1:{mock_port}"
-            ppt = server.per_proxy_traffic()
+            ppt = server._traffic.per_proxy_traffic()
             self.assertIn(bind, ppt)
             self.assertGreater(ppt[bind]["download"], 0)
 
@@ -257,7 +258,7 @@ class TestServeE2E(ServeE2EBase):
         asyncio.run(run())
 
     def test_per_proxy_traffic_history_sampled(self):
-        """sample_traffic 后 per_proxy_traffic_history 返回该 bind 的流量采样序列"""
+        """采样后 per_proxy_traffic_history 返回该 bind 的流量采样序列"""
         async def run():
             upstream, mock_port = await start_mock_upstream()
             proxy_uri = f"http://127.0.0.1:{mock_port}"
@@ -265,16 +266,16 @@ class TestServeE2E(ServeE2EBase):
             check = make_check({proxy_uri: True})
             c = make_standby(self.pool, self.record, check)
             await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start(standby_list(self.pool))
             listen_port = server._handler.sockets[0].getsockname()[1]
 
             await http_request_via_proxy(listen_port)
             await asyncio.sleep(0.3)
-            server.sample_traffic()
+            server._traffic.sample(time.time())
 
             bind = f"127.0.0.1:{mock_port}"
-            hist = server.per_proxy_traffic_history(bind)
+            hist = server._traffic.per_proxy_traffic_history(bind)
             self.assertGreater(len(hist), 0)
             self.assertGreater(hist[-1].total_download, 0)
 
@@ -309,7 +310,7 @@ class TestServeE2E(ServeE2EBase):
             upstream, mock_port = await start_mock_upstream()
             proxy_uri = f"http://127.0.0.1:{mock_port}"
 
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start([proxy_uri])
             listen_port = server._handler.sockets[0].getsockname()[1]
             resp = await http_request_via_proxy(listen_port)
@@ -353,7 +354,7 @@ class TestServeE2E(ServeE2EBase):
             target = await asyncio.start_server(target_handler, "127.0.0.1", 0)
             target_port = target.sockets[0].getsockname()[1]
 
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start([])   # 无上游：队列尚未补入代理
             listen_port = server._handler.sockets[0].getsockname()[1]
 
@@ -365,7 +366,7 @@ class TestServeE2E(ServeE2EBase):
 
             # 上游恢复后同一目标可正常访问（确认拒绝只由"无上游"导致）
             upstream, mock_port = await start_mock_upstream()
-            server2 = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server2 = make_server()
             await server2.start([f"http://127.0.0.1:{mock_port}"])
             port2 = server2._handler.sockets[0].getsockname()[1]
             resp = await http_request_via_proxy(port2, host=f"127.0.0.1:{target_port}")
@@ -388,7 +389,7 @@ class TestServeE2E(ServeE2EBase):
             up_b, port_b = await start_mock_upstream(body=b"upstream-B")
             proxy_a, proxy_b = f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"
 
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start([proxy_a, proxy_b])
             listen_port = server._handler.sockets[0].getsockname()[1]
 
@@ -432,7 +433,7 @@ class TestServeE2E(ServeE2EBase):
             from src.interfaces.proxy_scheme import engine_uri
             self.assertEqual(engine_uri(proxy_uri), f"http+ssl://127.0.0.1:{mock_port}")
 
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start(standby_list(self.pool))
 
             await server.close()
@@ -449,7 +450,7 @@ class TestServeE2E(ServeE2EBase):
             check = make_check({proxy_uri: True})
             c = make_standby(self.pool, self.record, check)
             await c.fill({"socks5"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start(standby_list(self.pool))
             listen_port = server._handler.sockets[0].getsockname()[1]
 
@@ -575,7 +576,7 @@ class TestHeartbeatE2E(ServeE2EBase):
             c = make_standby(self.pool, self.record, check)
             await c.fill({"http"}, "http://probe.local", timeout=3, concurrency=2, capacity=5)
 
-            server = PproxyServer("http+socks4+socks5://127.0.0.1:0")
+            server = make_server()
             await server.start(standby_list(self.pool))
             listen_port = server._handler.sockets[0].getsockname()[1]
 

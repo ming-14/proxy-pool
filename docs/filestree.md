@@ -35,14 +35,15 @@ proxy-pool/
 │   │   ├── check_proxies.py       # 并发测试代理（证书校验策略经组合根注入 proxy_scheme.verify_target）
 │   │   ├── network_gate.py        # 本地链路门控（链路可用性判定；只缓存失败结论，成功结论每次真实探测）
 │   │   ├── standby.py             # 代理服务队列维护（fill 补入/心跳/退避补测，含链路门控 + per-proxy 延时历史）
-│   │   └── target_geo.py          # 目标地区探测（激活窗口 + 缓存 TTL + pair 级退避 + 限并发穿代理 DoH；IP 字面量/内网名跳过；聚合「代理→目标城市」弧）
+│   │   ├── target_geo.py          # 目标地区探测（激活窗口 + 缓存 TTL + pair 级退避 + 限并发穿代理 DoH；IP 字面量/内网名跳过；聚合「代理→目标城市」弧）
+│   │   └── traffic_stats.py       # 流量统计（全局/按代理/按 pair 三维计数与采样 + 连接级计数 + 历史条目按 (代理,域名,IP) 增量落盘；host 归一化归属此模块）
 │   ├── interfaces/                # 接口适配器层：实现 domain 端口
 │   │   ├── __init__.py
-│   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert；ip_geo/ippure/target_geo 缓存）
+│   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert；ip_geo/ippure/target_geo 缓存 + traffic_history 历史流量增量累加）
 │   │   ├── http_client.py         # HttpGetter（requests，函数级惰性导入，不校验证书 + 多 IP 重试）+ AsyncHttpGetter（aiohttp，心跳/门控高频路径；socks4/socks5 走 ProxyConnector；get_json 供 DoH 等 JSON 接口）
 │   │   ├── doh_resolver.py        # DohResolver（HostResolver 端口实现：穿代理 DoH JSON 查 A 记录，端点顺序回退/IDN/证书策略复用 proxy_scheme；失败退避在用例层）
 │   │   ├── scheduler.py           # ProxyScheduler 异步调度器（asyncio）
-│   │   ├── proxy_server.py        # PproxyServer（rserver 动态同步 + rc 调度 + 上游存活标记（心跳判定→pproxy alive）+ 绝不直连（direct_fallback=False，无上游回错误）+ 全局/per-proxy 流量计数 + per-proxy 流量历史 + per-pair（bind,host）目标流量/EMA 速率）
+│   │   ├── proxy_server.py        # PproxyServer（rserver 动态同步 + rc 调度 + 上游存活标记（心跳判定→pproxy alive）+ 绝不直连（direct_fallback=False，无上游回错误）+ 把 modstat 的字节/连接事件转发给流量统计用例）
 │   │   ├── proxy_scheme.py        # 出站协议机制描述表（engine_uri 上游 URI 映射 / needs_socks_connector 探测客户端选择 / verify_target 证书校验策略；协议知识的唯一归属）
 │   │   ├── ua_generator.py         # 确定性 UA 生成器（基于 fake-useragent）
 │   │   ├── ippure/                # IP 纯净度检查插件（各源地位平等；新增源 = 加一个模块 + ippure.toml 两行）
@@ -69,7 +70,7 @@ proxy-pool/
 │       ├── logbuffer.py           # 面板日志缓冲（root 镜像 → 有界环形缓冲 + seq 游标增量拉取，供 /api/logs）
 │       └── web/                   # Web 控制面板（serve 模式）
 │           ├── __init__.py
-│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加 + /api/logs 面板日志增量拉取/清空）+ Vite 产物静态服务
+│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加 + /api/traffic/live|history|summary 流量统计 + /api/logs 面板日志增量拉取/清空）+ Vite 产物静态服务
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── panel_state.py     # PanelTasks（面板任务状态：拉取/测速/纯净度检查的进行中与终态，/api/status 下发供前端刷新后恢复）
 │           ├── server.py          # aiohttp 服务器启动
@@ -98,7 +99,7 @@ proxy-pool/
 │       ├── composables/           # useRowSelection（框选）/ usePurity（纯净度）/ useSpeedTest（按 bind 的测速结果）/ useStandbySeries（逐代理序列增量缓冲）/ useStandbyGeo（归属地节流拉取）/ useLogPanel（控制台日志源：增量轮询+面板可见与页面前台双节流+主题联动）
 │       ├── vendor/logpanel/       # 日志视窗组件（vendored Vue 3 + TS，可整体复用到其它 Vue 3 项目）：默认值/契约类型 + LogPanel 外壳（悬浮窗/底部抽屉双形态）+ parts（TitleBar/ToolBar/SidePanel/LogLine/VirtualList/ToastStack/IconSvg）+ composables（useLogView 视图状态机、useWindowGeometry 悬浮窗几何、useSheetDetent 抽屉档位、useViewport 布局/可视视口度量、useMediaQuery、useToasts）+ utils（filter/format/tagColor/storage/clipboard/icons/sheet）；样式 scoped + --lp-* 变量，虚拟列表用 @tanstack/vue-virtual
 │       ├── components/            # ui（Icon 图标组件 + icons 注册表、ToastHost、ContextMenu）、charts（echarts 注册/option 工厂/ChartBox/GeoMap）、globe（GlobePanel 3D 地球 + globeData 数据纯函数）、GlobeStyleCard（设置页地球样式）、Sparkline（行内 SVG 迷你趋势图）、PurityTags、ScheduleSettingsCard、AddProxyModal
-│       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / SourcesPage / SettingsPage
+│       ├── pages/                 # DashboardPage / GroupsPage / StandbyPage / TrafficPage / SourcesPage / SettingsPage
 │       └── styles/                # theme.css（Tailwind 4 @theme 令牌）+ components.css（组件类）
 ├── desktop/                       # 桌面封装（Electron + 内嵌 Python 3.11；构建产物不入库，见 desktop/.gitignore）
 │   ├── package.json               # electron / electron-builder 依赖与脚本（postinstall/start/dist/test）

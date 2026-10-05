@@ -1,6 +1,6 @@
 """目标服务器地区探测用例：把 (代理, 目标) 活跃流量变成「该代理出口视角的落点」
 
-数据源是 PproxyServer 的 per-pair 流量维度（active_pairs）；探测链路 = 穿该代理做
+数据源是流量统计用例的 per-pair 维度（active_pairs）；探测链路 = 穿该代理做
 DoH 解析（HostResolver，DNS 查询从代理出口发出）→ GeoLite2 定位 → 写 target_geo_cache。
 只有面板最近请求过 /api/globe（touch）才探测——没人看地球时不消耗代理。
 
@@ -42,7 +42,7 @@ _MAX_HOSTS_PER_GROUP = 8
 
 
 class PairTrafficSource(Protocol):
-    """活跃 (bind, host) 流量源（PproxyServer 实现）"""
+    """活跃 (bind, host) 流量源（TrafficStatsUseCase 实现）"""
 
     def active_pairs(self, since_ts: float) -> list[dict]: ...
 
@@ -59,7 +59,7 @@ class TargetGeoUseCase:
     def __init__(
         self,
         *,
-        server: PairTrafficSource,
+        traffic: PairTrafficSource,
         store: TargetGeoStore,
         resolver: HostResolver,
         geo: GeoResolver,
@@ -72,7 +72,7 @@ class TargetGeoUseCase:
     ) -> None:
         """
         Args:
-            server:           活跃 pair 流量源（PproxyServer.active_pairs）
+            traffic:          活跃 pair 流量源（TrafficStatsUseCase.active_pairs）
             store:            目标归属缓存（SqliteProxyStore）
             resolver:         穿代理的域名解析器（DohResolver）
             geo:              IP 归属查询（IpGeoUseCase，缓存优先）
@@ -83,7 +83,7 @@ class TargetGeoUseCase:
             probe_window:     窗口内有流量的 pair 才作为探测候选
             prune_after:      缓存行清理阈值秒（每小时按此清理一次）
         """
-        self._server = server
+        self._traffic = traffic
         self._store = store
         self._resolver = resolver
         self._geo = geo
@@ -163,7 +163,7 @@ class TargetGeoUseCase:
         避免两次查询之间代理离队导致用 None 发起请求。
         """
         candidates: list[dict] = []
-        for pair in self._server.active_pairs(now - self._probe_window):
+        for pair in self._traffic.active_pairs(now - self._probe_window):
             bind, host = pair["bind"], pair["host"]
             proxy = self._proxy_lookup(bind)
             if proxy is None:

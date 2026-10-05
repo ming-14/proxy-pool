@@ -24,6 +24,8 @@ export const ICONS = {
   groups: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   /** 导航：代理服务队列；也用于队列空态 */
   activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  /** 导航：流量统计 */
+  traffic: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
   /** 导航：代理源 */
   sources: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
   /** 导航：设置 */

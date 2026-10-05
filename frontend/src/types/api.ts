@@ -333,3 +333,45 @@ export interface SettingsResponse {
   changed: Record<string, unknown>;
   settings: SettingsSnapshot;
 }
+
+/** GET /api/traffic/live：实时流量条目（此刻仍开着的连接，按「代理, 域名」汇总） */
+export interface TrafficLiveEntry {
+  bind: string;              // 上游代理地址
+  host: string;              // 目标域名
+  ip: string | null;         // 该 (代理,域名) 解析出的目标 IP（尚未解析为 null）
+  geo: GeoInfo | null;       // 目标 IP 归属（geoip 关闭或未解析为 null）
+  connections: number;       // 此刻开着的连接数
+  up_rate: number;           // 上行聚合 EMA（B/s）
+  down_rate: number;
+  first_seen: number;        // 该 (代理,域名) 首个连接建立时刻（秒）
+  last_seen: number;         // 最近一次会话建立时刻（秒）
+}
+
+/** GET /api/traffic/history：历史条目（按「代理, 域名, IP」分区，IP 变动即新条目） */
+export interface TrafficHistoryEntry {
+  bind: string;
+  host: string;
+  ip: string | null;
+  geo: GeoInfo | null;
+  upload: number;            // 累计上行字节
+  download: number;
+  last_seen: number;         // 最后一次会话建立时刻（秒）
+}
+
+/** GET /api/traffic/history：total_entries 为库中条目总数（entries 受下发上限截断） */
+export interface TrafficHistoryResponse {
+  entries: TrafficHistoryEntry[];
+  total_entries: number;
+}
+
+/** GET /api/traffic/live 响应 */
+export interface TrafficLiveResponse {
+  entries: TrafficLiveEntry[];
+}
+
+/** GET /api/traffic/summary：流量统计摘要（页头 KPI） */
+export interface TrafficSummary {
+  connections: number;       // 当前活跃连接总数
+  entries: number;           // 历史条目总数（不受下发上限影响）
+  total: TrafficTotal;       // 进程内累计字节
+}

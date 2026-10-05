@@ -6,6 +6,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from src.interfaces.proxy_server import PproxyServer, listen_uri
 
 
+class _StubTraffic:
+    """流量统计用例的最小替身（PproxyServer 只转发 modstat 事件，统计行为在用例层测）"""
+
+    def __init__(self):
+        self.pairs = []
+        self.bytes_calls = []
+        self.conn_calls = []
+
+    def note_pair(self, bind, host):
+        self.pairs.append((bind, host))
+
+    def record_bytes(self, bind, host, up, down):
+        self.bytes_calls.append((bind, host, up, down))
+
+    def record_conn(self, bind, host, delta):
+        self.conn_calls.append((bind, host, delta))
+
+
 def _realistic_bind(uri: str) -> str:
     """模拟真实 pproxy.Connection 的 bind 属性：只存地址不含 scheme 前缀
 
@@ -28,7 +46,8 @@ class TestListenUri(unittest.TestCase):
 
 class TestPproxyServer(unittest.TestCase):
     def setUp(self):
-        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080")
+        self.traffic = _StubTraffic()
+        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080", traffic=self.traffic)
 
     def tearDown(self):
         self.server._rserver = []
@@ -212,7 +231,8 @@ class TestUpstreamHealth(unittest.TestCase):
     """
 
     def setUp(self):
-        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080")
+        self.traffic = _StubTraffic()
+        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080", traffic=self.traffic)
 
     async def _start(self, proxies):
         with patch.object(self.server._server, "start_server", new_callable=AsyncMock):
@@ -284,199 +304,47 @@ class TestUpstreamHealth(unittest.TestCase):
         asyncio.run(run())
 
 
-class TestPerProxyTraffic(unittest.TestCase):
-    """按上游代理 IP 的流量统计测试"""
+class TestModstatForwarding(unittest.TestCase):
+    """modstat 钩子把字节与连接事件转发到流量统计用例（统计口径在用例层）"""
 
     def setUp(self):
-        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080")
-
-    def test_empty_initially(self):
-        """初始无流量时 per_proxy_traffic 返回空 dict"""
-        self.assertEqual(self.server.per_proxy_traffic(), {})
-
-    def test_add_upload_download_per_bind(self):
-        """_add_upload/_add_download 按 bind 累计，全局与 per-proxy 一致"""
-        self.server._add_upload("1.1.1.1:8080", "example.com", 100)
-        self.server._add_download("1.1.1.1:8080", "example.com", 200)
-        self.server._add_upload("2.2.2.2:1080", "example.com", 50)
-        self.server._add_download("2.2.2.2:1080", "example.com", 150)
-        traffic = self.server.per_proxy_traffic()
-        self.assertEqual(traffic["1.1.1.1:8080"], {"upload": 100, "download": 200})
-        self.assertEqual(traffic["2.2.2.2:1080"], {"upload": 50, "download": 150})
-        # 全局总计
-        total_up, total_down = self.server.traffic_total()
-        self.assertEqual(total_up, 150)
-        self.assertEqual(total_down, 350)
-
-    def test_direct_bind(self):
-        """显式 direct:// 上游（bind == "DIRECT"）的流量仍用 'DIRECT' 作 key"""
-        self.server._add_upload("DIRECT", "example.com", 500)
-        self.server._add_download("DIRECT", "example.com", 800)
-        traffic = self.server.per_proxy_traffic()
-        self.assertEqual(traffic["DIRECT"], {"upload": 500, "download": 800})
-
-    def test_modstat_records_per_proxy(self):
-        """modstat 钩子按 roption.bind 分发计数（roption 由 pproxy stream_handler 传入）"""
-        roption = MagicMock(bind="3.3.3.3:3128")
-        modstat = self.server._make_modstat()
-        m = modstat(None, "127.0.0.1", "example.com", roption)
-        m(0)(1000)
-        m(2)(3000)
-        traffic = self.server.per_proxy_traffic()
-        self.assertEqual(traffic["3.3.3.3:3128"], {"upload": 1000, "download": 3000})
-        pair = self.server.active_pairs(0)[0]
-        self.assertEqual((pair["bind"], pair["host"]), ("3.3.3.3:3128", "example.com"))
-        self.assertEqual((pair["up"], pair["down"]), (1000, 3000))
-
-    def test_modstat_connection_change_ignored(self):
-        """i ∈ {4,5}（连接数变化）不统计流量"""
-        roption = MagicMock(bind="4.4.4.4:8080")
-        modstat = self.server._make_modstat()
-        m = modstat(None, "127.0.0.1", "example.com", roption)
-        m(4)(1)
-        m(5)(1)
-        self.assertEqual(self.server.per_proxy_traffic(), {})
-
-
-class TestPairTraffic(unittest.TestCase):
-    """(bind, host) 维度的目标流量统计（目标地区探测的数据源）"""
-
-    def setUp(self):
-        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080")
+        self.traffic = _StubTraffic()
+        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080", traffic=self.traffic)
 
     def _modstat(self, bind, host):
-        roption = MagicMock(bind=bind)
-        return self.server._make_modstat()(None, "127.0.0.1", host, roption)
+        return self.server._make_modstat()(None, "127.0.0.1", host, MagicMock(bind=bind))
 
-    def test_modstat_normalizes_host_and_counts_bytes(self):
-        """host 归一化（大小写/尾点/空白），双向字节与 last_seen 入 pair"""
-        m = self._modstat("1.1.1.1:8080", " Example.COM. ")
-        m(0)(100)
-        m(2)(300)
-        pairs = self.server.active_pairs(0)
-        self.assertEqual(len(pairs), 1)
-        self.assertEqual(pairs[0]["bind"], "1.1.1.1:8080")
-        self.assertEqual(pairs[0]["host"], "example.com")
-        self.assertEqual((pairs[0]["up"], pairs[0]["down"]), (100, 300))
-        self.assertEqual((pairs[0]["up_rate"], pairs[0]["down_rate"]), (0.0, 0.0))
+    def test_forwards_bytes_by_direction(self):
+        """i ∈ {0,1} 上行 / {2,3} 下行；host 原样透传（归一化与空值处理在用例层）"""
+        m = self._modstat("3.3.3.3:3128", " Example.COM. ")
+        m(0)(1000)
+        m(2)(3000)
+        self.assertEqual(self.traffic.pairs, [("3.3.3.3:3128", " Example.COM. ")])
+        self.assertEqual(self.traffic.bytes_calls, [
+            ("3.3.3.3:3128", " Example.COM. ", 1000, 0),
+            ("3.3.3.3:3128", " Example.COM. ", 0, 3000),
+        ])
+        self.assertEqual(self.traffic.conn_calls, [])
 
-    def test_empty_host_skips_pair_but_counts_per_proxy(self):
-        """空 host 不建 pair（无目标请求），per-proxy 计数不受影响"""
+    def test_forwards_connection_change(self):
+        """i ∈ {4,5} 是连接事件（连接级统计的数据源），不再被静默丢弃"""
+        m = self._modstat("4.4.4.4:8080", "example.com")
+        m(4)(1)
+        m(5)(1)
+        m(4)(-1)
+        self.assertEqual(self.traffic.conn_calls, [
+            ("4.4.4.4:8080", "example.com", 1),
+            ("4.4.4.4:8080", "example.com", 1),
+            ("4.4.4.4:8080", "example.com", -1),
+        ])
+        self.assertEqual(self.traffic.bytes_calls, [])
+
+    def test_forwards_raw_host_even_when_empty(self):
+        """空 host 也照常转发：proxy_server 只做转译，不做业务判断"""
         m = self._modstat("1.1.1.1:8080", "  ")
         m(0)(100)
-        self.assertEqual(self.server.active_pairs(0), [])
-        self.assertEqual(self.server.per_proxy_traffic()["1.1.1.1:8080"],
-                         {"upload": 100, "download": 0})
-
-    def test_active_pairs_window_filter(self):
-        """since_ts 之前的 last_seen 被过滤（界内包含）"""
-        with patch("src.interfaces.proxy_server.time.time", return_value=1000.0):
-            self._modstat("1.1.1.1:8080", "example.com")
-        self.assertEqual(len(self.server.active_pairs(1000.0)), 1)
-        self.assertEqual(self.server.active_pairs(1000.5), [])
-
-    def test_sample_computes_instant_rate_ema(self):
-        """首采速率 0（防累计冲量误判），次采按差分算瞬时，EMA=0.3*瞬时"""
-        m = self._modstat("1.1.1.1:8080", "example.com")
-        m(0)(100)
-        with patch("src.interfaces.proxy_server.time.time", return_value=1000.0):
-            self.server.sample_traffic()
-        m(0)(200)
-        m(2)(210)
-        with patch("src.interfaces.proxy_server.time.time", return_value=1002.0):
-            self.server.sample_traffic()
-        pair = self.server.active_pairs(0)[0]
-        self.assertEqual((pair["up"], pair["down"]), (300, 210))
-        self.assertAlmostEqual(pair["up_rate"], 0.3 * 200 / 2)
-        self.assertAlmostEqual(pair["down_rate"], 0.3 * 210 / 2)
-        # 瞬时速率：最近一个采样窗口的差分（线宽用 EMA，流速用瞬时）
-        self.assertAlmostEqual(pair["up_inst"], 200 / 2)
-        self.assertAlmostEqual(pair["down_inst"], 210 / 2)
-
-    def test_stale_pairs_cleaned_with_window(self):
-        """last_seen 超出 metrics_window 的 pair 连五个 dict 一起清，不留孤儿"""
-        server = PproxyServer("http://127.0.0.1:8080", metrics_window=10.0)
-        with patch("src.interfaces.proxy_server.time.time", return_value=1000.0):
-            server._make_modstat()(None, "127.0.0.1", "example.com",
-                                   MagicMock(bind="1.1.1.1:8080"))
-        with patch("src.interfaces.proxy_server.time.time", return_value=1005.0):
-            server.sample_traffic()
-        self.assertEqual(len(server.active_pairs(0)), 1)
-        with patch("src.interfaces.proxy_server.time.time", return_value=1011.0):
-            server.sample_traffic()
-        self.assertEqual(server.active_pairs(0), [])
-        self.assertEqual(server._pair_upload, {})
-        self.assertEqual(server._pair_download, {})
-        self.assertEqual(server._pair_rate_ema, {})
-        self.assertEqual(server._pair_rate_inst, {})
-        self.assertEqual(server._pair_prev, {})
-
-    def test_capacity_evicts_oldest_pairs(self):
-        """超 _MAX_PAIRS 时按 last_seen 批量淘汰最旧，六个 dict 同步"""
-        with patch("src.interfaces.proxy_server._MAX_PAIRS", 3), \
-             patch("src.interfaces.proxy_server._PAIR_EVICT_BATCH", 1):
-            for i, ts in enumerate((100.0, 200.0, 300.0, 400.0)):
-                with patch("src.interfaces.proxy_server.time.time", return_value=ts):
-                    self._modstat("1.1.1.1:8080", f"h{i}.example")
-            hosts = {p["host"] for p in self.server.active_pairs(0)}
-            self.assertEqual(hosts, {"h2.example", "h3.example"})
-            self.assertEqual(set(self.server._pair_prev),
-                             {("1.1.1.1:8080", "h2.example"),
-                              ("1.1.1.1:8080", "h3.example")})
-
-
-class TestPerProxyTrafficHistory(unittest.TestCase):
-    """按上游代理 IP 的流量历史采样测试"""
-
-    def setUp(self):
-        self.server = PproxyServer("http+socks4+socks5://127.0.0.1:8080")
-
-    def test_empty_initially(self):
-        self.assertEqual(self.server.per_proxy_traffic_history("1.1.1.1:8080"), [])
-
-    def test_sample_records_per_bind(self):
-        """sample_traffic 为每个有流量的 bind 各采一笔"""
-        self.server._add_upload("1.1.1.1:8080", "example.com", 100)
-        self.server._add_download("1.1.1.1:8080", "example.com", 200)
-        self.server._add_upload("2.2.2.2:1080", "example.com", 50)
-        self.server.sample_traffic()
-        h1 = self.server.per_proxy_traffic_history("1.1.1.1:8080")
-        h2 = self.server.per_proxy_traffic_history("2.2.2.2:1080")
-        self.assertEqual(len(h1), 1)
-        self.assertEqual(h1[0].total_upload, 100)
-        self.assertEqual(h1[0].total_download, 200)
-        self.assertEqual(len(h2), 1)
-        self.assertEqual(h2[0].total_upload, 50)
-
-    def test_multiple_samples_accumulate(self):
-        """多次采样各记一笔，累计值递增"""
-        self.server._add_download("1.1.1.1:8080", "example.com", 100)
-        self.server.sample_traffic()
-        self.server._add_download("1.1.1.1:8080", "example.com", 200)
-        self.server.sample_traffic()
-        h = self.server.per_proxy_traffic_history("1.1.1.1:8080")
-        self.assertEqual(len(h), 2)
-        self.assertEqual(h[0].total_download, 100)
-        self.assertEqual(h[1].total_download, 300)
-
-    def test_window_cleanup(self):
-        """超出 metrics_window 的采样点自动清理"""
-        server = PproxyServer("http://127.0.0.1:8080", metrics_window=0.1)
-        server._add_upload("1.1.1.1:8080", "example.com", 100)
-        server.sample_traffic()
-        import time as _time
-        _time.sleep(0.15)
-        server._add_upload("1.1.1.1:8080", "example.com", 200)
-        server.sample_traffic()
-        h = server.per_proxy_traffic_history("1.1.1.1:8080")
-        self.assertEqual(len(h), 1)
-        self.assertEqual(h[0].total_upload, 300)
-
-    def test_unknown_bind_returns_empty(self):
-        """未产生流量的 bind 返回空列表"""
-        self.server._add_upload("1.1.1.1:8080", "example.com", 100)
-        self.server.sample_traffic()
-        self.assertEqual(self.server.per_proxy_traffic_history("9.9.9.9:9999"), [])
+        self.assertEqual(self.traffic.pairs, [("1.1.1.1:8080", "  ")])
+        self.assertEqual(self.traffic.bytes_calls, [("1.1.1.1:8080", "  ", 100, 0)])
 
 
 if __name__ == "__main__":

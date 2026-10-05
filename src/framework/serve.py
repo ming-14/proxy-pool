@@ -24,6 +24,7 @@ from src.framework.web.panel_state import PanelTasks
 from src.interfaces.doh_resolver import DohResolver
 from src.interfaces.proxy_server import PproxyServer, listen_uri
 from src.use_cases.target_geo import TargetGeoUseCase
+from src.use_cases.traffic_stats import TrafficStatsUseCase
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,17 @@ def _proxy_lookup(standby) -> Callable[[str], str | None]:
     return lookup
 
 
+def _target_ip_lookup(store) -> Callable[[list[tuple[str, str]]], dict[tuple[str, str], str]]:
+    """(bind, host) 批量查目标 IP 的闭包（历史流量条目确定 IP 维度用）
+
+    取不到（尚未探测/无 A 记录）的 pair 不出现在返回字典里，对应条目 IP 记空串。
+    """
+    def lookup(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+        rows = store.get_target_geo_batch(pairs)
+        return {pair: (row.get("ip") or "") for pair, row in rows.items()}
+    return lookup
+
+
 async def _run(
     c,
     *,
@@ -80,8 +92,17 @@ async def _run(
     web_enabled: bool = True,
 ) -> None:
     """服务器主循环：启动 + 周期心跳 + 队列补充 + 退避补测 + Web 控制面板（web_enabled=false 时跳过面板）"""
+    # 流量统计用例：统计状态与口径全在此，PproxyServer 只转发 modstat 事件。
+    # store 同时充当历史条目存储与目标 IP 查询源（两条端口都由 SqliteProxyStore 实现）。
+    traffic = TrafficStatsUseCase(
+        store=c.store,
+        target_ip_lookup=_target_ip_lookup(c.store),
+        metrics_window=config.METRICS_WINDOW,
+        flush_interval=config.TRAFFIC_FLUSH_INTERVAL,
+        retention=config.TRAFFIC_RETENTION,
+    )
     server = PproxyServer(listen_uri=listen_uri(host, port, config.SERVER_LISTEN_PROTOCOLS),
-                          metrics_window=config.METRICS_WINDOW)
+                          traffic=traffic)
     standby = c.standby
     standby.set_capacity(capacity)  # 队列容量：standby_proxies 按容量截断进上游的候选（超出者仍受心跳探测）
     # 调度参数集中持有：serve 各环节每轮读取，Web 面板可在运行时调整（写同一实例）
@@ -153,7 +174,7 @@ async def _run(
     target_geo = None
     if config.GLOBE_ENABLED and c.geo is not None:
         target_geo = TargetGeoUseCase(
-            server=server,
+            traffic=traffic,
             store=c.store,
             resolver=DohResolver(config.GLOBE_DOH_ENDPOINTS, c.async_getter,
                                  timeout=config.GLOBE_PROBE_TIMEOUT),
@@ -182,6 +203,7 @@ async def _run(
             control=control,
             enqueue_settings=enqueue_settings,
             server=server,
+            traffic=traffic,
             save=c.save,
             capacity=capacity,
             purity=c.purity,
@@ -244,13 +266,13 @@ async def _run(
     async def traffic_sample_loop():
         """周期流量采样：固定间隔（TRAFFIC_SAMPLE_INTERVAL），不随心跳节奏放宽
 
-        流量采样只读内存计数器（sample_traffic 累计值 + 裁剪 deque），与探测解耦——
+        流量采样只读内存计数器（traffic.sample 差分 + 裁剪 deque），与探测解耦——
         锁定单一上游时心跳放宽到 heartbeat_lock_interval（30s），若采样挂在心跳轮次上，
         正被使用的锁定代理流量图会跟着变稀疏；探测阻塞/退避期间采样也不中断。
         """
         while True:
             try:
-                server.sample_traffic()
+                traffic.sample(time.time())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -314,6 +336,8 @@ async def _run(
             logger.warning("关闭 async session 异常: %s", e)
         if panel is not None:
             await panel.close()
+        # 退出前把待落盘的历史流量增量写入（不足 flush_interval 的那一段不丢）
+        traffic.flush(time.time(), force=True)
         c.save_full()
 
 

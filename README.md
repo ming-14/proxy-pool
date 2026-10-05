@@ -12,7 +12,7 @@
 
 代理池管理工具。自动从多个免费代理源拉取代理，支持分组管理、TTL 过期、成功/失败追踪、黑名单淘汰、源暂停、多线程并发调度，并提供本地 HTTP/SOCKS4（含 4a）/SOCKS5 正向代理服务器（TCP only：SOCKS5 UDP ASSOCIATE 回 REP `0x07`，不做 UDP 直连；自动心跳 + 无缝切换；**上游不可用时拒绝请求而不回退直连**，避免泄漏本机真实 IP）。
 
-Web 控制面板支持 Windows 资源管理器式代理列表框选/多选（蓝色矩形框选、Ctrl/Shift 多选、Ctrl+A 全选、批量拉黑/移动/删除），提供 **IP 分布世界地图**（ECharts，IP 归属 GeoLite2 离线解析，城市级散点颜色深浅表示密度）与仪表盘底部的 **3D 地球**（globe.gl：代理节点 + 本机→代理→目标城市的实时流量飞线，目标落点由穿对应代理的 DoH 解析得到，仅面板查看时探测），侧边栏底部可启停**控制台日志面板**（悬浮视窗实时查看 serve 日志，支持级别/模块筛选、搜索、导出；面板未开启时不产生日志接口请求），详见 [docs/cli.md](docs/cli.md)。
+Web 控制面板支持 Windows 资源管理器式代理列表框选/多选（蓝色矩形框选、Ctrl/Shift 多选、Ctrl+A 全选、批量拉黑/移动/删除），提供 **IP 分布世界地图**（ECharts，IP 归属 GeoLite2 离线解析，城市级散点颜色深浅表示密度）与仪表盘底部的 **3D 地球**（globe.gl：代理节点 + 本机→代理→目标城市的实时流量飞线，目标落点由穿对应代理的 DoH 解析得到，仅面板查看时探测），以及**流量统计**页（实时 / 历史两个选项卡：实时按连接级口径列出此刻仍开着的连接，历史按「代理-域名-IP」条目列出累计流量与最后连接时间，条目增量落 `.cache.db` 的 `traffic_history` 表），侧边栏底部可启停**控制台日志面板**（悬浮视窗实时查看 serve 日志，支持级别/模块筛选、搜索、导出；面板未开启时不产生日志接口请求），详见 [docs/cli.md](docs/cli.md)。
 
 代理服务队列页把每个代理的**延时趋势与流量速率内联在行下**（自绘 SVG 迷你曲线，按时间戳映射、探测失败处断线，全部行共用同一时间窗口：新入队行左端留白、采样已停止的行不贴右边缘；左侧一列标出该图的数据值区间，流量为 0 的间隔不绘制），连同协议/归属地/入队时长/纯净度与手动测速结果，让代理信息与质量在**同一页面滚动可见**（无逐项显示开关，四块质量信息直接常显；只需时用「收起图表」切回单行密度）；代理质量由后端心跳自动管理（失败计数→退避补测→拉黑淘汰），前端不主动做质量标记。
 
@@ -35,7 +35,7 @@ Web 面板「IP 分布」页面与 3D 地球的代理节点定位依赖 MaxMind 
 - 官方：https://www.maxmind.com/en/accounts/current/geoip/downloads（免费注册）
 - 或社区构建版（如 `P3TERX/GeoLite.mmdb` 的 GitHub Releases）
 
-未放置时启动仅 WARNING 并禁用地图（serve 正常运行；`[web].enabled=false` 或 `[geoip].enabled=false` 时连 geoip2 依赖链都不加载）；放置后首次打开地图页面自动全量解析并缓存到 `.cache.db` 的 `ip_geo_cache` 表（后续毫秒级返回）。路径与缓存 TTL 见 `config/panel.toml` 的 `[geoip]` 节；3D 地球的目标地区探测另见同文件 `[globe]` 节（含手填本机坐标）。目标地区探测会把「目标域名 + 归属」缓存在 `.cache.db` 的 `target_geo_cache` 表：只想停探测设 `[globe].enabled=false`，要清掉已缓存的目标域名则停掉 serve 后清该表内容（任意 SQLite 客户端，如 `sqlite3 .cache.db "DELETE FROM target_geo_cache"`）；行也会按 `[globe].prune_after`（默认 30 天）自动老化。
+未放置时启动仅 WARNING 并禁用地图（serve 正常运行；`[web].enabled=false` 或 `[geoip].enabled=false` 时连 geoip2 依赖链都不加载）；放置后首次打开地图页面自动全量解析并缓存到 `.cache.db` 的 `ip_geo_cache` 表（后续毫秒级返回）。路径与缓存 TTL 见 `config/panel.toml` 的 `[geoip]` 节；3D 地球的目标地区探测另见同文件 `[globe]` 节（含手填本机坐标）。目标地区探测会把「目标域名 + 归属」缓存在 `.cache.db` 的 `target_geo_cache` 表：只想停探测设 `[globe].enabled=false`，要清掉已缓存的目标域名则停掉 serve 后清该表内容（任意 SQLite 客户端，如 `sqlite3 .cache.db "DELETE FROM target_geo_cache"`）；行也会按 `[globe].prune_after` 自动老化。历史流量条目（`traffic_history` 表，同样含目标域名与 IP）按 `[traffic].retention` 自动清理，也可停掉 serve 后 `DELETE FROM traffic_history` 清空。
 
 ## 快速开始
 

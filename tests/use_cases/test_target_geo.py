@@ -123,7 +123,7 @@ def _use_case(*, pairs, rows=None, resolver=None, geo=None, proxies=None,
     geo = geo or FakeGeo({"1.2.3.4": _US_GEO})
     proxies = {_BIND: _PROXY} if proxies is None else proxies
     uc = TargetGeoUseCase(
-        server=server, store=store, resolver=resolver, geo=geo,
+        traffic=server, store=store, resolver=resolver, geo=geo,
         proxy_lookup=proxies.get, probe_concurrency=concurrency,
         cache_ttl=cache_ttl, activation_window=activation_window,
         probe_window=probe_window, prune_after=prune_after,

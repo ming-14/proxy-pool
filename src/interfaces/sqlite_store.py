@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 # schema：proxies 复合主键支持跨组副本；group_meta 存组 ttl；source_paused 存源暂停；
 # ippure_cache 存 IP 纯净度检查结果（按 (源名, IP) 分区，TTL 由用例层判断）；
-# target_geo_cache 存 (代理, 目标域名) 的穿代理解析结果，TTL/清理阈值由用例层判断。
+# target_geo_cache 存 (代理, 目标域名) 的穿代理解析结果，TTL/清理阈值由用例层判断；
+# traffic_history 存历史流量条目（按 (代理,域名,IP) 分区，写入为增量累加——重启后不丢历史，
+# 保留期由用例层判断）。
 # ip_purity_cache 为旧纯净度缓存表（键位与字段已变），启动即删，不做迁移。
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS proxies (
@@ -75,6 +77,15 @@ CREATE TABLE IF NOT EXISTS target_geo_cache (
     lng          REAL,
     cached_at    REAL NOT NULL,     -- 解析完成时间（TTL 判定在用例层）
     PRIMARY KEY (bind, host)
+);
+CREATE TABLE IF NOT EXISTS traffic_history (
+    bind      TEXT NOT NULL,     -- 上游代理地址（bind_of，不含 scheme 前缀）
+    host      TEXT NOT NULL,     -- 归一化目标域名（IP 字面量原样）
+    ip        TEXT NOT NULL,     -- 该 (代理,域名) 解析出的目标 IP；无结果记空串
+    upload    INTEGER NOT NULL DEFAULT 0,
+    download  INTEGER NOT NULL DEFAULT 0,
+    last_seen REAL NOT NULL,     -- 最后一次会话建立时刻（秒）
+    PRIMARY KEY (bind, host, ip)
 );
 CREATE TABLE IF NOT EXISTS app_kv (
     key   TEXT PRIMARY KEY,
@@ -369,4 +380,49 @@ class SqliteProxyStore:
         目标域名落盘有隐私属性，长期未刷新的行不应一直留存（serve 每小时调用一次）。
         """
         cur = self._conn.execute("DELETE FROM target_geo_cache WHERE cached_at < ?", (before_ts,))
+        return cur.rowcount
+
+    # ------------------------------------------------------------------ 历史流量
+    def add_traffic_history(self, deltas: dict[tuple[str, str, str], dict]) -> None:
+        """按增量累加写入历史流量条目（upsert by (bind, host, ip)，事务内一次落盘）
+
+        deltas: {(bind, host, ip): {"up", "down", "last_seen"}}，值为**本次增量**。
+        用 SQL 侧累加（upload = upload + excluded.upload）而非绝对值覆盖：进程重启后
+        内存增量归零，写绝对值会把历史冲掉；累加语义让重启前后自然衔接。
+        """
+        if not deltas:
+            return
+        records = [
+            (bind, host, ip, d["up"], d["down"], d["last_seen"])
+            for (bind, host, ip), d in deltas.items()
+        ]
+        with self._tx():
+            self._conn.executemany(
+                "INSERT INTO traffic_history (bind, host, ip, upload, download, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(bind, host, ip) DO UPDATE SET "
+                "upload = upload + excluded.upload, "
+                "download = download + excluded.download, "
+                "last_seen = MAX(last_seen, excluded.last_seen)", records
+            )
+
+    def get_traffic_history(self, limit: int) -> list[dict]:
+        """历史流量条目，按流量总计（上下行之和）降序取前 limit 条
+
+        返回 [{bind, host, ip, upload, download, last_seen}]。条目会被持续累加更新，
+        故不做 since 增量（增量拉取对可更新条目语义不成立）。
+        """
+        rows = self._conn.execute(
+            "SELECT bind, host, ip, upload, download, last_seen FROM traffic_history "
+            "ORDER BY (upload + download) DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_traffic_history(self) -> int:
+        """历史流量条目总数（摘要接口用，与 limit 截断后的条数区分）"""
+        return self._conn.execute("SELECT COUNT(*) FROM traffic_history").fetchone()[0]
+
+    def prune_traffic_history(self, before_ts: float) -> int:
+        """删除 last_seen 早于 before_ts 的历史流量条目，返回删除数（保留期由用例层定）"""
+        cur = self._conn.execute("DELETE FROM traffic_history WHERE last_seen < ?", (before_ts,))
         return cur.rowcount

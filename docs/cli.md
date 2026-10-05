@@ -75,7 +75,9 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 
 仪表盘的「代理服务队列延迟趋势」「健康率趋势」图表由**后端采样**驱动：每轮 heartbeat 结束采一次队列指标，存内存按 `METRICS_WINDOW`（全局留存时长，与流量共用）保留，超出自动清理；`/api/status/history` 增量下发（`?since=<ts>` 只回新点，并带 `retention_window` 供前端按时间裁剪本地缓冲），图表**按拿到的真实数据点绘制、不做窗口裁剪**——**刷新页面不丢失趋势**（多标签一致），重启清空。`standby_chart_window` 只决定**队列页**行内趋势图显示多长，不影响留存与仪表盘。
 
-「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，**独立采样循环固定 2s 采累计值存历史**（与队列指标同按 `METRICS_WINDOW` 留存）——采样与心跳节奏解耦：锁定单一上游时心跳放宽到 30s 但流量照常 2s 采样（锁定代理正被使用，流量图不跟着变稀疏），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。按上游代理的累计/历史流量（`per_proxy_traffic`，`{bind: {"upload": int, "download": int}}`）通过 vendor/pproxy 内化的 `modstat(user, remote_ip, host_name, roption)` 钩子实现，仅内存实时计数不持久化。历史数据统一用 bind（地址，不含 scheme）作 key：面板走 `/api/standby/series` 批量增量下发（见上），单代理的 `/api/proxy/history?bind=` 保留作诊断查询（延时序列的值为 `null` 表示该轮探测失败）。
+「数据流量」图表通过 pproxy 原生 `modstat` 钩子统计上行/下行字节，**独立采样循环固定 2s 采累计值存历史**（与队列指标同按 `METRICS_WINDOW` 留存）——采样与心跳节奏解耦：锁定单一上游时心跳放宽到 `HEARTBEAT_LOCK_INTERVAL` 但流量照常 2s 采样（锁定代理正被使用，流量图不跟着变稀疏），前端算速率曲线；旁边 KPI 显示实时上下行速率、累计流量、当前平均延迟。统计状态与口径都在 `TrafficStatsUseCase`（use_cases 层）：`PproxyServer` 的 `modstat(user, remote_ip, host_name, roption)`（vendor/pproxy 内化签名）只把字节与连接事件转发过去，全局 / per-proxy（`bind → {"upload", "download"}`）累计仅内存、重启清零、不持久化。历史数据统一用 bind（地址，不含 scheme）作 key：面板走 `/api/standby/series` 批量增量下发（见上），单代理的 `/api/proxy/history?bind=` 保留作诊断查询（延时序列的值为 `null` 表示该轮探测失败）。
+
+侧栏「流量统计」页另有两个选项卡：**实时流量**（`/api/traffic/live`）按连接级口径列出此刻仍开着的连接（域名 / 目标 IP / 归属地 / 代理 / 连接数 / 速率），连接关闭即从列表消失；**历史流量**（`/api/traffic/history`）按「代理-域名-IP」条目列出累计流量与最后连接时间（IP 变动即新条目，可看出同一域名经不同出口的 CDN 漂移），条目增量累加落到 `.cache.db` 的 `traffic_history` 表，保留期与落盘节流见 `config/panel.toml` 的 `[traffic]`。
 
 面板为 Vue 3 + Vite + TypeScript + Tailwind CSS 4 单页应用（源码 `frontend/`，构建产物输出到 `src/framework/web/static/`、由 aiohttp 直接 serve；**产物不入库**，克隆后需在 `frontend/` 执行 `npm install && npm run build`；图表统一 ECharts）。定时轮询 `/api/status`（固定 2s），数据全部通过 REST API 交互。
 
