@@ -368,10 +368,3 @@ export interface TrafficHistoryResponse {
 export interface TrafficLiveResponse {
   entries: TrafficLiveEntry[];
 }
-
-/** GET /api/traffic/summary：流量统计摘要（页头 KPI） */
-export interface TrafficSummary {
-  connections: number;       // 当前活跃连接总数
-  entries: number;           // 历史条目总数（不受下发上限影响）
-  total: TrafficTotal;       // 进程内累计字节
-}

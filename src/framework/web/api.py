@@ -506,17 +506,6 @@ async def _traffic_history(request: web.Request) -> web.Response:
                               "total_entries": ctx.traffic.history_count()})
 
 
-async def _traffic_summary(request: web.Request) -> web.Response:
-    """流量统计摘要：活跃连接数 + 历史条目数 + 全局累计字节"""
-    ctx = request.app[_PANEL_KEY]
-    upload, download = ctx.traffic.total()
-    return web.json_response({
-        "connections": ctx.traffic.connection_count(),
-        "entries": ctx.traffic.history_count(),
-        "total": {"upload": upload, "download": download},
-    })
-
-
 async def _group(request: web.Request) -> web.Response:
     ctx = request.app[_PANEL_KEY]
     detail = await _group_detail(ctx, request.match_info["name"])
@@ -942,7 +931,6 @@ def build_app(ctx: PanelContext) -> web.Application:
     app.router.add_get("/api/proxy/history", _proxy_history)
     app.router.add_get("/api/traffic/live", _traffic_live)
     app.router.add_get("/api/traffic/history", _traffic_history)
-    app.router.add_get("/api/traffic/summary", _traffic_summary)
     app.router.add_post("/api/proxy/speedtest", _do_speedtest)
     app.router.add_post("/api/proxy/purity", _do_purity)
     # geoip.enabled=false 时不注册地图/归属路由（前端按 /api/status 的 geo_enabled 跳过）

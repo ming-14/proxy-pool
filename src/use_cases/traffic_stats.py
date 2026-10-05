@@ -315,10 +315,6 @@ class TrafficStatsUseCase:
         out.sort(key=lambda x: x["connections"], reverse=True)
         return out
 
-    def connection_count(self) -> int:
-        """当前活跃连接总数"""
-        return sum(self._conn_count.values())
-
     def history_entries(self, limit: int) -> list[dict]:
         """历史流量条目（按流量总计降序，最多 limit 条）"""
         return self._store.get_traffic_history(limit)

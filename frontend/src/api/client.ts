@@ -16,7 +16,6 @@ import type {
   StatusSnapshot,
   TrafficHistoryResponse,
   TrafficLiveResponse,
-  TrafficSummary,
 } from '@/types/api';
 
 export class ApiError extends Error {
@@ -128,9 +127,6 @@ export const api = {
 
   /** 历史流量条目（按流量总计降序，条数上限由后端配置决定） */
   trafficHistory: () => request<TrafficHistoryResponse>('/api/traffic/history'),
-
-  /** 流量统计摘要（活跃连接数 / 历史条目数 / 全局累计字节） */
-  trafficSummary: () => request<TrafficSummary>('/api/traffic/summary'),
 
   logs: (since?: number) =>
     request<LogsResponse>(`/api/logs${since ? `?since=${encodeURIComponent(since)}` : ''}`),

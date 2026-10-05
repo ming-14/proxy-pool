@@ -115,7 +115,6 @@ class TrafficStatsUseCase:
     def per_proxy_traffic_history(self, bind: str) -> list[TrafficSample]: ...
     def active_pairs(self, since_ts: float) -> list[dict]: ...
     def live_connections(self) -> list[dict]: ...  # D1：此刻活跃的连接（见 3.2）
-    def connection_count(self) -> int: ...
     def history_entries(self, limit: int) -> list[dict]: ...
     def history_count(self) -> int: ...
 ```
@@ -203,7 +202,6 @@ CREATE TABLE IF NOT EXISTS traffic_history (
 |---|---|
 | `GET /api/traffic/live` | 实时条目：`{entries: [{bind, host, ip, geo, connections, up_rate, down_rate, first_seen, last_seen}]}` |
 | `GET /api/traffic/history` | 历史条目：`{entries: [{bind, host, ip, geo, upload, download, last_seen}], total_entries}`，按流量总计降序 |
-| `GET /api/traffic/summary` | 全局摘要：`{connections, entries, total: {upload, download}}` |
 
 - 注册条件：无（与 web 同生命周期）；`geoip` 关闭时条目的 `geo` 恒为 `null`，流量部分不受影响。
 - 历史**不做 `since` 增量**：条目会被持续累加更新，"只返回新点"的增量语义对它不成立；
@@ -269,8 +267,6 @@ export interface TrafficHistoryResponse {
   entries: TrafficHistoryEntry[];
   total_entries: number;                  // 库中总数（entries 受下发上限截断）
 }
-
-export interface TrafficSummary { connections: number; entries: number; total: TrafficTotal; }
 ```
 
 ## 7. 测试要点
@@ -282,7 +278,7 @@ export interface TrafficSummary { connections: number; entries: number; total: T
   分区 / `prune_traffic_history`。
 - `tests/interfaces/test_proxy_server.py`（改造）：`modstat` 的四条分支分别上报到用例
   （用 mock 用例断言调用参数），确认连接事件不再被丢弃。
-- `tests/framework/test_web_api.py`（增补）：三个新路由的响应形状；`geoip` 关闭时 `geo=null`。
+- `tests/framework/test_web_api.py`（增补）：两个新路由的响应形状；`geoip` 关闭时 `geo=null`。
 - 前端：`npm run test` + `npm run build`（vue-tsc）；流量页手动验收（实时/历史切换、增量、
   排序、空态）。
 
@@ -291,9 +287,10 @@ export interface TrafficSummary { connections: number; entries: number; total: T
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 1 | `TrafficStatsUseCase` + store 端口 + `traffic_history` 表；`PproxyServer` 钩子改接；引用点全量更新 | ✅ |
-| 2 | 连接级统计 + 三个 API + 旧访问器删除 | ✅ |
+| 2 | 连接级统计 + 两个 API + 旧访问器删除 | ✅ |
 | 3 | 前端流量页（两个选项卡、导航/路由） | ✅ |
-| 4 | 文档同步（README / docs/architecture / docs/cli / docs/filestree / src/GUIDE / 本 LLD） | 进行中 |
+| 4 | 文档同步（README / docs/architecture / docs/cli / docs/filestree / src/GUIDE / 本 LLD） | ✅ |
+| 5 | 去掉流量页页头 KPI 仪表盘（连带删除 `/api/traffic/summary` 与 `connection_count()`） | ✅ |
 
 ## 8.1 实现注记（已落地）
 
@@ -312,6 +309,13 @@ export interface TrafficSummary { connections: number; entries: number; total: T
 - **现有测试迁移**：统计相关的三个测试类从 `tests/interfaces/test_proxy_server.py` 迁到
   `tests/use_cases/test_traffic_stats.py`（改为直测用例）；原文件保留 `TestModstatForwarding`
   验证四条分支的转发契约。`test_web_api.py` 的 `make_ctx` 把统计 mock 挂到 `ctx.traffic`。
+- **去掉页头 KPI 仪表盘**：流量页顶部原有的 KPI 卡片（活跃连接数 / 历史条目数 / 累计上行 /
+  累计下行）只服务于那张卡，与下面的实时/历史两张列表信息重复，故整块去掉，页面只留列表
+  （两个选项卡合并进同一张卡的卡头）。它专属的 `/api/traffic/summary` 与
+  `TrafficStatsUseCase.connection_count()` 随之成为死代码，一并删除、不留兼容接口；
+  历史条目总数改由列表卡头的提示文案给出（复用 `/api/traffic/history` 自带的
+  `total_entries`，不新增请求）。仪表盘（`DashboardPage`）的流量 KPI 走 `/api/status` 的
+  `traffic_total`，与本页无关，未受影响。
 
 ## 9. 实现取值说明
 

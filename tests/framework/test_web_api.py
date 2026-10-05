@@ -190,7 +190,6 @@ def make_ctx(pool, target_geo=None):
     traffic.live_connections = MagicMock(return_value=[])
     traffic.history_entries = MagicMock(return_value=[])
     traffic.history_count = MagicMock(return_value=0)
-    traffic.connection_count = MagicMock(return_value=0)
     control = ServeControl(
         interval=60, concurrency=4, timeout=5, probe_url="https://probe.local/ip",
         allowed_types={"http", "socks5"},
@@ -437,23 +436,17 @@ class WebApiTest(unittest.IsolatedAsyncioTestCase):
         data = await resp.json()
         assert data["entries"][0]["geo"] is None
 
-    async def test_traffic_history_and_summary(self):
-        """历史条目下发（含 total_entries）+ 摘要（连接数/条目数/累计字节）"""
+    async def test_traffic_history(self):
+        """历史条目下发（含 total_entries）"""
         self.ctx.traffic.history_entries = MagicMock(return_value=[
             {"bind": "1.2.3.4:8080", "host": "a.example", "ip": "5.6.7.8",
              "upload": 10, "download": 20, "last_seen": 1000.0}])
         self.ctx.traffic.history_count = MagicMock(return_value=7)
-        self.ctx.traffic.connection_count = MagicMock(return_value=3)
-        self.ctx.traffic.total = MagicMock(return_value=(100, 200))
 
         resp = await self.client.get("/api/traffic/history")
         data = await resp.json()
         assert data["total_entries"] == 7
         assert data["entries"][0]["host"] == "a.example"
-
-        resp = await self.client.get("/api/traffic/summary")
-        assert await resp.json() == {
-            "connections": 3, "entries": 7, "total": {"upload": 100, "download": 200}}
 
     async def asyncTearDown(self):
         await self.client.close()

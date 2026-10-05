@@ -212,6 +212,11 @@ class TestPerProxyHistory(unittest.TestCase):
         self.assertEqual(stats.per_proxy_traffic_history("9.9.9.9:9999"), [])
 
 
+def _conn_total(stats: TrafficStatsUseCase) -> int:
+    """活跃连接总数：按实时条目里的连接数求和（用例只对外暴露列表，不单独给总数）"""
+    return sum(e["connections"] for e in stats.live_connections())
+
+
 class TestConnections(unittest.TestCase):
     """连接级统计（实时页的数据源）：连接建立 +1 / 关闭 -1，归零即删"""
 
@@ -220,17 +225,17 @@ class TestConnections(unittest.TestCase):
         with patch(_TIME_PATH, return_value=1000.0):
             stats.record_conn("1.1.1.1:8080", "example.com", 1)
             stats.record_conn("1.1.1.1:8080", "example.com", 1)
-        self.assertEqual(stats.connection_count(), 2)
+        self.assertEqual(_conn_total(stats), 2)
         entries = stats.live_connections()
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["connections"], 2)
         self.assertEqual(entries[0]["first_seen"], 1000.0)
         with patch(_TIME_PATH, return_value=1005.0):
             stats.record_conn("1.1.1.1:8080", "example.com", -1)
-        self.assertEqual(stats.connection_count(), 1)
+        self.assertEqual(_conn_total(stats), 1)
         stats.record_conn("1.1.1.1:8080", "example.com", -1)
         # 归零即删（不保留余温），也不残留 first_seen
-        self.assertEqual(stats.connection_count(), 0)
+        self.assertEqual(_conn_total(stats), 0)
         self.assertEqual(stats.live_connections(), [])
         self.assertEqual(stats._conn_first_seen, {})
 
@@ -238,14 +243,14 @@ class TestConnections(unittest.TestCase):
         """异常路径下 -1 多于 +1 时钳到 0，不出现负计数"""
         stats, _ = _make()
         stats.record_conn("1.1.1.1:8080", "example.com", -1)
-        self.assertEqual(stats.connection_count(), 0)
+        self.assertEqual(_conn_total(stats), 0)
         self.assertEqual(stats.live_connections(), [])
 
     def test_empty_host_ignored(self):
         """空 host 的连接不计（与 pair 口径一致）"""
         stats, _ = _make()
         stats.record_conn("1.1.1.1:8080", "", 1)
-        self.assertEqual(stats.connection_count(), 0)
+        self.assertEqual(_conn_total(stats), 0)
 
     def test_live_connections_carry_target_ip(self):
         """实时条目的目标 IP 由探测缓存给出（未解析为 None）"""
