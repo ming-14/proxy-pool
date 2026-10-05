@@ -30,11 +30,13 @@ const currentHint = computed(
           <span class="text-xs text-[var(--color-t-muted)]">{{ currentHint }}</span>
         </div>
         <div class="grid grid-cols-4 gap-2">
+          <!-- relative 必须保留：sr-only 的 input 是 absolute，没有定位祖先时包含块变成初始包含块，
+               会给文档造出可滚动溢出，radio 获焦时整页被顶上去（切贴图即触发） -->
           <label
             v-for="t in GLOBE_TEXTURES"
             :key="t.id"
             :data-testid="`globe-texture-${t.id}`"
-            class="cursor-pointer select-none rounded-lg overflow-hidden border transition"
+            class="relative cursor-pointer select-none rounded-lg overflow-hidden border transition"
             :class="globeStyle.style.texture === t.id
               ? 'border-[var(--color-primary-600)] ring-1 ring-[var(--color-primary-600)]'
               : 'border-[var(--color-line)] hover:border-[var(--color-primary-600)]'"
