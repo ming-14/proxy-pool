@@ -173,7 +173,10 @@ class FakeGeo:
         return {ip: self.result[ip] for ip in ips if ip in self.result}
 
 
-def make_ctx(pool, target_geo=None):
+_GEO_DEFAULT = object()
+
+
+def make_ctx(pool, *, geo=_GEO_DEFAULT):
     fetch = MagicMock()
     fetch.collect.return_value = []  # 无拉取结果：路由会遍历它判定是否全部源失败
     record = RecordProxyUseCase(pool=pool, standby_group=STANDBY_GROUP)
@@ -190,6 +193,7 @@ def make_ctx(pool, target_geo=None):
     traffic.live_connections = MagicMock(return_value=[])
     traffic.history_entries = MagicMock(return_value=[])
     traffic.history_count = MagicMock(return_value=0)
+    traffic.dns_probe_rows = MagicMock(return_value={})
     control = ServeControl(
         interval=60, concurrency=4, timeout=5, probe_url="https://probe.local/ip",
         allowed_types={"http", "socks5"},
@@ -197,12 +201,12 @@ def make_ctx(pool, target_geo=None):
         fill_probe_min_extra=STANDBY_FILL_PROBE_MIN_EXTRA,
     )
     purity = make_purity_mock()
-    geo = FakeGeo()  # 默认无归属数据（group detail 正常路径，归属字段为 null）
+    if geo is _GEO_DEFAULT:
+        geo = FakeGeo()  # 默认无归属数据（group detail 正常路径，归属字段为 null）
     ctx = PanelContext(pool=pool, fetch=fetch, record=record, standby=standby,
                        control=control, enqueue_settings=EnqueueRuleSettings(()),
                        server=server, traffic=traffic, save=MagicMock(), capacity=5,
-                       purity=purity, geo=geo, speedtest=PspeedTester(), tasks=PanelTasks(),
-                       target_geo=target_geo)
+                       purity=purity, geo=geo, speedtest=PspeedTester(), tasks=PanelTasks())
     return ctx, fetch, standby, server
 
 
@@ -1246,11 +1250,11 @@ _GLOBE_US_GEO = {"country": "美国", "country_code": "US", "province": None,
 
 
 class GlobeDisabledTest(unittest.IsolatedAsyncioTestCase):
-    """globe/geoip 关闭（target_geo=None）：不注册 /api/globe，status.globe_enabled=false"""
+    """globe 关闭（geoip 不可用 → ctx.geo=None）：不注册 /api/globe，status.globe_enabled=false"""
 
     async def asyncSetUp(self):
         self.pool = make_pool()
-        self.ctx, _, _, _ = make_ctx(self.pool)
+        self.ctx, _, _, _ = make_ctx(self.pool, geo=None)
         self.client = TestClient(TestServer(build_app(self.ctx)))
         await self.client.start_server()
 
@@ -1266,9 +1270,10 @@ class GlobeDisabledTest(unittest.IsolatedAsyncioTestCase):
 
 
 class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
-    """GET /api/globe：touch 激活探测、节点含锁定代理与按 bind 聚合速率、flows 只统计队列内 pair
+    """GET /api/globe：只消费最终数据（队列节点 + 活跃 pair + DNS 探测结果），无探测统计
 
-    target_geo 用 MagicMock：本类只验 Web 层组装契约（探测与聚合在用例单测）。
+    本类验 Web 层组装契约：节点/速率/归属、flows 只统计队列内 pair 且按城市聚合、
+    响应不含 stats、请求不触发任何探测（无 touch 概念）。
     """
 
     async def asyncSetUp(self):
@@ -1276,12 +1281,7 @@ class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
         self.pool.add_to_group(STANDBY_GROUP, "http://1.2.3.4:8080", consecutive_fails=0, latency=0.5)
         self.pool.move_proxy("http://1.2.3.4:8080", LOCKED_GROUP, consecutive_fails=0)
         self.pool.add_to_group(STANDBY_GROUP, "http://5.6.7.8:3128", consecutive_fails=0)
-        self.target_geo = MagicMock()
-        self.target_geo.build_flows = MagicMock(
-            return_value=[{"bind": "1.2.3.4:8080", "city": "Ashburn"}])
-        self.target_geo.stats = MagicMock(
-            return_value={"active": True, "probe_ok": 3, "probe_fail": 1})
-        self.ctx, _, _, self.server = make_ctx(self.pool, target_geo=self.target_geo)
+        self.ctx, _, _, self.server = make_ctx(self.pool)
         self.ctx.geo.result["1.2.3.4"] = _GLOBE_US_GEO
         self.ctx.traffic.active_pairs = MagicMock(return_value=[
             {"bind": "1.2.3.4:8080", "host": "a.example", "up": 10, "down": 20,
@@ -1291,6 +1291,11 @@ class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
              "up_rate": 5.0, "down_rate": 5.0, "up_inst": 5.0, "down_inst": 5.0,
              "last_seen": time.time()},
         ])
+        self.ctx.traffic.dns_probe_rows = MagicMock(return_value={
+            ("1.2.3.4:8080", "a.example"): {
+                "ip": "1.2.3.4", "country": "美国", "country_code": "US",
+                "province": None, "city": "Ashburn", "lat": 39.0, "lng": -77.5},
+        })
         self.client = TestClient(TestServer(build_app(self.ctx)))
         await self.client.start_server()
 
@@ -1307,7 +1312,7 @@ class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_payload_self_nodes_flows(self):
         data = await self._get_globe()
-        self.target_geo.touch.assert_called_once()
+        assert "stats" not in data  # 探测统计已与地球解耦
         assert data["self"] == {"lat": 31.2, "lng": 121.5}
         nodes = {n["bind"]: n for n in data["nodes"]}
         assert set(nodes) == {"1.2.3.4:8080", "5.6.7.8:3128"}
@@ -1319,13 +1324,13 @@ class GlobeRouteTest(unittest.IsolatedAsyncioTestCase):
         idle = nodes["5.6.7.8:3128"]
         assert idle["locked"] is False and idle["geo"] is None
         assert (idle["up_rate"], idle["down_rate"]) == (0.0, 0.0)  # 无流量代理速率全 0
-        assert data["flows"] == [{"bind": "1.2.3.4:8080", "city": "Ashburn"}]
-        assert data["stats"]["probe_ok"] == 3  # 探测观测随同一帧下发
-        self.target_geo.stats.assert_called_once()
-        # flows 只统计队列内 bind（9.9.9.9:1 不在队列，不参与聚合）
-        passed_pairs, max_flows = self.target_geo.build_flows.call_args.args
-        assert [p["bind"] for p in passed_pairs] == ["1.2.3.4:8080"]
-        assert max_flows == framework_config.GLOBE_MAX_FLOWS
+        assert len(data["flows"]) == 1
+        flow = data["flows"][0]
+        assert flow["bind"] == "1.2.3.4:8080" and flow["city"] == "Ashburn"
+        assert flow["up_rate"] == 10.0 and flow["down_rate"] == 20.0
+        assert flow["hosts"] == ["a.example"]
+        # flows 只向缓存查队列内 bind 的 pair（9.9.9.9:1 不在队列，不参与）
+        assert self.ctx.traffic.dns_probe_rows.call_args.args[0] == [("1.2.3.4:8080", "a.example")]
 
     async def test_self_null_when_unconfigured(self):
         with patch.object(framework_config, "GLOBE_SELF_LAT", None), \

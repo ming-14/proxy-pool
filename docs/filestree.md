@@ -12,7 +12,7 @@ proxy-pool/
 │   ├── pool.toml                  # [pool] 阈值/语义组/可请求组 + [groups] 分组定义
 │   ├── sources.toml               # [fetch] 拉取调度（含 freeproxy_world）+ [[sources]] 源列表 + [[fetch_filter]] 入池筛选规则
 │   ├── serve.toml                 # [server] serve 端口/队列/心跳/链路门控/metrics
-│   ├── panel.toml                 # [geoip] IP 归属地图 / [globe] 3D 地球与目标地区探测
+│   ├── panel.toml                 # [geoip] IP 归属地图 / [globe] 3D 地球 / [dns_probe] DNS 探测队列 / [traffic] 流量统计持久化
 │   ├── ippure.toml                # IP 纯净度检查：[ippure] 开关/超时/缓存 + [[plugins]] 检查源插件 + [[proxy_rules]] 声明式代理
 │   ├── logging.toml               # [logging] 控制台/文件级别分档 + 逐 logger 覆盖
 │   └── .env                       # 密钥（KEY=VALUE，git 忽略；加载时注入进程环境变量）
@@ -25,7 +25,7 @@ proxy-pool/
 │   │   ├── models.py              # 值对象：SourceSpec/FpwConfig、normalize_proxy/to_proxy_dict
 │   │   ├── purity.py              # 纯净度契约：UsageType 枚举、插件元数据/注入配置、ProxyRule + resolve_proxy、normalize_result
 │   │   ├── source_filter.py       # 入池筛选规则：FilterRule + match_rule（正则命中完整代理 URL 即拉黑，纯匹配无 IO）
-│   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/HostResolver/TaskScheduler/IpPurityChecker/PurityCacheStore/GeoLocator/GeoCacheStore/TargetGeoStore/ProxySpeedTester
+│   │   └── ports.py               # 抽象端口：ProxySource/ProxyStore/HttpGetter/HostResolver/TaskScheduler/IpPurityChecker/PurityCacheStore/GeoLocator/GeoCacheStore/DnsProbeStore/ProxySpeedTester
 │   ├── use_cases/                 # 用例层：应用业务逻辑，构造注入
 │   │   ├── __init__.py
 │   │   ├── fetch_proxies.py       # 拉取用例（三阶段：拉取/去重入组/去重率暂停）
@@ -35,11 +35,11 @@ proxy-pool/
 │   │   ├── check_proxies.py       # 并发测试代理（证书校验策略经组合根注入 proxy_scheme.verify_target）
 │   │   ├── network_gate.py        # 本地链路门控（链路可用性判定；只缓存失败结论，成功结论每次真实探测）
 │   │   ├── standby.py             # 代理服务队列维护（fill 补入/心跳/退避补测，含链路门控 + per-proxy 延时历史）
-│   │   ├── target_geo.py          # 目标地区探测（激活窗口 + 缓存 TTL + pair 级退避 + 限并发穿代理 DoH；IP 字面量/内网名跳过；聚合「代理→目标城市」弧）
-│   │   └── traffic_stats.py       # 流量统计（全局/按代理/按 pair 三维计数与采样 + 连接级计数 + 历史条目按 (代理,域名,IP) 增量落盘；host 归一化归属此模块）
+│   │   ├── dns_probe.py           # DNS 探测队列（流量统计子模块：事件驱动、有 (代理,域名) 会话即入队、立刻穿代理 DoH + 可选 geo 定位、退避/冷却、跳过规则；结果经 sink 交回流量统计落盘）
+│   │   └── traffic_stats.py       # 流量统计（全局/按代理/按 pair 三维计数与采样 + 连接级计数 + 历史条目按 (代理,域名,IP) 增量落盘 + 持有 DNS 探测队列子模块并落盘探测结果；host 归一化归属此模块）
 │   ├── interfaces/                # 接口适配器层：实现 domain 端口
 │   │   ├── __init__.py
-│   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert；ip_geo/ippure/target_geo 缓存 + traffic_history 历史流量增量累加）
+│   │   ├── sqlite_store.py         # SqliteProxyStore SQLite 存储（.cache.db WAL 模式，组级增量 upsert；ip_geo/ippure/dns_probe 缓存 + traffic_history 历史流量增量累加）
 │   │   ├── http_client.py         # HttpGetter（requests，函数级惰性导入，不校验证书 + 多 IP 重试）+ AsyncHttpGetter（aiohttp，心跳/门控高频路径；socks4/socks5 走 ProxyConnector；get_json 供 DoH 等 JSON 接口）
 │   │   ├── doh_resolver.py        # DohResolver（HostResolver 端口实现：穿代理 DoH JSON 查 A 记录，端点顺序回退/IDN/证书策略复用 proxy_scheme；失败退避在用例层）
 │   │   ├── scheduler.py           # ProxyScheduler 异步调度器（asyncio）
@@ -70,7 +70,8 @@ proxy-pool/
 │       ├── logbuffer.py           # 面板日志缓冲（root 镜像 → 有界环形缓冲 + seq 游标增量拉取，供 /api/logs）
 │       └── web/                   # Web 控制面板（serve 模式）
 │           ├── __init__.py
-│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加 + /api/traffic/live|history 流量统计 + /api/logs 面板日志增量拉取/清空）+ Vite 产物静态服务
+│           ├── api.py             # REST API（读状态快照/组明细 + 写控制动作/调度策略调整 + /api/proxy/history 单代理历史 + /api/proxy/speedtest 单代理测速 + /api/proxy/move 批量移组 + /api/proxy/remove 批量删除 + /api/group/{name}/add 批量添加 + /api/traffic/live|history 流量统计 + /api/globe 3D 地球（只读聚合）+ /api/logs 面板日志增量拉取/清空）+ Vite 产物静态服务
+│           ├── globe_data.py      # 3D 地球展示数据纯函数（活跃 pair + DNS 探测结果 → 「代理→目标城市」弧聚合，供 /api/globe）
 │           ├── control.py         # ServeControl（serve 运行时控制：fill/heartbeat/补测）
 │           ├── panel_state.py     # PanelTasks（面板任务状态：拉取/测速/纯净度检查的进行中与终态，/api/status 下发供前端刷新后恢复）
 │           ├── server.py          # aiohttp 服务器启动
@@ -130,7 +131,7 @@ proxy-pool/
 │   ├── pproxy/                    # pproxy 代理库（fork 自 pproxy 2.7.9，本地维护: sslwrap 静默 / sslcontexts 弱引用 / modstat 传 roption / SOCKS5 认证应答与 UDP ASSOCIATE / SOCKS5 未实现 CMD 回 0x07 / SOCKS4 应答推迟与失败应答与 4a 双向 / HTTP 404 / WebSocket 握手修复 / 通道空闲回收改会话双向静默（修复流式长连接被单向 60s 读超时误杀）/ 无上游不回退直连（direct_fallback） 等内化进源码；proxy_server.py 通过 sys.path 导入）
 │   └── pspeed/                    # 代理测速工具（TCP/IP/下载/上传带宽，JSON 输出；api.py 通过 sys.path 导入 probe_one）
 ├── logs/                          # 日志目录（毫秒时间戳命名：proxy-pool-{YYYYMMDD-HHMMSS-mmm}.log）
-└── .cache.db                      # 代理池状态持久化 SQLite 数据库（WAL 模式，proxies + source_paused + group_meta + ip_geo / ippure / target_geo 缓存）
+└── .cache.db                      # 代理池状态持久化 SQLite 数据库（WAL 模式，proxies + source_paused + group_meta + ip_geo / ippure / dns_probe 缓存 + traffic_history）
 ```
 
 > 说明：项目采用干净架构四层（洋葱模型），依赖只能从外层指向内层。组合根 `src/framework/container.py` 是唯一组装点，构造 `ProxyPool` → 从 `.cache.db` 恢复状态 → 组装各用例 → 暴露给 CLI。

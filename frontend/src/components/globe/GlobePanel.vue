@@ -8,7 +8,7 @@
  *   默认真实地球贴图、无网格、无光晕（浅色卡片上深色贴图会显成暗球、默认光晕是一圈蓝雾）；
  *   不用 ECharts 的 world.json 做矢量地球：省掉 ~1MB 地图拉取，也没有多边形三角化的开销。
  * - 不可见（IntersectionObserver）或页面切后台（document.hidden）时暂停动画并停 5s
- *   轮询——没有人在看地球时后端也不该为它探测（/api/globe 的 touch 即探测激活信号）。
+ *   轮询——没有人看时省 CPU 与请求；地球只消费最终数据，与后端 DNS 探测无关。
  * - 主题切换读 CSS 变量重建配色；容器尺寸由 ResizeObserver 跟随。
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -20,7 +20,6 @@ import {
   buildPoints,
   buildProxyArcs,
   buildTargetArcs,
-  formatProbeStats,
   type GlobePalette,
 } from './globeData';
 import type { GlobeData } from '@/types/api';
@@ -38,7 +37,6 @@ const el = ref<HTMLElement | null>(null);
 const failed = ref(false);
 const ready = ref(false);
 const statsText = ref('');
-const probeText = ref('');
 const showSelfHint = ref(false);
 
 let world: GlobeInstance | null = null;
@@ -80,7 +78,6 @@ function applySurfaceStyle(): void {
 function applyData(data: GlobeData): void {
   lastData = data;
   statsText.value = `代理节点 ${data.nodes.length} · 目标弧 ${data.flows.length}`;
-  probeText.value = formatProbeStats(data.stats);
   showSelfHint.value = data.self === null;
   if (!world) return;
   world
@@ -110,7 +107,7 @@ function stopPolling(): void {
   }
 }
 
-/** 可见且前台才算活跃：恢复动画+轮询；否则暂停并停轮询（停轮询=停止 touch→后端停止探测） */
+/** 可见且前台才算活跃：恢复动画+轮询；否则暂停并停轮询（省 CPU 与请求） */
 function updateActivity(): void {
   if (intersecting && !document.hidden) {
     world?.resumeAnimation();
@@ -211,11 +208,6 @@ onBeforeUnmount(() => {
     </div>
     <!-- 高度由 JS 常量驱动（与 globe.height()/RO 同一来源），避免模板里再写一份字面量 -->
     <div v-else ref="el" data-testid="globe-canvas" class="w-full" :style="{ height: `${CARD_HEIGHT_PX}px` }" />
-    <!-- 探测观测脚注：只显示计数（不含目标域名），用来评估穿免费代理的 DoH 成功率；
-         首帧数据到达前不占位（避免卡片多出一段空白） -->
-    <div v-if="probeText" data-testid="globe-probe-stats" class="mt-2 text-xs text-[var(--color-t-muted)]">
-      {{ probeText }}
-    </div>
     <div v-if="showSelfHint && !failed" class="mt-2 text-xs text-[var(--color-t-muted)]">
       未配置本机坐标：在 config/panel.toml 的 [globe] 填 self_lat / self_lng 后显示「本机 → 代理」飞线
     </div>

@@ -1,4 +1,4 @@
-# 面板功能：IP 归属地图 / 3D 地球与目标地区探测（加载器见 src/framework/config.py）
+# 面板与统计功能：IP 归属地图 / 3D 地球 / DNS 探测队列 / 流量统计（加载器见 src/framework/config.py）
 # IP 纯净度检查配置见 ippure.toml
 
 # ---------------------------------------------------------------- IP 归属地（Web 地图）
@@ -12,18 +12,21 @@ db_file = "vendor/geoip/GeoLite2-City.mmdb"
 # 定位结果缓存有效期秒：IP 段归属变化以月计，90 天内不重复解析 mmdb
 cache_ttl = 7776000
 
-# ---------------------------------------------------------------- 3D 地球与目标地区探测（依赖 [geoip]）
+# ---------------------------------------------------------------- 3D 地球（依赖 [geoip]）
 [globe]
-enabled = true                 # 地球开关（依赖 geoip.enabled；false 时不注册 /api/globe、不探测）
+enabled = true                 # 地球开关（依赖 geoip.enabled；false 时不注册 /api/globe）
 # 本机坐标（手填，不自动探测；决定本机节点与「本机→代理」弧）：两者缺省 = 不画本机
 # self_lat = 39.9
 # self_lng = 116.4
 max_flows = 60                 # 下发给地球的最大弧分组数（按速率取 top N）
-probe_concurrency = 3          # DoH 探测并发上限
+
+# ---------------------------------------------------------------- DNS 探测队列（流量统计的子模块）
+# 出现新的 (代理, 域名) 会话即入队，穿该代理做 DoH 解析 + 归属定位；与 3D 地球/面板无关。
+[dns_probe]
+enabled = true                 # 探测总开关（false 时不构造队列、不探测）
+probe_concurrency = 3          # 并发探测上限
 probe_timeout = 8              # 单次 DoH 超时秒
-target_cache_ttl = 86400       # (代理,目标) 缓存有效期秒（过期且仍有流量才重探）
-activation_window = 60         # 最近多少秒内有 /api/globe 请求才探测（面板打开才消耗代理）
-probe_window = 600             # 窗口内有流量的 pair 才作为探测候选
+cache_ttl = 86400              # 同一 (代理,目标) 两次探测之间的最小间隔秒
 prune_after = 2592000          # 缓存行清理阈值秒（30 天未刷新即删，目标域名不留长期痕迹）
 doh_endpoints = ["https://cloudflare-dns.com/dns-query", "https://dns.google/resolve", "https://223.5.5.5/resolve"]  # 顺序即回退顺序
 

@@ -1,6 +1,9 @@
 """流量统计用例（use_cases 层）：全局 / 按代理 / 按 (代理,目标) 三个维度的实时计数与采样，
 外加活跃连接计数（连接级）与历史流量条目的持久化（按 (代理,域名,IP) 分区）。
 
+本模块持有并驱动其子模块「DNS 探测队列」（DnsProbeQueue）：发现新的 (代理,域名) 会话即
+入队探测，探测结果由本模块落盘到 DNS 探测缓存，并供历史条目/实时连接补目标 IP。
+
 数据源是 pproxy 的回调，但不感知 pproxy：PproxyServer 的 modstat 钩子把上行/下行字节与
 连接变化转发成 record_bytes / record_conn 调用，本模块只维护统计状态。
 
@@ -15,9 +18,10 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
-from src.domain.ports import TrafficHistoryStore
+from src.domain.ports import DnsProbeStore, TrafficHistoryStore
+from src.use_cases.dns_probe import DnsProbeQueue
 
 logger = logging.getLogger(__name__)
 
@@ -58,24 +62,29 @@ class TrafficStatsUseCase:
         self,
         *,
         store: TrafficHistoryStore,
-        target_ip_lookup: Callable[[list[tuple[str, str]]], dict[tuple[str, str], str]],
+        dns_probe_store: DnsProbeStore,
+        dns_probe: DnsProbeQueue | None,
         metrics_window: float,
         flush_interval: float,
         retention: float,
+        dns_probe_prune_after: float,
         max_pairs: int = _MAX_PAIRS,
     ) -> None:
         """
         Args:
-            store:            历史条目存储（增量累加写入）
-            target_ip_lookup: (bind, host) 批量查目标 IP（落盘时给条目定 IP 维度；
-                              取不到返回空 dict，对应条目 IP 记空串）
-            metrics_window:   采样数据留存窗口（秒），pair 与采样序列按此清理
-            flush_interval:   历史条目落盘节流间隔（秒）
-            retention:        历史条目保留期（秒），过期由 prune 删除
-            max_pairs:        (bind, host) 维度容量上限
+            store:                 历史条目存储（增量累加写入）
+            dns_probe_store:       DNS 探测结果缓存（落盘探测结果、供查询补目标 IP）
+            dns_probe:             DNS 探测队列（子模块；None = 探测关闭，不投递、无结果）
+            metrics_window:        采样数据留存窗口（秒），pair 与采样序列按此清理
+            flush_interval:        历史条目落盘节流间隔（秒）
+            retention:             历史条目保留期（秒），过期由 prune 删除
+            dns_probe_prune_after: DNS 探测缓存行清理阈值秒（随历史清理同拍执行）
+            max_pairs:             (bind, host) 维度容量上限
         """
         self._store = store
-        self._target_ip_lookup = target_ip_lookup
+        self._dns_probe_store = dns_probe_store
+        self._dns_probe = dns_probe
+        self._dns_probe_prune_after = dns_probe_prune_after
         self._metrics_window = metrics_window
         self._flush_interval = flush_interval
         self._retention = retention
@@ -88,7 +97,7 @@ class TrafficStatsUseCase:
         self._per_proxy_upload: dict[str, int] = {}
         self._per_proxy_download: dict[str, int] = {}
         self._per_proxy_traffic_history: dict[str, deque[TrafficSample]] = {}
-        # (bind, host) 维度：目标地区探测与地球飞线的数据源
+        # (bind, host) 维度：DNS 探测与消费方（历史条目/实时连接）的数据源
         self._pair_last_seen: dict[tuple[str, str], float] = {}
         self._pair_upload: dict[tuple[str, str], int] = {}
         self._pair_download: dict[tuple[str, str], int] = {}
@@ -150,10 +159,11 @@ class TrafficStatsUseCase:
             self._conn_first_seen.pop(key, None)
 
     def note_pair(self, bind: str, host: str) -> None:
-        """记录 (bind, host) 的会话活跃时间（会话建立时调用）
+        """记录 (bind, host) 的会话活跃时间（会话建立时调用），并投递给 DNS 探测队列
 
-        last_seen 是「最近一次会话建立」而非字节时间：探测候选只关心最近被请求过的
-        目标，长时间只读的长连接会随窗口滑出候选（其 host 通常还有其它新会话）。
+        last_seen 是「最近一次会话建立」而非字节时间：长时间只读的长连接不会因字节
+        流动被反复刷新（其 host 通常还有其它新会话）。入队是 O(1) 内存操作，冷却期/
+        在途去重由队列内部完成（探测不覆盖跳过目标）。
         """
         host = normalize_host(host)
         if not host:
@@ -161,6 +171,8 @@ class TrafficStatsUseCase:
         key = (bind, host)
         self._pair_last_seen[key] = time.time()
         self._pair_prev.setdefault(key, (0, 0))
+        if self._dns_probe is not None:
+            self._dns_probe.enqueue(bind, host)
         if len(self._pair_last_seen) > self._max_pairs:
             self._evict_pairs()
 
@@ -222,8 +234,9 @@ class TrafficStatsUseCase:
     def flush(self, now: float, *, force: bool = False) -> None:
         """把待落盘增量写入历史条目（按 flush_interval 节流；force=True 时不受节流约束）
 
-        条目 IP 维度在此确定：批量查 (bind, host) 当前解析出的目标 IP，取不到记空串。
-        IP 变了就是新条目——旧条目自然冻结在切换前的累计值，不再更新。
+        条目 IP 维度由 DNS 探测结果缓存给出，取不到记空串。为避免"探测还没跑完就落成空
+        IP 行、事后无法回填"，**无 IP 且探测仍在途**的 pair 延后到探测终态再写（force 时
+        照写当前值，保证退出不丢）。IP 变了就是新条目——旧条目自然冻结在切换前的累计值。
         写失败保留待落盘增量（下次重试），只记 exception 不中断采样。
         """
         if not self._pending:
@@ -231,19 +244,51 @@ class TrafficStatsUseCase:
         if not force and now - self._last_flush < self._flush_interval:
             return
         self._last_flush = now
+        self._prune(now)  # 时间驱动的清理，与本次是否写出解耦（延后/写失败都不影响）
+        rows = self.dns_probe_rows(list(self._pending))
+        # 无 IP 且探测仍在途：本轮不写（延后到探测终态），仅 force 时照写当前值
+        deferred = {
+            key for key in self._pending
+            if not force and self._dns_probe is not None
+            and not (rows.get(key) or {}).get("ip")
+            and self._dns_probe.is_pending(*key)
+        }
+        written = {key: d for key, d in self._pending.items() if key not in deferred}
+        if not written:
+            return  # 全部在等探测结果，本轮不写（下轮或退出 force 时再写）
         try:
-            pairs = list(self._pending)
-            rows = self._target_ip_lookup(pairs)
             deltas = {
-                (bind, host, (rows.get((bind, host)) or "")): d
-                for (bind, host), d in self._pending.items()
+                (bind, host, ((rows.get((bind, host)) or {}).get("ip") or "")): d
+                for (bind, host), d in written.items()
             }
             self._store.add_traffic_history(deltas)
         except Exception:
-            logger.exception("历史流量落盘失败，本轮增量保留待重试（%d 条）", len(self._pending))
+            logger.exception("历史流量落盘失败，本轮增量保留待重试（%d 条）", len(written))
             return
-        self._pending.clear()
-        self._prune(now)
+        for key in written:
+            del self._pending[key]
+
+    # ------------------------------------------------------------------ DNS 探测结果
+    def note_probe_result(self, bind: str, host: str, row: dict) -> None:
+        """DNS 探测队列的结果回调：落盘到 DNS 探测缓存
+
+        row 为探测结果行（含 ip/country/... 或空 dict 表示"已探测无结果"）。落盘失败只记
+        日志不外抛——队列侧对 sink 异常另有兜底，这里再兜一次避免影响探测任务。
+        """
+        try:
+            self._dns_probe_store.save_dns_probe_batch({(bind, host): row})
+        except Exception:
+            logger.exception("DNS 探测结果落盘失败（bind=%s）", bind)
+
+    def dns_probe_rows(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+        """批量读 DNS 探测结果缓存；读失败返回空 dict（不打断调用方）"""
+        if not pairs:
+            return {}
+        try:
+            return self._dns_probe_store.get_dns_probe_batch(pairs)
+        except Exception:
+            logger.exception("DNS 探测结果缓存读取失败（%d 对）", len(pairs))
+            return {}
 
     # ------------------------------------------------------------------ 查询
     def total(self) -> tuple[int, int]:
@@ -267,7 +312,7 @@ class TrafficStatsUseCase:
         return list(self._per_proxy_traffic_history.get(bind, ()))
 
     def active_pairs(self, since_ts: float) -> list[dict]:
-        """窗口内活跃的 (bind, host) 列表（last_seen ≥ since_ts），供目标探测与地球飞线
+        """窗口内活跃的 (bind, host) 列表（last_seen ≥ since_ts），供消费方聚合展示
 
         返回 [{bind, host, up, down, up_rate, down_rate, up_inst, down_inst, last_seen}]：
         up_rate/down_rate 为 EMA（防抖，线宽用），up_inst/down_inst 为瞬时速率（B/s，流速用）。
@@ -295,17 +340,17 @@ class TrafficStatsUseCase:
         """此刻仍开着的连接（连接级口径）：按 (bind, host) 汇总，连接数降序
 
         返回 [{bind, host, ip, connections, up_rate, down_rate, first_seen, last_seen}]。
-        目标 IP 由探测缓存给出（尚未解析为 None）；活跃连接数很少，这里的批量查询可忽略。
+        目标 IP 由 DNS 探测结果缓存给出（尚未探测为 None）；活跃连接数很少，批量查询可忽略。
         """
         pairs = list(self._conn_count)
-        ips = self._target_ip_lookup(pairs) if pairs else {}
+        ips = self.dns_probe_rows(pairs)
         out = []
         for key, count in self._conn_count.items():
             ema_up, ema_down = self._pair_rate_ema.get(key, (0.0, 0.0))
             out.append({
                 "bind": key[0],
                 "host": key[1],
-                "ip": ips.get(key) or None,
+                "ip": (ips.get(key) or {}).get("ip") or None,
                 "connections": count,
                 "up_rate": ema_up,
                 "down_rate": ema_down,
@@ -335,7 +380,10 @@ class TrafficStatsUseCase:
             entry["last_seen"] = max(entry["last_seen"], last_seen)
 
     def _prune(self, now: float) -> None:
-        """按保留期清理历史条目（节流为一小时一次）"""
+        """按保留期清理历史条目与 DNS 探测缓存（节流为一小时一次）
+
+        两者相互独立：任一失败只记日志，不影响另一方；队列内存调度表同拍清理。
+        """
         if now - self._last_prune < _PRUNE_INTERVAL:
             return
         self._last_prune = now
@@ -343,9 +391,19 @@ class TrafficStatsUseCase:
             removed = self._store.prune_traffic_history(now - self._retention)
         except Exception:
             logger.exception("历史流量清理失败")
+        else:
+            if removed:
+                logger.info("清理历史流量条目 %d 条（保留期 %.0fs）", removed, self._retention)
+        if self._dns_probe is not None:
+            self._dns_probe.prune(now)
+        try:
+            removed_probe = self._dns_probe_store.prune_dns_probe(now - self._dns_probe_prune_after)
+        except Exception:
+            logger.exception("DNS 探测缓存清理失败")
             return
-        if removed:
-            logger.info("清理历史流量条目 %d 条（保留期 %.0fs）", removed, self._retention)
+        if removed_probe:
+            logger.info("清理 DNS 探测缓存 %d 行（阈值 %.0f 天）",
+                        removed_probe, self._dns_probe_prune_after / 86400)
 
     def _evict_pairs(self) -> None:
         """超容量时按 last_seen 最旧批量淘汰（六个 pair dict 同步删，不动全局/按代理累计）"""

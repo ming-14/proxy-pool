@@ -25,13 +25,28 @@ class NullHistoryStore:
         return 0
 
 
+class NullDnsProbeStore:
+    """DNS 探测结果缓存的空实现（DnsProbeStore 端口）"""
+
+    def get_dns_probe_batch(self, pairs):
+        return {}
+
+    def save_dns_probe_batch(self, rows):
+        pass
+
+    def prune_dns_probe(self, before_ts):
+        return 0
+
+
 def make_server(uri: str = "http+socks4+socks5://127.0.0.1:0") -> PproxyServer:
-    """构造 PproxyServer，注入真实统计用例（内存态；历史落盘走空 store）"""
+    """构造 PproxyServer，注入真实统计用例（内存态；历史/DNS 探测缓存走空实现）"""
     traffic = TrafficStatsUseCase(
         store=NullHistoryStore(),
-        target_ip_lookup=lambda pairs: {},
+        dns_probe_store=NullDnsProbeStore(),
+        dns_probe=None,
         metrics_window=1800.0,
         flush_interval=3600.0,
         retention=2592000.0,
+        dns_probe_prune_after=2592000.0,
     )
     return PproxyServer(uri, traffic=traffic)

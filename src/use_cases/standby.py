@@ -263,7 +263,7 @@ class StandbyQueueUseCase:
 
         锁定代理已 move 出队列组，只有 upstream_proxies() 能取到，故并入；历史数据
         可能在队列组留有副本，按地址去重避免同一代理出现两行。面板队列展示
-        （web/api）与地球探测候选查代理（serve）共用此口径。
+        （web/api）与 DNS 探测候选查代理（serve）共用此口径。
         """
         rows = self.standby_members()
         if self.is_locked():

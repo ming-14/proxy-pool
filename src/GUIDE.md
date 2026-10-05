@@ -15,7 +15,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_ip_geo.py                 # IP 归属三步编排与聚合
 │   ├── test_network_gate.py           # 本地链路门控（状态码/多目标/失败结论缓存/成功不缓存/并发共享）
 │   ├── test_standby.py                # 队列 fill/heartbeat/补测/pin/lock/指标/链路劣化/超容量程
-│   ├── test_target_geo.py             # 目标地区探测（激活窗口/缓存 TTL/失败退避与上限/并发信号量/跳过规则/聚合纯函数/build_flows 缓存读失败降级/stats 观测计数与快照清零，假端口不打网络）
+│   ├── test_dns_probe.py              # DNS 探测队列（入队即探测/在途去重/冷却 TTL 与失败退避/限并发/跳过规则/sink 结果交付/is_pending/prune，假端口不打网络）
 │   ├── test_traffic_stats.py          # 流量统计（三维计数与采样速率/EMA、pair 容量淘汰与窗口清理、连接级计数含钳零与归零即删、历史条目增量累加与 IP 变动分条、落盘节流/写失败保留/保留期清理）
 │   └── test_use_cases.py              # fetch/get/record/request_with_retry/check_proxies
 ├── interfaces/                        # 接口适配器测试
@@ -26,7 +26,7 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 │   ├── test_proxy_scheduler.py        # 异步调度器
 │   ├── test_proxy_scheme.py           # 出站协议描述表（engine_uri 上游 URI 映射 / verify_target 证书校验策略）
 │   ├── test_proxy_server.py           # PproxyServer（上游同步/绝不直连 direct_fallback=False/上游存活标记/modstat 字节与连接事件的转发契约——统计口径已迁往 use_cases）
-│   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/ippure 缓存按源分区/target_geo 缓存（bind,host）批量读写与清理/旧表丢弃）
+│   ├── test_sqlite_store.py           # SqliteProxyStore（增量 upsert/geo 缓存/ippure 缓存按源分区/dns_probe 缓存（bind,host）批量读写与清理/旧表丢弃）
 │   ├── test_ua_generator.py           # 确定性 UA 生成
 │   ├── ippure/                        # 纯净度插件测试（mock requests，不打真实网络）
 │   │   ├── __init__.py
@@ -40,21 +40,22 @@ tests/                                 # 测试目录（复刻 src 结构；pyte
 ├── framework/                         # 框架层测试
 │   ├── __init__.py
 │   ├── test_cli.py                    # argparse 全命令 + setup_logging(debug) 透传
-│   ├── test_config.py                 # 配置加载（.env 注入与优先级/节归属与跨文件重名/ippure.toml 与 panel.toml [globe] 校验，子进程）
+│   ├── test_config.py                 # 配置加载（.env 注入与优先级/节归属与跨文件重名/ippure.toml 与 panel.toml [globe]/[dns_probe] 校验，子进程）
 │   ├── test_container.py              # 组合根降级（缺环境变量/未知源名/插件参数非法/缺 mmdb/web 门控）+ 链路门控配置校验（子进程）+ 惰性导入守卫（子进程）
+│   ├── test_globe_data.py             # 地球目标弧聚合纯函数（(bind,城市) 分组/hosts 排序截断/无坐标不产弧/top N）
 │   ├── test_logging.py                # logging.toml 双通道分档/逐 logger 覆盖
 │   ├── test_logbuffer.py              # 面板日志缓冲（环形裁剪/seq 游标/stack 采集/buffer_start）
 │   ├── test_loop.py                   # run_coro 跨循环桥接
 │   ├── test_view.py                   # view.py 数据层（缓存读取/行构建）
 │   ├── test_serve.py                  # serve 主循环辅助逻辑（补测任务表同步：先回收已结束任务再补启动；探测候选 bind→代理反查 _proxy_lookup）
-│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/3D 地球（/api/globe 组装与关闭态 404、globe_enabled）/流量统计（/api/traffic/live|history）/日志增量与清空/静态资源（/globe/{name} 贴图白名单））
+│   └── test_web_api.py                # REST API 全端点（读快照/逐代理序列/队列归属/组明细/控制动作/测速/纯净度/geo/3D 地球（/api/globe 只读最终数据：节点/速率/按城市聚合的 flows，关闭态 404、globe_enabled）/流量统计（/api/traffic/live|history）/日志增量与清空/静态资源（/globe/{name} 贴图白名单））
 ├── e2e/                               # 端到端测试（本地 mock，不依赖外网）
 │   ├── __init__.py
 │   ├── mock_upstream.py               # mock 上游代理（HTTP CONNECT 隧道 + SOCKS5 握手，响应体可自定义以区分多上游）
-│   ├── server_factory.py              # 测试用 PproxyServer 工厂（注入真实流量统计用例 + 空历史存储，serve e2e 共用）
+│   ├── server_factory.py              # 测试用 PproxyServer 工厂（注入真实流量统计用例 + 空历史/DNS 探测缓存存储，serve e2e 共用）
 │   ├── test_serve_e2e.py              # serve 全链路（pproxy 启动→转发→心跳移除→sync→上游空时拒绝且不直连→不可用上游不被选中）
 │   ├── test_serve_loop_e2e.py         # serve 主循环（fill→heartbeat→补测→失败代理随 sync 下发为 unhealthy→优雅退出）
-│   ├── test_target_geo_e2e.py         # 目标地区探测（mock DoH → 经代理流量 → /api/globe 出目标弧；无 /api/globe 请求时不探测落盘）
+│   ├── test_dns_probe_e2e.py          # DNS 探测队列（含流量即入队探测：无 /api/globe 请求也穿代理 DoH 并落盘 dns_probe_cache；禁用时不探测；地球只读缓存出目标弧）
 │   └── web/                           # Web 面板浏览器 e2e（Playwright + Chromium，需 pip install playwright）
 │       ├── __init__.py
 │       ├── conftest.py                # serve 子进程 + mock 上游 + 临时配置目录隔离 + 端口防呆（默认空闲端口，PP_E2E_* 可固定）+ 组件探针页 fixture

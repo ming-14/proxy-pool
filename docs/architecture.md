@@ -169,7 +169,7 @@ for attempt in range(max_retries):
 - **图表渲染（浏览器 CPU）**：仪表盘 3 个趋势图（延迟/健康率/流量）为 ECharts 实例，`animation:false` + option 全量 `setOption`（1s 采样下最坏 ≈1800 点/序列，按服务端留存时长裁剪而非点数上限），组件 `ChartBox.vue` 统一 init/resize/dispose；历史由 statusStore 增量合并（`/api/status/history?since=`，响应带 `retention_window` 供前端按时间裁剪本地缓冲——采样节奏可变，点数上限与留存时长不等价），option 为纯 computed——旧手写前端的增量渲染状态机与全量重建 CPU 高峰问题随架构消失。流量图的平均延迟按 ts 匹配最近的前一个队列采样点（两序列节奏不同、不能按索引对齐，见 `utils/series.matchPrevAvg`；容差取参考序列自身的一个采样周期，写死常数在锁定态会漏配）。坐标轴约定（`chartOptions.ts`，纯函数单测）：**对数轴上的 0/负值既不绘制也不参与值域**（空闲时差分为 0 的字节/s 会把整条对数轴的值域拖到 0，`log(0)` 取不到界 → 刻度与轴名一起消失；线性轴保留 0），**某轴整列无可绘制数据时套兜底区间**（对数 0.01-10 / 线性 0-1）让空轴仍留有可读刻度；三张图左轴均带单位名（`延迟 s` / `健康率 %` / `字节/s`），对数刻度文本按有效位格式化（`toLocaleString` 默认最多 3 位小数会把 1e-4 显示成 `0`，对数轴上读到 0 是错的）。
 - **流量统计（traffic）**：统计状态与口径全在 `TrafficStatsUseCase`（use_cases 层）——`PproxyServer` 的 `modstat` 钩子只做转发：`i∈{0,1}` 上行 / `i∈{2,3}` 下行 → `record_bytes`，`i∈{4,5}` 连接建立 `+1` / 关闭 `-1` → `record_conn`；host 归一化与空值判断也在用例内（调用方只透传 pproxy 给的原始 `host_name`）。**独立采样循环固定 2s**（`serve` 的 `traffic_sample_loop` 调 `traffic.sample`）：差分出瞬时速率与 EMA、按 `METRICS_WINDOW` 清理 pair、把 pair 增量并入待落盘历史。采样与心跳节奏解耦：锁定单一上游时心跳放宽到 `HEARTBEAT_LOCK_INTERVAL`（见 `config/serve.toml`）但流量照常 2s 采样（正被使用的锁定代理流量图不跟着变稀疏），探测阻塞/退避期间采样也不中断；`/api/status/history` 下发 `traffic_history` + `traffic_total`，前端从累计值序列差分算速率曲线。注：pproxy `modstat` 只统计 `channel` 转发的 body，请求头在 `connected` 回调里直接写不经计数（GET 请求头不计入上行，POST/CONNECT body 正常计数）。
 - **按代理 IP 流量统计（per-proxy traffic）**：pproxy（vendor/pproxy 本地维护）`stream_handler` 选定上游 `roption` 后调 `modstat(user, remote_ip, host_name, roption)`——原版 pproxy 不传 `roption`，已内化进 vendor 源码（`server.py` stream_handler 签名 + 调用点）。`modstat` 里读 `roption.bind`（上游代理地址；显式 `direct://` 上游为 `"DIRECT"`，本项目默认无直连故无回退直连项）作 key 分发到 per-proxy 计数器；`/api/proxy/history?bind=` 按需查流量历史（`TrafficSample` 序列，前端差分算速率）。累计值与采样序列都在 `TrafficStatsUseCase` 内，仅内存、重启清零，不持久化（累计值不再随 `/api/status` 全量下发）。
-- **历史流量条目与流量统计页（traffic history）**：`(代理, 域名)` 的采样增量按 `panel.toml [traffic].flush_interval` 节流批量落到 `traffic_history` 表，主键 `(bind, host, ip)`——**IP 变动即新条目**（旧行冻结在切换前的累计值，从而能看出同一域名经不同出口的 CDN 漂移落点）。geo 不冗余存，按 `ip` 关联 `ip_geo_cache`；**不能关联 `target_geo_cache`**（其主键是 `(bind, host)`，IP 一变旧落点就被覆盖）。写入是**增量累加**（SQL 侧 `upload = upload + excluded.upload`）：进程重启后内存增量归零也不会冲掉已落盘的历史。保留期与清理见 `[traffic]` 节（每小时的采样轮次顺带清理）。面板「流量统计」页两个选项卡：**实时**（`/api/traffic/live`，连接级口径——此刻仍开着的连接，关闭即从列表消失）、**历史**（`/api/traffic/history`，按流量总计降序，条数上限见 `[traffic].history_limit`）。页面上只有这两个列表，没有页头 KPI 卡片（曾用 `/api/traffic/summary` 提供「活跃连接数 / 历史条目数 / 全局累计」，随仪表盘一并去掉，接口与用例的 `connection_count()` 同步删除，不留死接口）。
+- **历史流量条目与流量统计页（traffic history）**：`(代理, 域名)` 的采样增量按 `panel.toml [traffic].flush_interval` 节流批量落到 `traffic_history` 表，主键 `(bind, host, ip)`——**IP 变动即新条目**（旧行冻结在切换前的累计值，从而能看出同一域名经不同出口的 CDN 漂移落点）。geo 不冗余存，按 `ip` 关联 `ip_geo_cache`；**不能关联 `dns_probe_cache`**（其主键是 `(bind, host)`，IP 一变旧落点就被覆盖）。写入是**增量累加**（SQL 侧 `upload = upload + excluded.upload`）：进程重启后内存增量归零也不会冲掉已落盘的历史。保留期与清理见 `[traffic]` 节（每小时的采样轮次顺带清理）。面板「流量统计」页两个选项卡：**实时**（`/api/traffic/live`，连接级口径——此刻仍开着的连接，关闭即从列表消失）、**历史**（`/api/traffic/history`，按流量总计降序，条数上限见 `[traffic].history_limit`）。页面上只有这两个列表，没有页头 KPI 卡片（曾用 `/api/traffic/summary` 提供「活跃连接数 / 历史条目数 / 全局累计」，随仪表盘一并去掉，接口与用例的 `connection_count()` 同步删除，不留死接口）。
 - **按代理 IP 延时历史（per-proxy latency history）**：`heartbeat`/`retry_probe` **每次探测都记一笔** `ProxyLatencySample(ts, latency)` 到 `dict[bind, deque]`（key 为 `bind_of(proxy)` 剥 scheme，与 per-proxy 流量统一 key），**失败记 `latency=None`**——失败也是探测结果，缺采样点会把曲线画成直线、也算不出成功率；按 `METRICS_WINDOW` 窗口清理过期点；**代理离开队列后其 bind 的 key 在每轮心跳开头回收**（留存集合 = `standby_members()` + 锁定代理，与面板队列行一致），key 不随历史累积；`/api/proxy/history?bind=` 单代理按需查询、`/api/standby/series?since=` 队列逐代理增量下发（见下）。仅内存，重启清零。
 - **队列逐代理序列（`/api/standby/series?since=`）**：队列页行内趋势图的数据源，一次返回队列（含锁定代理）每条的延时与累计流量序列 `{cursor, window, series: {bind: {lat, up, down}}}`；`since` 为增量游标（只返回 `ts > since` 的点），`window` 为**队列页图表的显示窗口**（秒，= `STANDBY_CHART_WINDOW`，只服务队列页行内图，不参与数据留存）——前端本地缓冲按它裁剪，不在前端再硬编码一份（否则改配置后两边窗口各自漂移，显示跨度对不上）；渲染前降采样。仪表盘不走此接口（走 `/api/status/history`，按真实数据点绘制、不裁剪）。逐代理全量体量适中（30 × 2 序列 × 留存窗口内采样点），故与 `/api/status/history` 同机制走游标增量，且**不进 2s 的 `/api/status` 热路径**；两条历史都不产新数据时不下发空序列。
 - **队列行下质量带（StandbyPage.vue + Sparkline.vue）**：每个代理一块（摘要行 + 行下质量带）。摘要行是序号/代理（地址 + 协议·归属地·入队时长 + 纯净度 tag）/延迟/连续失败/操作（纯净度·测速·固定·锁定）；质量带**无逐项显示开关、四块全部常显**——延时趋势、流量速率、纯净度与测速结果都在，没有采样的块显示"暂无采样/未检查/未测速"占位（进页面即全部可见，不需要点开关或悬浮）；面板只保留「收起/展开图表」一个密度开关（收起回到单行便于纵览，跨会话记住）。**行内趋势图为自绘 SVG**（`Sparkline.vue`，`sparkSegments` 纯函数产出坐标串）：x 轴按**时间戳**映射（探测失败期留真实空白，`null` 点切断为多段）、对数/线性 y 轴自适应、多序列共用值域；**时间窗口由页面统一给定**（`seriesTimeWindow`：起 = 全行最早采样点，止 = 现在），全部行及同一行的两条曲线共用同一原点——各行按自己点集归一化的话，"刚入队只有两点"与"跑了半小时"的行长得一样、采样已停止的行也会贴到右边缘装成最新；孤立单点段写两遍同一坐标（浏览器不绘制单点 `<polyline>`，零长度子段的圆头端帽才显示出那个孤立的成功点）；两张图左侧各留一列标出该图的数据值区间（上 = 最大、下 = 最小，与坐标映射同源 `sparkDomain`，迷你图没有坐标轴不标就读不出量级），只要给了格式化器就占住该列（避免绘图区在行间错位）；**流量速率的非正值置 null**（既不绘制也不参与值域，零流量不再画成落在图表中间的平线、也不把尖峰压平，与仪表盘流量图同规则），累计值仍由「累计 ↑x ↓y」文字承担，故"无速率"与"无采样"可区分。不用 ECharts——几十行各建一个实例的开销（option 解析 + 组件体系 + ResizeObserver）不可接受，ECharts 只用于仪表盘大图。**代理质量由后端心跳机制自动管理**（失败计数→退避补测→拉黑淘汰），前端不做主动质量标记/高亮（曾有的 qualityFlags 低质量标签与色条已移除）。
@@ -270,20 +270,27 @@ Web 面板「IP 分布」页用 ECharts 世界地图展示池中代理的地理�
 - **API**：`GET /api/geo/map` 返回 `{total_ips, resolved_ips, unresolved_ips, countries, points}`，points 为城市级（City 库）或国家级（Country 库）坐标点（`{name, country, country_code, lat, lng, count}`）。首次请求全量解析 2400+ IP 约 3 秒，之后纯读缓存毫秒级。
 - **前端**：`GeoMap.vue` 懒加载 `static/world.json` 注册 ECharts 地图，静态散点（`effectScatter` 波纹保留开关、默认关——动画每帧重绘整张地图致浏览器 CPU 高企）+ `visualMap` 颜色映射密度，主题切换 watch 重绘配色，roam（缩放/平移）状态在数据刷新间保留；尺寸自适应用 `ResizeObserver`（在 `onMounted` 同步建立、`onBeforeUnmount` 断开），**不用 `window` 的 `resize` 监听**——后者的 handler 若建在 `onMounted` 的 `await` 之后，组件在 await 期间卸载时清理钩子拿不到 handler，监听器会残留在 `window` 上；同理两个 `watch`（status 心跳、主题）必须在 **setup 顶层**注册，写在 `await` 之后会脱离组件 effect scope、卸载后仍存活（依赖 Pinia 单例 store，进出页面 N 次即 N 个常驻 watcher）。ECharts 为 npm 依赖（tree-shake 打进懒加载 chunk），地图数据随构建产物分发（无外网依赖）。
 
-## 目标地区探测（3D 地球后端）
+## DNS 探测队列（流量统计子模块）
 
-仪表盘 3D 地球展示「本机 → 代理 → 目标服务器」的实时流量分布。目标落点来自**穿对应代理做 DoH 解析**的结果：CDN 按出口就近调度，同一域名经不同代理解析到不同机房，只有从该代理出口发查询才能得到它的真实落点。
+浏览目标「穿对应代理解析出的真实落点」（CDN 按出口就近调度，同一域名经不同代理解析到不同机房）由**流量统计模块的子模块**「DNS 探测队列」（`src/use_cases/dns_probe.py::DnsProbeQueue`）产出——**事件驱动、与 3D 地球解耦**：只要 `modstat` 记录的会话建立（`TrafficStatsUseCase.note_pair`）出现新的 (代理, 域名)，队列立刻（有界并发）穿该代理做 DoH 解析 + 可选归属定位，结果经 sink 回调交回流量统计落 `dns_probe_cache`。完整设计见 `docs/design/LLD-DnsProbe.md`。
 
-**开关与依赖**：`[globe].enabled`（默认 true）且 `[geoip].enabled=true` 时，serve 组装 `TargetGeoUseCase`（`src/use_cases/target_geo.py`）并注册 `GET /api/globe`；否则不构造用例、不注册路由，`/api/status` 下发 `globe_enabled=false`（前端隐藏卡片）。无面板（`[web].enabled=false`）时无人请求 `/api/globe`，探测永不激活。
+- **触发（事件驱动，非定时轮询）**：`note_pair(bind, host)` 内 `dns_probe.enqueue(bind, host)` 是同步 O(1) 的纯内存操作（跳过判定 + 在途去重 + 冷却判定）；`DnsProbeQueue.run()` 是常驻消费者（serve 起 `probe_task = asyncio.create_task(dns_probe.run())`），`await Queue.get()` 拿到即起探测任务，受 `[dns_probe].probe_concurrency` 限并发——**不轮询不空转**，没有激活窗口/候选窗口概念。
+- **调度记忆（全内存）**：`_schedule: pair → (下次可探测时刻, 下次失败后的退避秒数)`；成功后冷却 `cache_ttl`（冷却期内同 pair 新会话直接丢弃），失败指数退避 60s 起翻倍、封顶 15min；`prune` 由流量统计的小时级清理同拍调用。
+- **探测流程**：`proxy_lookup(bind)` 查不到（代理已离队）→ 跳过，不落盘不退避；host 是公网 IP 字面量 → 跳过 DoH 直接定位；否则穿该代理 `HostResolver.resolve`（DoH JSON、多端点顺序回退）→ 最多 2 个 A 记录逐个 GeoLite2 定位取首个命中 → 经 sink 交回结果行。
+- **跳过规则（入队阶段）**：内网/保留/回环/链路本地/组播/未指定 IP、单标签主机名、`.local` 后缀不入队；非法主机名（IDN 编码失败等）在探测时跳过（不落盘不退避）。
+- **可选 geo**：`geo=None` 时只产出 ip 行（不做经纬度定位）；探测总开关只看 `[dns_probe].enabled`，与 geoip/globe/web 解耦。
+- **结果由流量统计落盘**：`note_probe_result` → `save_dns_probe_batch`；查询 `dns_probe_rows` → `get_dns_probe_batch`。**延后写**：`flush` 对「无 IP 且探测仍在途（`is_pending`）」的 pair 延后落盘（不写空 IP 行），从源头不再产出 `(bind, host, '')` 空行——探测出终态或进程退出 `force=True` 时才写。
+- **穿代理解析（DohResolver，`src/interfaces/doh_resolver.py`）**：`HostResolver` 端口实现，经该代理请求 DoH JSON 接口（`Accept: application/dns-json`），端点按 `doh_endpoints` 顺序回退（默认 Cloudflare → Google → alidns 兜底国内出口）；HTTP 200 合法 JSON 但无 Answer 是有效负结果（空列表，不回退——否则负结果会被端点放大成多次查询）。证书策略复用 `verify_target`（http/socks 端到端校验；https 代理 TLS 只到代理本身，校验会让免费代理全灭）。
+- **表与隐私边界（`dns_probe_cache` 表）**：主键 `(bind, host)`，存解析 IP + 归属（国家/省/市/经纬度）与 `cached_at`；"已探测无结果"行（ip/geo 全空）照常落盘、TTL 内不重探；Geo 全不命中落 ip 行。启动即 `DROP TABLE IF EXISTS target_geo_cache`（旧表丢弃，不做迁移）。每小时一次（内存节流）按 `prune_after`（30 天）清理过期行。目标域名会随 DoH 查询发给所配 DNS 端点（穿代理解析的必要代价），结果只落本机 `.cache.db`；局域网可见范围与现有日志/队列数据一致。**清理方式**：`[dns_probe].enabled=false` 只停新探测，已缓存的目标域名需停掉 serve 后清表（如 `sqlite3 .cache.db "DELETE FROM dns_probe_cache"`，或用任意 SQLite 客户端删该表内容）；删整个 `.cache.db` 会一并重置代理池状态，一般不必。日常老化靠 `prune_after`（30 天）自动清理。
 
-- **数据源（PproxyServer pair 维度）**：vendor/pproxy 的 `modstat` 内化传入 `roption` 后，按 `(bind, host)` 记录会话 `last_seen` 与分方向字节；独立 2s 采样差分出瞬时速率并算 EMA（`up_rate/down_rate` 防抖供线宽、`up_inst/down_inst` 供光点流速），pair 超容量按 last_seen 淘汰、按 `METRICS_WINDOW` 清理。
-- **激活窗口**：`/api/globe` 每次请求调 `touch()`；只有 `activation_window`（60s）内有过请求，`probe_cycle` 才真正探测——没人看地球时零外网消耗（只记录内存流量）。
-- **探测循环**：serve 第三周期任务 `target_probe_loop`（2s，与心跳/采样并列），未激活直接返回；候选 = `probe_window` 内活跃 pair ∩ 当前队列（含锁定代理的 `queue_rows` 口径，`bind_of` 匹配）∩ 非跳过目标；按 last_seen 降序每轮取 `probe_concurrency * 2` 个、`Semaphore` 限并发；每 pair 每 `target_cache_ttl`（24h）探测一次，失败退避 60s 起指数翻倍封顶 15min、成功清零。
-- **穿代理解析（DohResolver）**：`HostResolver` 端口实现，经该代理请求 DoH JSON 接口（`Accept: application/dns-json`），端点按 `doh_endpoints` 顺序回退（默认 Cloudflare → Google → alidns 兜底国内出口）；HTTP 200 合法 JSON 但无 Answer 是有效负结果（空列表，不回退——否则负结果会被端点放大成多次查询）。证书策略复用 `verify_target`（http/socks 端到端校验；https 代理 TLS 只到代理本身，校验会让免费代理全灭）。
-- **跳过与特例**：内网/保留/回环/链路本地/组播/未指定 IP、单标签主机名、`.local` 在候选阶段过滤（不占探测名额）；公网 IP 字面量跳过 DoH 直接定位；IDN 编码失败的主机名跳过（不落盘不记退避）。
-- **缓存与隐私边界（`target_geo_cache` 表）**：主键 `(bind, host)`，存解析 IP + 归属（国家/省/市/经纬度）与 `cached_at`；负结果行（ip/geo 全 NULL）照常落盘、TTL 内不重探；Geo 全不命中落 ip 行。每小时一次（内存节流）按 `prune_after`（30 天）清理过期行。目标域名会随 DoH 查询发给所配 DNS 端点（穿代理解析的必要代价），结果只落本机 `.cache.db`；`/api/globe` 的 `flows` 含目标域名，面板默认监听 `0.0.0.0`——局域网可见范围与现有日志/队列数据一致，可在 `[web].host` 收紧监听或 `[globe].enabled=false` 关闭。**清理方式**：`[globe].enabled=false` 只停新探测，已缓存的目标域名需停掉 serve 后清表（如 `sqlite3 .cache.db "DELETE FROM target_geo_cache"`，或用任意 SQLite 客户端删该表内容）；删整个 `.cache.db` 会一并重置代理池状态，一般不必。日常老化靠 `prune_after`（30 天）自动清理。
-- **API**：`GET /api/globe` 返回 `{self, nodes, flows, stats}`（调用即 touch）：`self` = `[globe].self_lat/lng` 手填坐标（未配置为 null，前端不画第一段弧）；`nodes` = 队列每行（bind + 归属含坐标 + latency/pinned/locked/consecutive_fails + 按 bind 聚合速率）；`flows` =「活跃 pair ∩ 队列 bind」经缓存聚合的「代理 → 目标城市」弧（按 `(bind, 国家码, 城市)` 分组求和、hosts 每组 ≤8 个、按总速率降序取 `max_flows` 组，无坐标不产弧）。同一帧还带 `stats` 探测观测（累计 DoH 成功/失败、此刻退避中的 pair 数、最近一轮候选/发起/待探测计数与时刻）——只有计数、不含 host，用于评估穿免费代理的 DoH 成功率；面板地球卡片脚注渲染成「成功 N · 失败 M（成功率 P%）」，退避中/待探测仅在非零时附上。单次 <20KB，前端 5s 轮询，不进 2s 的 `/api/status` 热路径。
-- **前端（`GlobePanel.vue`）**：globe.gl（含 three 链）在卡片进入视口后才加载（DashboardPage 的 `defineAsyncComponent` + 组件内动态 `import('globe.gl')`，主 chunk 不含 three，three 独立 chunk ~1.9MB/547KB gzip）；5s 轮询 `/api/globe`，不可见或页面切后台暂停动画并**停轮询**（停轮询即停止 touch → 后端停止探测）；球面样式（贴图/经纬网/大气光晕）由设置页「地球样式」卡片决定（纯前端偏好，`stores/globeStyle` + localStorage，改完即时生效）：贴图取 three-globe 官方示例资源、已降采样入库 `frontend/public/globe/`（4 张，经 `/globe/{name}` 白名单路由分发，随构建产物离线分发，不依赖 ECharts 的 world.json），默认「真实地球 + 无网格 + 无光晕」——官方深色贴图（earth-night/earth-dark）依赖深色星空底，浅色卡片上会显成暗球，而默认大气光晕是 alpha 混合的 lightskyblue、在浅色底上是一圈蓝雾；主题切换读 CSS 变量重建点位/弧配色；WebGL 不可用/初始化失败渲染降级文案；卸载时断开 IO/RO 并 `_destructor()`。数据映射与探测统计文案为纯函数（`globeData.ts`：两段弧、速率→线宽/流速、CSS 变量取色叠透明度、`formatProbeStats`），Vitest 单测覆盖。
+## 3D 地球（只读消费）
+
+仪表盘底部 3D 地球展示「本机 → 代理 → 目标服务器」的实时流量分布，**只消费最终数据、不驱动探测**（探测由上面的 DNS 探测队列随时进行，与面板是否打开无关）。
+
+**开关与依赖**：`[globe].enabled`（默认 true）且 `[geoip].enabled=true` 时注册 `GET /api/globe`（判断为 `config.GLOBE_ENABLED and ctx.geo is not None`）；否则不注册路由，`/api/status` 下发 `globe_enabled=false`（前端隐藏卡片）。
+
+- **API（`GET /api/globe`，只读）**：返回 `{self, nodes, flows}`（**无 `stats`、不 `touch()`**）：`self` = `[globe].self_lat/lng` 手填坐标（未配置为 null，前端不画第一段弧）；`nodes` = `ctx.standby.queue_rows()` 每行（bind + 归属含坐标 + latency/pinned/locked/consecutive_fails + 按 bind 聚合速率，`ctx.traffic.active_pairs` 按 bind 求和）；`flows` = `ctx.traffic.active_pairs(now - METRICS_WINDOW)` ∩ 队列 bind，批量读 `ctx.traffic.dns_probe_rows(...)`（读 `dns_probe_cache`），用纯函数 `aggregate_flows`（`src/framework/web/globe_data.py`）按 `(bind, 国家码, 城市)` 分组求和、hosts 每组 ≤8 个、按总速率降序取 `max_flows` 组（无坐标不产弧）。单次 <20KB，前端 5s 轮询，不进 2s 的 `/api/status` 热路径。
+- **前端（`GlobePanel.vue`）**：globe.gl（含 three 链）在卡片进入视口后才加载（DashboardPage 的 `defineAsyncComponent` + 组件内动态 `import('globe.gl')`，主 chunk 不含 three，three 独立 chunk ~1.9MB/547KB gzip）；5s 轮询 `/api/globe`，不可见或页面切后台暂停动画并**停轮询**（**只省前端 CPU 与请求量，与后端探测无关**——探测随时进行）；球面样式（贴图/经纬网/大气光晕）由设置页「地球样式」卡片决定（纯前端偏好，`stores/globeStyle` + localStorage，改完即时生效）：贴图取 three-globe 官方示例资源、已降采样入库 `frontend/public/globe/`（4 张，经 `/globe/{name}` 白名单路由分发，随构建产物离线分发，不依赖 ECharts 的 world.json），默认「真实地球 + 无网格 + 无光晕」——官方深色贴图（earth-night/earth-dark）依赖深色星空底，浅色卡片上会显成暗球，而默认大气光晕是 alpha 混合的 lightskyblue、在浅色底上是一圈蓝雾；主题切换读 CSS 变量重建点位/弧配色；WebGL 不可用/初始化失败渲染降级文案；卸载时断开 IO/RO 并 `_destructor()`。数据映射为纯函数（`globeData.ts`：两段弧、速率→线宽/流速、CSS 变量取色叠透明度），Vitest 单测覆盖。
 
 ## 性能与资源占用（serve 长期运行）
 
@@ -293,7 +300,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 - **状态快照瘦身（带宽/序列化）**：`/api/status` 只返回实时状态（~6KB），历史数据（standby_history 窗口 60s ≈ 2KB；traffic_history 窗口 1800s ≈ 200KB）改走 `/api/status/history`，前端首次全量 + `?since=` 游标增量拉取并本地累积——2s 轮询不再重复传输 200KB 历史（原每 2s 216KB，一天 ~9GB）。
 - **锁定降频（外网请求）**：锁定单一上游时代理不淘汰不拉黑，心跳仅为测速展示，间隔放宽到 `HEARTBEAT_LOCK_INTERVAL`（30s），避免每 2s 打一次外网探测目标。
 - **SQLite 写节流**：`save()` 30 秒节流 + 组级增量（`export_group` ~0.015ms），WAL 写约 9KB/s 级，无需进一步调整。
-- **目标地区探测（外网请求）**：仅在面板打开时探测（激活窗口），每 pair 每 24h 一次 + 失败退避封顶 15min，并发 ≤ `probe_concurrency`（3）；`/api/globe` ≤ 30 nodes + 60 flows（单次 <20KB），5s 一拉，不进 2s 的 `/api/status` 热路径。
+- **DNS 探测队列（外网请求）**：事件驱动、与面板无关，有 (代理,域名) 会话即探测，每 pair 每 24h（`cache_ttl`）一次 + 失败退避封顶 15min，并发 ≤ `probe_concurrency`（3）；入队为 O(1) 内存操作，探测任务受信号量限并发、不轮询不空转。`/api/globe` 只读 ≤ 30 nodes + 60 flows（单次 <20KB），5s 一拉，不进 2s 的 `/api/status` 热路径。
 - **maxminddb Windows 非 ASCII 路径修复**：`GeoLite2Locator` 显式 `MODE_MMAP`（纯 Python mmap）。Windows 下 maxminddb C 扩展把路径按 UTF-8 字节传给 ANSI fopen，含非 ASCII 字符的路径（如中文目录名）打不开 mmdb；纯 Python 实现走 Python open，Unicode 路径正常，同为内存映射，查询性能差异可忽略。
 
 ## 配置项速查（config/ 目录，按领域拆分）
@@ -304,7 +311,7 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 - `pool.toml`：`[pool]` 阈值/语义组/可请求组 + `[groups]` 分组定义
 - `sources.toml`：`[fetch]`（含 `[fetch.freeproxy_world]`）+ `[[sources]]` + `[[fetch_filter]]` 入池筛选规则（`github_lists` 源的镜像前缀走环境变量 `GITHUB_LISTS_MIRROR`，未设置即直连）
 - `serve.toml`：`[server]` 端口/队列/心跳/链路门控/metrics/代理类型
-- `panel.toml`：`[geoip]` 归属地图 + `[globe]` 3D 地球与目标地区探测
+- `panel.toml`：`[geoip]` 归属地图 + `[globe]` 3D 地球 + `[dns_probe]` DNS 探测队列 + `[traffic]` 流量统计持久化
 - `ippure.toml`：`[ippure]` 纯净度开关/超时/缓存 TTL + `[[plugins]]` 检查源插件模块路径 + `[[proxy_rules]]` 声明式代理规则 + 插件自声明配置节（节名 = 插件 `SOURCE.name`，如 `[abuseipdb]` / `[ipok]`）
 - `logging.toml`：`[logging]` 控制台/文件级别分档 + `[logging.loggers]` 逐 logger 覆盖
 - `.env`：密钥（KEY=VALUE；加载时注入进程环境变量，**已存在的真实环境变量优先**；git 忽略）
@@ -360,11 +367,12 @@ serve 长期运行时的资源特征与已落实的优化（避免周期性刷�
 | `GEOIP_ENABLED` | `true` | 归属定位开关（`[geoip].enabled`；false 时不加载 mmdb，Container.geo 为 None） |
 | `GEOIP_DB_FILE` | `vendor/geoip/GeoLite2-City.mmdb` | GeoLite2 City/Country 离线数据库路径（`[geoip].db_file`，相对代码根，按库类型自动识别） |
 | `GEOIP_CACHE_TTL` | 7776000 (90d) | IP 归属缓存有效期（秒），`[geoip].cache_ttl` |
-| `GLOBE_ENABLED` / `GLOBE_SELF_LAT`+`GLOBE_SELF_LNG` | `true` / 无（须成对） | 3D 地球开关（false 时不构造用例、不注册 `/api/globe`）/ 手填本机坐标（决定本机节点与第一段弧） |
-| `GLOBE_DOH_ENDPOINTS` | Cloudflare → Google → alidns | DoH 端点（顺序即回退顺序，须非空 http(s)） |
-| `GLOBE_MAX_FLOWS` / `GLOBE_PROBE_CONCURRENCY` / `GLOBE_PROBE_TIMEOUT` | 60 / 3 / 8 | `/api/globe` 下发的最大弧分组数 / DoH 探测并发上限 / 单次 DoH 超时秒 |
-| `GLOBE_TARGET_CACHE_TTL` / `GLOBE_ACTIVATION_WINDOW` | 86400 / 60 | (代理,目标) 缓存有效期秒（含负结果）/ 面板活跃才探测的窗口秒 |
-| `GLOBE_PROBE_WINDOW` / `GLOBE_PRUNE_AFTER` | 600 / 2592000 | 有流量才作为探测候选的窗口秒 / 缓存行清理阈值秒（30 天） |
+| `GLOBE_ENABLED` / `GLOBE_SELF_LAT`+`GLOBE_SELF_LNG` | `true` / 无（须成对） | 3D 地球开关（false 时不注册 `/api/globe`）/ 手填本机坐标（决定本机节点与第一段弧） |
+| `GLOBE_MAX_FLOWS` | 60 | `/api/globe` 下发的最大弧分组数（按速率取 top N） |
+| `DNS_PROBE_ENABLED` | `true` | DNS 探测队列总开关（`[dns_probe].enabled`；false 时不构造队列、不探测） |
+| `DNS_PROBE_CONCURRENCY` / `DNS_PROBE_TIMEOUT` | 3 / 8 | 并发探测上限 / 单次 DoH 超时秒 |
+| `DNS_PROBE_CACHE_TTL` / `DNS_PROBE_PRUNE_AFTER` | 86400 / 2592000 | 同一 (代理,目标) 两次探测的最小间隔秒（含负结果冷却）/ 缓存行清理阈值秒（30 天） |
+| `DNS_PROBE_DOH_ENDPOINTS` | Cloudflare → Google → alidns | DoH 端点（顺序即回退顺序，须非空 http(s)） |
 
 ## view.py — .cache.db 只读查看器
 

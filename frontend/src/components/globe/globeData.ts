@@ -6,7 +6,7 @@
  * bind 不在当前节点集或无坐标不产弧）。速率映射取对数归一：单调、上下界固定；
  * 空数据/缺坐标安全返回，不产 NaN。
  */
-import type { GlobeData, GlobeFlow, GlobeNode, GlobeStats } from '@/types/api';
+import type { GlobeData, GlobeFlow, GlobeNode } from '@/types/api';
 import { escapeHtml, fmtBytesSpaced, fmtLatency } from '@/utils/format';
 
 /** 速率 → 弧线宽区间（globe.gl 弧宽单位；对数归一后线性映射） */
@@ -133,19 +133,6 @@ function flowLabel(flow: GlobeFlow): string {
     `${hosts}<br/>` +
     `↑ ${fmtBytesSpaced(flow.up_rate)}/s ↓ ${fmtBytesSpaced(flow.down_rate)}/s`
   );
-}
-
-/** 探测统计文案（卡片脚注）：成功率取整；退避中/待探测 >0 时才附上（评估 DoH 成功率用） */
-export function formatProbeStats(stats: GlobeStats): string {
-  const done = stats.probe_ok + stats.probe_fail;
-  const head = done > 0
-    ? `DoH 探测：成功 ${stats.probe_ok} · 失败 ${stats.probe_fail}` +
-      `（成功率 ${Math.round((stats.probe_ok / done) * 100)}%）`
-    : 'DoH 探测：尚无结果';
-  const tail: string[] = [];
-  if (stats.backoff > 0) tail.push(`退避中 ${stats.backoff}`);
-  if (stats.pending > 0) tail.push(`待探测 ${stats.pending}`);
-  return [head, ...tail].join(' · ');
 }
 
 /** 地球亮点：[本机（若配置）] + 有坐标的代理节点；无坐标节点跳过（不产 NaN） */

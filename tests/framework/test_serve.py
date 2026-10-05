@@ -48,7 +48,7 @@ class TestSyncRetryTasks(unittest.TestCase):
 
 
 class TestProxyLookup(unittest.TestCase):
-    """探测候选的 bind → 代理反查：口径为队列行（含锁定代理），离队 bind 返回 None"""
+    """DNS 探测的 bind → 代理反查：口径为队列行（含锁定代理），离队 bind 返回 None"""
 
     class _Standby:
         """只实现 queue_rows 契约的替身"""

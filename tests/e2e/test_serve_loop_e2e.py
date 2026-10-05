@@ -134,6 +134,9 @@ class _FakeTraffic:
     def flush(self, now, *, force=False):
         pass
 
+    def note_probe_result(self, bind, host, row):
+        pass
+
 
 async def _wait_until(pred, timeout=5.0):
     """轮询等待条件满足（e2e 里 serve 内部循环异步启动）"""
@@ -148,7 +151,7 @@ async def _wait_until(pred, timeout=5.0):
 def make_min_container(pool, standby):
     """serve._run 的最小容器替身：真实 standby + 假 save/async_getter
 
-    geo=None = 3D 地球功能关闭（本文件覆盖主循环本身，地球探测在 test_target_geo_e2e）。
+    geo=None = 地球/geoip 关闭（本文件覆盖主循环本身，DNS 探测链路在 test_dns_probe_e2e）。
     """
     return SimpleNamespace(
         pool=pool,

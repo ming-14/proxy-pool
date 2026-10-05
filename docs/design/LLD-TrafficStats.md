@@ -2,7 +2,11 @@
 
 > 状态：设计待评审（未动代码）
 > 关联：`src/interfaces/proxy_server.py`、`vendor/pproxy/proto.py`、`src/framework/serve.py`、
-> `src/framework/web/api.py`、`src/use_cases/target_geo.py`、`frontend/src/pages/`
+> `src/framework/web/api.py`、`src/use_cases/dns_probe.py`、`frontend/src/pages/`
+
+> **子模块**：本模块持有并驱动「DNS 探测队列」（`src/use_cases/dns_probe.py::DnsProbeQueue`，
+> 见 `LLD-DnsProbe.md`）——发现新的 (代理,域名) 会话即入队探测，探测结果由本模块落盘到
+> `dns_probe_cache`，供历史条目/实时连接补目标 IP。
 
 ## 0. 决策记录（已与用户对齐）
 
@@ -11,7 +15,7 @@
 | D1 | 「实时流量」的口径 | **只算活跃连接**——列表显示此刻还开着的连接（从 pproxy 的连接事件钩子统计），连接关闭即从列表消失，不保留 30 分钟余温 |
 | D2 | 「历史流量」的条目粒度 | **IP 变动即新条目**：行 = (代理, 域名, IP)，同一域名解析出新 IP 就新增一行、各记各的流量（可看出 CDN 漂移）；配保留期清理 |
 | D3 | 「归一化」的边界 | **完整搬迁到 use_cases 层**：`_traffic_*` / `_per_proxy_*` / `_pair_*` 全部移出 `PproxyServer`，它只保留「把 pproxy 事件转成上报调用」的钩子 |
-| D4 | DNS 结果的落盘 | **沿用现有 `target_geo_cache`**（已有表，格式即「网站-ip-地理信息」）；本设计不改其结构 |
+| D4 | DNS 结果的落盘 | **落到 `dns_probe_cache`**（键 `(bind, host)`，格式即「网站-ip-地理信息」）；探测由流量统计侧的子模块「DNS 探测队列」产出（见 `LLD-DnsProbe.md`） |
 
 默认口径（未特别反对即按此实现）：
 
@@ -82,8 +86,9 @@ pproxy stream_handler
                     流量统计页（实时 / 历史 两个选项卡）
 ```
 
-目标 IP 归属链路不变（D4）：会话建立的 pair 进 `TargetGeoUseCase` 的 DoH 队列 →
-`target_geo_cache` 落 (bind, host) → 归属；实时页与历史页都用它补 IP/地理信息。
+目标 IP 归属链路（D4）：会话建立时 `note_pair` 把 pair 入队给 DNS 探测队列
+（`DnsProbeQueue`，事件驱动、立刻穿代理做 DoH）→ 结果经 `note_probe_result` 落
+`dns_probe_cache` 的 (bind, host) 行 → 归属；实时页与历史页都用它补 IP/地理信息。
 
 ## 3. 后端设计
 
@@ -95,14 +100,20 @@ pproxy stream_handler
 ```python
 class TrafficStatsUseCase:
     def __init__(self, *, store: TrafficHistoryStore,
-                 target_ip_lookup: Callable[[list[tuple[str, str]]], dict[tuple[str, str], str]],
+                 dns_probe_store: DnsProbeStore,
+                 dns_probe: DnsProbeQueue | None,
                  metrics_window: float, flush_interval: float, retention: float,
+                 dns_probe_prune_after: float,
                  max_pairs: int = ...) -> None: ...
 
     # ---- 上报入口（modstat 调用，事件循环线程，热路径 O(1)）----
-    def note_pair(self, bind: str, host: str) -> None: ...      # 会话建立：记 last_seen
+    def note_pair(self, bind: str, host: str) -> None: ...      # 会话建立：记 last_seen + 交给 DNS 探测队列
     def record_bytes(self, bind: str, host: str, up: int, down: int) -> None: ...
     def record_conn(self, bind: str, host: str, delta: int) -> None: ...
+
+    # ---- DNS 探测队列的落盘与查询 ----
+    def note_probe_result(self, bind: str, host: str, row: dict) -> None: ...  # 队列 sink：save_dns_probe_batch
+    def dns_probe_rows(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]: ...  # get_dns_probe_batch
 
     # ---- 采样与落盘（serve 的采样循环调用）----
     def sample(self, now: float) -> None: ...      # 差分成速率/EMA、清理过期、并入待落盘增量
@@ -119,8 +130,14 @@ class TrafficStatsUseCase:
     def history_count(self) -> int: ...
 ```
 
-`target_ip_lookup` 是 `(bind, host)` 批量查目标 IP 的闭包（serve 内由 `SqliteProxyStore.get_target_geo_batch`
-构造）：落盘时用它给条目定 `ip` 维度，取不到记空串。
+- `dns_probe` 为子模块「DNS 探测队列」（`None` = 探测关闭）；`dns_probe_store` 是探测结果缓存
+  （`SqliteProxyStore` 同时实现 `TrafficHistoryStore` 与 `DnsProbeStore` 两条端口）。
+- `note_pair` 内 `dns_probe.enqueue(bind, host)`（同步 O(1)、纯内存）——**入队即探测**，不再需要激活窗口。
+- 落盘时条目 `ip` 维度由 `dns_probe_rows`（读 `dns_probe_cache`）给出，取不到记空串；
+  `flush` 对「无 IP 且探测仍在途（`is_pending`）」的 pair **延后落盘**，避免写出 `(bind, host, '')` 空行
+  （探测出终态或退出 `force=True` 时才写）。
+- 小时级清理（`_prune`）同拍执行：`prune_traffic_history`、`dns_probe.prune(now)`（内存调度表）、
+  `prune_dns_probe(now - dns_probe_prune_after)`（缓存行）。
 
 `PproxyServer` 侧只剩钩子：
 
@@ -130,7 +147,7 @@ def _make_modstat(self):
 
     def modstat(user, remote_ip, host_name, roption):
         bind = roption.bind
-        traffic.note_pair(bind, host_name)     # 会话建立：记 last_seen（host 归一化在用例内）
+        traffic.note_pair(bind, host_name)     # 会话建立：记 last_seen + 入队 DNS 探测（host 归一化在用例内）
 
         def m(i):
             if i in (0, 1): return lambda n: traffic.record_bytes(bind, host_name, n, 0)
@@ -172,7 +189,7 @@ CREATE TABLE IF NOT EXISTS traffic_history (
 
 - **粒度即主键**：IP 变了就是新行（D2）；旧行冻结在切换那一刻的累计值，不再更新。
 - **不冗余存 geo**：按 `ip` 关联 `ip_geo_cache`（主键为 IP，归属稳定）。
-  **不能关联 `target_geo_cache`**——它主键是 (bind, host)，IP 一变旧落点就被覆盖，拿不到历史。
+  **不能关联 `dns_probe_cache`**——它主键是 (bind, host)，IP 一变旧落点就被覆盖，拿不到历史。
 - 清理：`prune_traffic_history(before_ts)`（按 `last_seen` 删，保留期见 `config` 的对应节）。
 
 **流量如何归到具体 IP**（IP 是异步 DoH 得到的，晚于流量）：
@@ -235,7 +252,7 @@ CREATE TABLE IF NOT EXISTS traffic_history (
 | 场景 | 处理 |
 |---|---|
 | 解析不出 IP（DoH 失败/无 A 记录/未探测） | 历史行的 `ip` 记空串，实时行的 `ip/geo` 为 `null`；条目照常显示 |
-| host 是 IP 字面量 | 不经 DoH，直接定位（沿用 `TargetGeoUseCase` 现有判定） |
+| host 是 IP 字面量 | 不经 DoH，直接定位（沿用 `DnsProbeQueue` 现有判定） |
 | 内网/保留地址、单标签主机名、`.local` | 沿用现有跳过口径，不落历史行 |
 | 同一 (bind, host) 并发多条连接 | 计数累加；归零即删（不保留余温） |
 | `-1` 多于 `+1`（异常路径） | 钳到 0 并记 WARNING，不出现负计数 |

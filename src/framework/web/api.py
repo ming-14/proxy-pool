@@ -27,8 +27,8 @@ from src.interfaces.speedtest import PspeedTester
 from src.use_cases.record_proxy import RecordProxyUseCase
 from src.use_cases.standby import StandbyQueueUseCase
 from src.use_cases.check_purity import CheckPurityUseCase
-from src.use_cases.target_geo import TargetGeoUseCase
 from src.use_cases.traffic_stats import TrafficStatsUseCase
+from src.framework.web.globe_data import aggregate_flows
 from src.framework.web.panel_state import PanelTasks
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,6 @@ class PanelContext:
     geo: object | None                   # IpGeoUseCase：IP 归属地图（GeoLite2 + 缓存 + 聚合）；geoip.enabled=false 时为 None
     speedtest: PspeedTester              # 测速实现（面板手动测速与入队筛选共用）
     tasks: PanelTasks                    # 面板任务状态（测速/纯净度检查进行中与终态，前端刷新后恢复）
-    target_geo: TargetGeoUseCase | None  # 目标地区探测用例；geoip/globe 关闭时为 None（/api/globe 不注册）
 
 
 # ------------------------------------------------------------------ 读取
@@ -200,7 +199,8 @@ def _status_snapshot(ctx: PanelContext) -> dict:
         "groups": groups,
         "available_count": len(available),
         "geo_enabled": ctx.geo is not None,  # 前端据此隐藏/显示 IP 分布地图区块
-        "globe_enabled": ctx.target_geo is not None,  # 前端据此隐藏/显示 3D 地球卡片
+        # 3D 地球需要 geoip（节点/目标归属坐标）；只消费最终数据，与 DNS 探测队列无关
+        "globe_enabled": config.GLOBE_ENABLED and ctx.geo is not None,
         # 纯净度检查源元数据（None = 未启用）；前端据此隐藏检查按钮并标注数据来源
         "purity_source": (
             {"name": ctx.purity.source, "label": ctx.purity.label} if ctx.purity else None
@@ -427,14 +427,12 @@ _ZERO_RATES = {"up_rate": 0.0, "down_rate": 0.0, "up_inst": 0.0, "down_inst": 0.
 
 
 async def _globe(request: web.Request) -> web.Response:
-    """3D 地球数据：本机坐标 + 代理节点（含速率/归属）+ 目标弧（探测缓存聚合）+ 探测统计
+    """3D 地球数据：本机坐标 + 代理节点（含速率/归属）+ 目标弧（DNS 探测结果聚合）
 
-    touch() 刷新探测激活窗口——只有面板真正在看地球时后端才发起 DoH 探测。
-    nodes 覆盖服务队列全部成员（含锁定代理）；flows 只统计队列内 bind 的活跃 pair；
-    stats 只有计数（成功/失败/退避/最近一轮候选），不含 host。
+    只消费最终数据：队列行节点 + 流量统计的活跃 pair + DNS 探测结果缓存，本请求不触发
+    任何探测。nodes 覆盖服务队列全部成员（含锁定代理）；flows 只统计队列内 bind 的活跃 pair。
     """
     ctx = request.app[_PANEL_KEY]
-    ctx.target_geo.touch()
     now = time.time()
     pairs = ctx.traffic.active_pairs(now - config.METRICS_WINDOW)
     # 节点速率：活跃 pair 按 bind 聚合（EMA 供线宽、瞬时供流速）
@@ -461,10 +459,12 @@ async def _globe(request: web.Request) -> web.Response:
             "locked": p == locked_proxy,
             **rates.get(bind, _ZERO_RATES),
         })
-    flows = ctx.target_geo.build_flows(
-        [pair for pair in pairs if pair["bind"] in queue_binds], config.GLOBE_MAX_FLOWS)
-    return web.json_response({"self": _self_point(), "nodes": nodes, "flows": flows,
-                              "stats": ctx.target_geo.stats(now)})
+    in_queue = [pair for pair in pairs if pair["bind"] in queue_binds]
+    flows = aggregate_flows(
+        in_queue,
+        ctx.traffic.dns_probe_rows([(p["bind"], p["host"]) for p in in_queue]),
+        config.GLOBE_MAX_FLOWS)
+    return web.json_response({"self": _self_point(), "nodes": nodes, "flows": flows})
 
 
 # ------------------------------------------------------------------ 流量统计
@@ -937,8 +937,8 @@ def build_app(ctx: PanelContext) -> web.Application:
     if ctx.geo is not None:
         app.router.add_get("/api/geo/map", _geo_map)
         app.router.add_get("/api/standby/geo", _standby_geo)
-    # /api/globe 依赖目标探测用例（geoip 或 globe.enabled 关闭时为 None，不注册）
-    if ctx.target_geo is not None:
+    # /api/globe 只消费最终数据，需要 geoip（节点/目标归属坐标）与 [globe].enabled
+    if config.GLOBE_ENABLED and ctx.geo is not None:
         app.router.add_get("/api/globe", _globe)
     app.router.add_post("/api/fetch", _do_fetch)
     app.router.add_post("/api/blacklist", _do_blacklist)

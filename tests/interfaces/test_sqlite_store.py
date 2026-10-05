@@ -363,8 +363,8 @@ class TestGeoCache(unittest.TestCase):
         assert result[ips[-1]]["country_code"] == "US"
 
 
-class TestTargetGeoCache(unittest.TestCase):
-    """目标归属缓存 (target_geo_cache)：(bind, host) 主键批量读写与过期清理"""
+class TestDnsProbeCache(unittest.TestCase):
+    """DNS 探测结果缓存 (dns_probe_cache)：(bind, host) 主键批量读写与过期清理"""
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
@@ -377,17 +377,17 @@ class TestTargetGeoCache(unittest.TestCase):
         os.rmdir(self.tmp_dir)
 
     def test_empty_and_miss(self):
-        assert self.store.get_target_geo_batch([]) == {}
-        assert self.store.get_target_geo_batch([("1.2.3.4:8080", "example.com")]) == {}
+        assert self.store.get_dns_probe_batch([]) == {}
+        assert self.store.get_dns_probe_batch([("1.2.3.4:8080", "example.com")]) == {}
 
     def test_save_then_get(self):
-        self.store.save_target_geo_batch({
+        self.store.save_dns_probe_batch({
             ("1.2.3.4:8080", "example.com"): {
                 "ip": "93.184.216.34", "country": "美国", "country_code": "US",
                 "province": None, "city": None, "lat": 37.75, "lng": -97.82,
             },
         })
-        row = self.store.get_target_geo_batch([("1.2.3.4:8080", "example.com")])[("1.2.3.4:8080", "example.com")]
+        row = self.store.get_dns_probe_batch([("1.2.3.4:8080", "example.com")])[("1.2.3.4:8080", "example.com")]
         assert row["ip"] == "93.184.216.34"
         assert row["country_code"] == "US"
         assert row["lat"] == 37.75
@@ -395,20 +395,20 @@ class TestTargetGeoCache(unittest.TestCase):
 
     def test_negative_result_row_roundtrip(self):
         """"已探测无结果"行照常落盘（ip/geo 全空），供 TTL 内跳过重探"""
-        self.store.save_target_geo_batch({("1.2.3.4:8080", "nx.example"): {}})
-        row = self.store.get_target_geo_batch([("1.2.3.4:8080", "nx.example")])[("1.2.3.4:8080", "nx.example")]
+        self.store.save_dns_probe_batch({("1.2.3.4:8080", "nx.example"): {}})
+        row = self.store.get_dns_probe_batch([("1.2.3.4:8080", "nx.example")])[("1.2.3.4:8080", "nx.example")]
         assert row["ip"] is None
         assert row["lat"] is None
         assert row["cached_at"] > 0
 
     def test_partitioned_by_bind_and_host(self):
         """同域名不同代理出口、同代理不同域名互不覆盖（CDN 按出口落点不同）"""
-        self.store.save_target_geo_batch({
+        self.store.save_dns_probe_batch({
             ("1.1.1.1:8080", "cdn.example"): {"ip": "10.0.0.1", "lat": 1.0, "lng": 1.0},
             ("2.2.2.2:8080", "cdn.example"): {"ip": "10.0.0.2", "lat": 2.0, "lng": 2.0},
             ("1.1.1.1:8080", "other.example"): {"ip": "10.0.0.3", "lat": 3.0, "lng": 3.0},
         })
-        result = self.store.get_target_geo_batch([
+        result = self.store.get_dns_probe_batch([
             ("1.1.1.1:8080", "cdn.example"),
             ("2.2.2.2:8080", "cdn.example"),
             ("1.1.1.1:8080", "other.example"),
@@ -419,9 +419,9 @@ class TestTargetGeoCache(unittest.TestCase):
 
     def test_upsert_overwrites(self):
         key = ("1.1.1.1:8080", "example.com")
-        self.store.save_target_geo_batch({key: {"ip": "1.1.1.1", "lat": 0.0, "lng": 0.0}})
-        self.store.save_target_geo_batch({key: {"ip": "2.2.2.2", "lat": 1.0, "lng": 1.0}})
-        row = self.store.get_target_geo_batch([key])[key]
+        self.store.save_dns_probe_batch({key: {"ip": "1.1.1.1", "lat": 0.0, "lng": 0.0}})
+        self.store.save_dns_probe_batch({key: {"ip": "2.2.2.2", "lat": 1.0, "lng": 1.0}})
+        row = self.store.get_dns_probe_batch([key])[key]
         assert row["ip"] == "2.2.2.2"
         assert row["lat"] == 1.0
 
@@ -429,31 +429,31 @@ class TestTargetGeoCache(unittest.TestCase):
         """超过单批 400 对时分批查询，结果完整"""
         rows = {(f"1.1.1.{i % 250}:8080", f"h{i}.example"): {"ip": "1.2.3.4", "lat": 0.5, "lng": 0.5}
                 for i in range(401)}
-        self.store.save_target_geo_batch(rows)
-        result = self.store.get_target_geo_batch(list(rows))
+        self.store.save_dns_probe_batch(rows)
+        result = self.store.get_dns_probe_batch(list(rows))
         assert len(result) == 401
 
     def test_prune_removes_only_old_rows(self):
-        self.store.save_target_geo_batch({
+        self.store.save_dns_probe_batch({
             ("1.1.1.1:8080", "old.example"): {"ip": "1.1.1.1", "lat": 0.0, "lng": 0.0},
             ("1.1.1.1:8080", "new.example"): {"ip": "2.2.2.2", "lat": 1.0, "lng": 1.0},
         })
         now = time.time()
         # save 统一取写入时刻，这里直接改旧行的 cached_at 构造过期数据
         self.store._conn.execute(
-            "UPDATE target_geo_cache SET cached_at=? WHERE host='old.example'", (now - 100,))
-        assert self.store.prune_target_geo(now - 50) == 1
-        remaining = self.store.get_target_geo_batch([
+            "UPDATE dns_probe_cache SET cached_at=? WHERE host='old.example'", (now - 100,))
+        assert self.store.prune_dns_probe(now - 50) == 1
+        remaining = self.store.get_dns_probe_batch([
             ("1.1.1.1:8080", "old.example"), ("1.1.1.1:8080", "new.example")])
         assert ("1.1.1.1:8080", "old.example") not in remaining
         assert ("1.1.1.1:8080", "new.example") in remaining
 
     def test_survives_reopen(self):
         key = ("1.1.1.1:8080", "persist.example")
-        self.store.save_target_geo_batch({key: {"ip": "1.2.3.4", "lat": 0.5, "lng": 0.5}})
+        self.store.save_dns_probe_batch({key: {"ip": "1.2.3.4", "lat": 0.5, "lng": 0.5}})
         self.store.close()
         self.store = SqliteProxyStore(self.db_path)
-        assert self.store.get_target_geo_batch([key])[key]["ip"] == "1.2.3.4"
+        assert self.store.get_dns_probe_batch([key])[key]["ip"] == "1.2.3.4"
 
 
 if __name__ == "__main__":

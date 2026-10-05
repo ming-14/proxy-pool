@@ -119,7 +119,7 @@ export const api = {
 
   geoMap: () => request<GeoMapData>('/api/geo/map'),
 
-  /** 3D 地球数据（节点 + 目标弧）；每次请求即刷新后端探测激活窗口 */
+  /** 3D 地球数据（节点 + 目标弧）；只读最终数据，不触发任何探测 */
   globe: () => request<GlobeData>('/api/globe'),
 
   /** 实时流量：此刻仍开着的连接（连接级口径，按「代理, 域名」汇总） */

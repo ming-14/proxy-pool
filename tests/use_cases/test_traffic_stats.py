@@ -42,16 +42,57 @@ class FakeStore:
         return len(victims)
 
 
-def _make(store=None, ip_map=None, **kwargs):
-    """构造用例：默认 fake store + 按 ip_map 回答目标 IP 查询"""
+class FakeDnsProbeStore:
+    """内存版 DNS 探测结果缓存（受测方读写；ips 为共享可变映射，便于改 IP 验证新条目）"""
+
+    def __init__(self, ips=None):
+        self.ips = ips if ips is not None else {}
+        self.saved = []
+        self.pruned = []
+
+    def get_dns_probe_batch(self, pairs):
+        return {p: {"ip": self.ips[p]} for p in pairs if p in self.ips}
+
+    def save_dns_probe_batch(self, rows):
+        self.saved.append(dict(rows))
+        for key, row in rows.items():
+            self.ips[key] = row.get("ip")
+
+    def prune_dns_probe(self, before_ts):
+        self.pruned.append(before_ts)
+        return 0
+
+
+class FakeDnsProbe:
+    """假 DNS 探测队列（记录入队；pending 集合控制 is_pending）"""
+
+    def __init__(self, pending=None):
+        self.enqueued = []
+        self.pending = set(pending or ())
+        self.pruned = []
+
+    def enqueue(self, bind, host):
+        self.enqueued.append((bind, host))
+
+    def is_pending(self, bind, host):
+        return (bind, host) in self.pending
+
+    def prune(self, now):
+        self.pruned.append(now)
+
+
+def _make(store=None, ip_map=None, dns_probe=None, **kwargs):
+    """构造用例：默认 fake store + 按 ip_map 回答目标 IP 查询（ip_map 为共享可变量）"""
     store = store if store is not None else FakeStore()
-    ip_map = ip_map or {}
+    ip_map = ip_map if ip_map is not None else {}
     stats = TrafficStatsUseCase(
         store=store,
-        target_ip_lookup=lambda pairs: {p: ip_map[p] for p in pairs if p in ip_map},
+        dns_probe_store=FakeDnsProbeStore(ip_map),
+        dns_probe=dns_probe,
         metrics_window=kwargs.pop("metrics_window", 1800.0),
         flush_interval=kwargs.pop("flush_interval", 15.0),
         retention=kwargs.pop("retention", 2592000.0),
+        dns_probe_prune_after=kwargs.pop("dns_probe_prune_after", 2592000.0),
         **kwargs,
     )
     return stats, store
@@ -374,6 +415,74 @@ class TestHistoryPersistence(unittest.TestCase):
         entries = stats.history_entries(10)
         self.assertEqual([e["host"] for e in entries], ["big.example", "small.example"])
         self.assertEqual(stats.history_count(), 2)
+
+
+class TestDnsProbeIntegration(unittest.TestCase):
+    """与 DNS 探测队列的接线：入队投递、结果落盘、在途未解析时延后写历史"""
+
+    def test_note_pair_enqueues_to_dns_probe(self):
+        probe = FakeDnsProbe()
+        stats, _ = _make(dns_probe=probe)
+        stats.note_pair("1.1.1.1:8080", "Example.COM.")
+        stats.note_pair("1.1.1.1:8080", "")
+        self.assertEqual(probe.enqueued, [("1.1.1.1:8080", "example.com")], "归一化后入队；空 host 不入队")
+
+    def test_note_pair_without_queue_is_noop(self):
+        stats, _ = _make()  # dns_probe=None：探测关闭时不投递
+        stats.note_pair("1.1.1.1:8080", "example.com")
+        self.assertEqual(stats.active_pairs(0.0)[0]["host"], "example.com")
+
+    def test_note_probe_result_saves_and_feeds_queries(self):
+        stats, _ = _make()
+        stats.note_probe_result("1.1.1.1:8080", "example.com", {"ip": "93.184.216.34"})
+        self.assertEqual(
+            stats.dns_probe_rows([("1.1.1.1:8080", "example.com")])
+                 [("1.1.1.1:8080", "example.com")]["ip"],
+            "93.184.216.34",
+        )
+
+    def test_note_probe_result_survives_store_failure(self):
+        stats, _ = _make()
+
+        def boom(rows):
+            raise RuntimeError("db down")
+
+        stats._dns_probe_store.save_dns_probe_batch = boom
+        stats.note_probe_result("1.1.1.1:8080", "example.com", {"ip": "1.2.3.4"})  # 不外抛
+
+    def test_flush_defers_pending_unresolved_pair(self):
+        """无 IP 且探测仍在途：非 force 落盘延后（不写空 IP 行），探测终态后再写"""
+        probe = FakeDnsProbe(pending=[("1.1.1.1:8080", "example.com")])
+        stats, store = _make(dns_probe=probe)
+        stats.note_pair("1.1.1.1:8080", "example.com")
+        stats.record_bytes("1.1.1.1:8080", "example.com", 100, 0)
+        stats.sample(1000.0)
+        self.assertEqual(stats.history_count(), 0, "在途未解析不落盘")
+        probe.pending.clear()  # 探测出终态（此处仍未解析出 IP）
+        stats.flush(1010.0, force=True)
+        self.assertIn(("1.1.1.1:8080", "example.com", ""), store.rows)
+
+    def test_flush_writes_pending_when_ip_ready(self):
+        """探测已给出 IP：即使在途（理论不会）也照写带 IP 的条目"""
+        probe = FakeDnsProbe(pending=[("1.1.1.1:8080", "example.com")])
+        ip_map = {("1.1.1.1:8080", "example.com"): "93.184.216.34"}
+        stats, store = _make(ip_map=ip_map, dns_probe=probe)
+        stats.note_pair("1.1.1.1:8080", "example.com")
+        stats.record_bytes("1.1.1.1:8080", "example.com", 100, 0)
+        stats.sample(1000.0)
+        self.assertIn(("1.1.1.1:8080", "example.com", "93.184.216.34"), store.rows)
+
+    def test_prune_also_prunes_dns_probe_cache_and_queue(self):
+        """跨过清理节流窗口：历史 + DNS 探测缓存 + 队列内存调度表同拍清理"""
+        probe = FakeDnsProbe()
+        stats, _ = _make(dns_probe=probe, dns_probe_prune_after=100.0)
+        stats.note_pair("1.1.1.1:8080", "example.com")
+        stats.record_bytes("1.1.1.1:8080", "example.com", 10, 0)
+        stats.sample(1000.0)                # 首次落盘（清理节流窗口未到）
+        stats.record_bytes("1.1.1.1:8080", "example.com", 10, 0)
+        stats.sample(10000.0)               # 跨过一小时节流窗口 → 触发清理
+        self.assertEqual(stats._dns_probe_store.pruned[-1], 10000.0 - 100.0)
+        self.assertEqual(probe.pruned[-1], 10000.0)
 
 
 if __name__ == "__main__":

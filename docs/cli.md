@@ -51,7 +51,7 @@ python cli.py serve [--port 8082] [--host 127.0.0.1] [--queue-size 10]
 - **右键上下文菜单**：代理服务队列页面右键代理行弹出菜单——「复制」（复制该代理地址，剪贴板 API 不可用/非安全上下文时回退 execCommand）、「移出」（hover 展开子菜单，列出所有组及其存量，点击调 `/api/proxy/move` 将代理移到目标组并同步 pproxy 上游；触屏上子菜单点击开合）、「拉黑」（调 `/api/blacklist`，从所有组移除并加入黑名单）、「测速」（立即对该代理触发测速，结果落在行下质量带）。**触屏（手机/平板）**：长按代理行弹同一菜单（触屏禁文本选区，长按不再触发系统选择手柄；iOS 由前端长按计时兜底）；行顺序冻结仅桌面悬浮生效，触屏抬手即解除
 - **代理组右键菜单**：代理组页面右键代理行弹出菜单——非黑名单组：「移动」（子菜单选目标组，排除当前组和黑名单）+「拉黑」+「删除」；黑名单组：「还原」（移到代理队列）+「删除」
 - **代理归属地**：队列行展示国家·省·市（`/api/standby/geo`，bind → geo，缺失的 IP 首次请求时批量定位并写入 90 天缓存；`geoip.enabled=false` 时该路由不注册、面板不展示该列）
-- **3D 地球**（仪表盘底部）：globe.gl 渲染代理节点与「本机 → 代理 → 目标服务器」两段流量飞线（线宽 ∝ 聚合速率、光点流速 ∝ 瞬时速率），数据 5s 轮询 `/api/globe`；目标落点由**穿对应代理的 DoH 解析**得到（CDN 按出口就近调度）。`geoip` 或 `[globe].enabled` 任一关闭时后端不注册该路由、卡片隐藏。**进入视口才加载渲染**（three 链动态 import，主包不含），不可见/页面切后台暂停动画并停轮询——没有人看地球时后端不做探测；主题切换重建配色；WebGL 不可用时卡片显示降级文案。本机坐标在 `config/panel.toml` 的 `[globe]` 手填（`self_lat`/`self_lng`），未配置时不画「本机 → 代理」段。目标域名与归属缓存到 `.cache.db` 的 `target_geo_cache` 表（30 天自动清理）；只想停探测设 `[globe].enabled=false`，要清掉已缓存的目标域名则停 serve 后清该表内容（见 `docs/architecture.md` 隐私边界节）。卡片脚注显示探测观测：DoH 成功/失败与成功率、退避中与待探测计数（只有计数、不含域名）
+- **3D 地球**（仪表盘底部）：globe.gl 渲染代理节点与「本机 → 代理 → 目标服务器」两段流量飞线（线宽 ∝ 聚合速率、光点流速 ∝ 瞬时速率），数据 5s 轮询 `/api/globe`（**只读，不驱动探测**）；目标落点由**穿对应代理的 DoH 解析**得到（CDN 按出口就近调度）。`geoip` 或 `[globe].enabled` 任一关闭时后端不注册该路由、卡片隐藏。**进入视口才加载渲染**（three 链动态 import，主包不含），不可见/页面切后台暂停动画并停轮询（**只省前端 CPU 与请求量**，与后端探测无关）；主题切换重建配色；WebGL 不可用时卡片显示降级文案。本机坐标在 `config/panel.toml` 的 `[globe]` 手填（`self_lat`/`self_lng`），未配置时不画「本机 → 代理」段。目标域名与归属由**流量统计子模块「DNS 探测队列」**缓存到 `.cache.db` 的 `dns_probe_cache` 表（30 天自动清理）；该队列**事件驱动**——有 (代理,域名) 会话即立刻穿该代理探测，与是否看地球无关（详见 `docs/architecture.md` 与 `docs/design/LLD-DnsProbe.md`）。只想停探测设 `[dns_probe].enabled=false`，要清掉已缓存的目标域名则停 serve 后清该表内容（见 `docs/architecture.md` 隐私边界节）。
 - **添加代理**：代理组页面「添加」按钮（导出 CSV 左边），弹出模态框输入代理地址（每行一个，裸地址默认 http），调 `POST /api/group/{name}/add` 批量添加到当前组
 - **设置页**（侧边栏「设置」，仅运行时可变项）：编辑 6 项运行时调度参数（心跳间隔/并发/超时/探测 URL/允许类型/调度算法，`/api/settings` 即刻生效）；**入队筛选规则卡片**逐指标开关 + 阈值（延时秒数/国家白名单/纯净度上限/测速下限），优先级以「执行顺序」一行只读展示（改顺序需改 `config/serve.toml` 重启）；**地球样式卡片**（纯前端观看偏好，`localStorage` 持久化、不经 API）：3D 地球球面贴图 4 选 1（真实地球/夜景/白昼/暗色）+ 经纬网、大气光晕开关，改完即时生效；填充候选倍率与最小增量不提供面板入口，取值见 `config/serve.toml` 的 `standby_fill_probe_multiplier` / `standby_fill_probe_min_extra`
 
@@ -219,5 +219,5 @@ python -m pytest -v
 ### 测试覆盖
 
 - 单测：领域规则（TTL/晋级/淘汰/暂停）、用例（拉取三阶段、重试、晋级）、接口（存储/调度器/UA/代理服务器/各源解析）、CLI（fake container 注入）
-- e2e：`tests/e2e/` 用本地 mock 上游（模拟 HTTP CONNECT 隧道 + SOCKS5 握手）验证 serve 全链路：fill 补入 → pproxy 启动 → 请求经上游转发 → 心跳移出死代理 → 动态 sync 增删 → 无缝切换 → Ctrl+C 优雅退出，目标地区探测链路（mock DoH → `/api/globe` 出弧、未激活不探测），全程不依赖外网
+- e2e：`tests/e2e/` 用本地 mock 上游（模拟 HTTP CONNECT 隧道 + SOCKS5 握手）验证 serve 全链路：fill 补入 → pproxy 启动 → 请求经上游转发 → 心跳移出死代理 → 动态 sync 增删 → 无缝切换 → Ctrl+C 优雅退出，DNS 探测链路（**不发任何 `/api/globe` 请求**，仅发一次经代理的目标请求 → 有流量即经 mock DoH 探测 → 落 `dns_probe_cache` → `/api/globe` 只读出弧；`[dns_probe].enabled=false` 时不落盘），全程不依赖外网
 - 前端：`frontend/` 的 Vitest（`cd frontend && npm run test`）覆盖工具函数与 3D 地球数据映射等纯逻辑；`cd frontend && npm run build`（vue-tsc + Vite）必须通过；组件行为由 `tests/e2e/web/` 的 Playwright 覆盖

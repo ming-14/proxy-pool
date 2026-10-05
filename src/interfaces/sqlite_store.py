@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 
 # schema：proxies 复合主键支持跨组副本；group_meta 存组 ttl；source_paused 存源暂停；
 # ippure_cache 存 IP 纯净度检查结果（按 (源名, IP) 分区，TTL 由用例层判断）；
-# target_geo_cache 存 (代理, 目标域名) 的穿代理解析结果，TTL/清理阈值由用例层判断；
+# dns_probe_cache 存 (代理, 目标域名) 的穿代理 DNS 探测结果，TTL/清理阈值由用例层判断；
 # traffic_history 存历史流量条目（按 (代理,域名,IP) 分区，写入为增量累加——重启后不丢历史，
 # 保留期由用例层判断）。
-# ip_purity_cache 为旧纯净度缓存表（键位与字段已变），启动即删，不做迁移。
+# ip_purity_cache 为旧纯净度缓存表（键位与字段已变）、target_geo_cache 为旧探测缓存表
+# （已改名 dns_probe_cache），启动即删，不做迁移。
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS proxies (
     proxy             TEXT NOT NULL,
@@ -65,7 +66,8 @@ CREATE TABLE IF NOT EXISTS ip_geo_cache (
     lng          REAL,
     cached_at    REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS target_geo_cache (
+DROP TABLE IF EXISTS target_geo_cache;
+CREATE TABLE IF NOT EXISTS dns_probe_cache (
     bind         TEXT NOT NULL,     -- 上游代理地址（bind_of，不含 scheme 前缀）
     host         TEXT NOT NULL,     -- 归一化目标域名（IP 字面量原样）
     ip           TEXT,              -- 穿代理 DoH 解析出的 A 记录（取首个可用）
@@ -75,7 +77,7 @@ CREATE TABLE IF NOT EXISTS target_geo_cache (
     city         TEXT,
     lat          REAL,
     lng          REAL,
-    cached_at    REAL NOT NULL,     -- 解析完成时间（TTL 判定在用例层）
+    cached_at    REAL NOT NULL,     -- 探测完成时间（TTL 判定在用例层）
     PRIMARY KEY (bind, host)
 );
 CREATE TABLE IF NOT EXISTS traffic_history (
@@ -328,9 +330,9 @@ class SqliteProxyStore:
         """清空归属缓存（切换 GeoLite2 库类型/版本时调用，防止旧粒度数据复用）"""
         self._conn.execute("DELETE FROM ip_geo_cache")
 
-    # ------------------------------------------------------------------ 目标归属缓存
-    def get_target_geo_batch(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
-        """批量读取 (bind, host) 目标归属缓存；无记录的不包含在返回 dict 中
+    # ------------------------------------------------------------------ DNS 探测结果缓存
+    def get_dns_probe_batch(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+        """批量读取 (bind, host) DNS 探测结果缓存；无记录的不包含在返回 dict 中
 
         返回 {(bind, host): {ip, country, country_code, province, city, lat, lng, cached_at}}。
         按参数预算分批（每对 (bind, host) 占 2 个参数）。
@@ -345,7 +347,7 @@ class SqliteProxyStore:
             params = [v for pair in part for v in pair]
             rows = self._conn.execute(
                 f"SELECT bind, host, ip, country, country_code, province, city, lat, lng, cached_at "
-                f"FROM target_geo_cache WHERE {where}", params
+                f"FROM dns_probe_cache WHERE {where}", params
             ).fetchall()
             for r in rows:
                 result[(r["bind"], r["host"])] = {
@@ -360,8 +362,8 @@ class SqliteProxyStore:
                 }
         return result
 
-    def save_target_geo_batch(self, rows: dict[tuple[str, str], dict]) -> None:
-        """批量写入/更新目标归属缓存（upsert by (bind, host)，事务内一次落盘）
+    def save_dns_probe_batch(self, rows: dict[tuple[str, str], dict]) -> None:
+        """批量写入/更新 DNS 探测结果缓存（upsert by (bind, host)，事务内一次落盘）
 
         rows: {(bind, host): {ip, country, country_code, province, city, lat, lng}}；
         "已探测无结果"行照常落盘（ip/geo 全 None），cached_at 统一取写入时刻。
@@ -376,17 +378,17 @@ class SqliteProxyStore:
         ]
         with self._tx():
             self._conn.executemany(
-                "INSERT OR REPLACE INTO target_geo_cache "
+                "INSERT OR REPLACE INTO dns_probe_cache "
                 "(bind, host, ip, country, country_code, province, city, lat, lng, cached_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", records
             )
 
-    def prune_target_geo(self, before_ts: float) -> int:
-        """删除 cached_at 早于 before_ts 的目标归属缓存行，返回删除数
+    def prune_dns_probe(self, before_ts: float) -> int:
+        """删除 cached_at 早于 before_ts 的 DNS 探测结果缓存行，返回删除数
 
-        目标域名落盘有隐私属性，长期未刷新的行不应一直留存（serve 每小时调用一次）。
+        目标域名落盘有隐私属性，长期未刷新的行不应一直留存（流量统计每小时调用一次）。
         """
-        cur = self._conn.execute("DELETE FROM target_geo_cache WHERE cached_at < ?", (before_ts,))
+        cur = self._conn.execute("DELETE FROM dns_probe_cache WHERE cached_at < ?", (before_ts,))
         return cur.rowcount
 
     # ------------------------------------------------------------------ 历史流量

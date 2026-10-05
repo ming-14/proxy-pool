@@ -1,9 +1,10 @@
-"""目标地区探测 e2e：mock DoH 上游 → 经本地代理发请求 → /api/globe 出现目标弧
+"""DNS 探测队列 e2e：有流量（入队）即探测 → 缓存落盘 → /api/globe 读到目标弧
 
-覆盖 LLD §7.2：
-1. 激活后探测：/api/globe 的 touch 打开激活窗口 → 后台穿代理 DoH → 缓存落盘 →
-   下一次 /api/globe 下发目标 flow；
-2. 未激活不探测：只有流量、没有任何 /api/globe 请求 → target_geo_cache 不新增行。
+覆盖要点：
+1. 入队即探测（事件驱动）：只发一次目标请求、**不发任何 /api/globe 请求**，后台立刻
+   穿该代理做 DoH（mock 上游）→ dns_probe_cache 出现该 (bind, host) 行；
+2. 3D 地球只消费最终数据：随后请求 /api/globe 即可读到上一步落盘的目标弧（地球不驱动探测）；
+3. [dns_probe].enabled=false：不构造队列，流量不触发任何探测、缓存不新增行。
 
 全程本地 mock：mock 上游同时扮演被选中的代理与 DoH 端点（返回 DoH JSON）；
 GeoIP 用假定位器（本测试的范围是探测链路、serve 接线与 API，不是 GeoLite2）。
@@ -142,17 +143,18 @@ class FakeGeo:
 
 
 @contextmanager
-def _globe_config(mock_port: int):
-    """把 [globe] 关键项指到本地 mock：DoH 端点 = mock 上游；手填坐标便于断言 self"""
-    with patch.object(config, "GLOBE_ENABLED", True), \
-            patch.object(config, "GLOBE_DOH_ENDPOINTS",
+def _dns_probe_config(mock_port: int, *, enabled: bool = True):
+    """把 DNS 探测关键项指到本地 mock：DoH 端点 = mock 上游；手填地球坐标便于断言 self"""
+    with patch.object(config, "DNS_PROBE_ENABLED", enabled), \
+            patch.object(config, "DNS_PROBE_DOH_ENDPOINTS",
                          (f"http://127.0.0.1:{mock_port}/dns-query",)), \
+            patch.object(config, "GLOBE_ENABLED", True), \
             patch.object(config, "GLOBE_SELF_LAT", 31.2), \
             patch.object(config, "GLOBE_SELF_LNG", 121.5):
         yield
 
 
-async def _wait_until(pred, timeout=5.0, what="条件"):
+async def _wait_until(pred, timeout=10.0, what="条件"):
     """轮询等待（serve 内部流程异步启动）"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -173,7 +175,16 @@ async def _send_target_request(listen_port: int) -> bytes:
     return resp
 
 
-async def _poll_globe(url: str, timeout: float = 10.0) -> dict:
+def _probe_rows(db_path: str) -> list[tuple]:
+    """直接读 dns_probe_cache（WAL 模式允许外部连接读）"""
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute("SELECT bind, host, ip FROM dns_probe_cache").fetchall()
+    finally:
+        conn.close()
+
+
+async def _get_globe(url: str, timeout: float = 10.0) -> dict:
     """轮询 /api/globe 直到出现非空 flows（面板未就绪时重试；超时返回最后一帧）"""
     deadline = time.monotonic() + timeout
     last: dict = {}
@@ -192,11 +203,11 @@ async def _poll_globe(url: str, timeout: float = 10.0) -> dict:
 
 
 @asynccontextmanager
-async def _serve_running(mock_port: int, store, holder: dict):
+async def _serve_running(mock_port: int, store, holder: dict, *, probe_enabled: bool = True):
     """启动 serve._run（真实 PproxyServer 监听 0、真实 store/getter、假 geo）并保证清理
 
     holder["server"] 是补丁捕获的真实 PproxyServer（serve 内部创建，测试需读实际
-    监听端口）。[globe] 补丁与 PproxyServer 补丁都要覆盖任务启动与整个运行期：
+    监听端口）。配置补丁与 PproxyServer 补丁都要覆盖任务启动与整个运行期：
     _run 在首个 await 后才真正开跑，补丁提前退出会让捕获失效。
     """
     proxy = f"http://127.0.0.1:{mock_port}"
@@ -217,7 +228,8 @@ async def _serve_running(mock_port: int, store, holder: dict):
         return holder["server"]
 
     web_port = free_local_port()
-    with _globe_config(mock_port), patch("src.framework.serve.PproxyServer", new=factory):
+    with _dns_probe_config(mock_port, enabled=probe_enabled), \
+            patch("src.framework.serve.PproxyServer", new=factory):
         task = asyncio.create_task(_run(
             c, interval=30, probe_url="http://probe.local", allowed_types={"http"},
             concurrency=2, host="127.0.0.1", port=0, capacity=5,
@@ -230,11 +242,11 @@ async def _serve_running(mock_port: int, store, holder: dict):
             await asyncio.gather(task, return_exceptions=True)
 
 
-class TargetGeoE2E(unittest.TestCase):
-    """serve 自带的目标探测链路：流量 → touch 激活 → 穿代理 DoH → /api/globe 出弧"""
+class DnsProbeE2E(unittest.TestCase):
+    """serve 自带的 DNS 探测链路：流量入队 → 立刻穿代理 DoH → 缓存落盘 → 地球读到弧"""
 
     def setUp(self):
-        self.tmp_dir = tempfile.mkdtemp(prefix="proxy-pool-globe-e2e-")
+        self.tmp_dir = tempfile.mkdtemp(prefix="proxy-pool-dns-probe-e2e-")
         self.db_path = os.path.join(self.tmp_dir, "cache.db")
         self.store = SqliteProxyStore(self.db_path)
 
@@ -242,8 +254,8 @@ class TargetGeoE2E(unittest.TestCase):
         self.store.close()  # Windows 下先关连接再删目录
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
-    def test_touch_activates_probe_and_flow_appears(self):
-        """有 /api/globe 请求 → 探测发生（穿代理 DoH）→ 下一帧下发目标弧与节点"""
+    def test_traffic_triggers_probe_without_globe_request(self):
+        """只有流量（无任何 /api/globe 请求）→ 入队即探测 → 缓存落盘；地球随后读到该弧"""
         async def run():
             upstream, mock_port = await start_mock_upstream(body=DOH_BODY)
             holder: dict = {}
@@ -256,10 +268,17 @@ class TargetGeoE2E(unittest.TestCase):
                     resp = await _send_target_request(listen_port)
                     self.assertIn(b"200", resp, f"目标请求应经 mock 上游成功: {resp!r}")
 
-                    payload = await _poll_globe(f"http://127.0.0.1:{web_port}/api/globe")
+                    # 关键断言：没有任何 /api/globe 请求，探测也必须发生并落盘
+                    await _wait_until(lambda: _probe_rows(self.db_path), what="DNS 探测落盘")
+                    rows = _probe_rows(self.db_path)
+                    self.assertEqual(rows, [(f"127.0.0.1:{mock_port}", TARGET_HOST, TARGET_IP)])
+
+                    # 3D 地球只消费最终数据：请求即读到上面落盘的目标弧
+                    payload = await _get_globe(f"http://127.0.0.1:{web_port}/api/globe")
                     self.assertEqual(payload["self"], {"lat": 31.2, "lng": 121.5})
+                    self.assertNotIn("stats", payload)
                     flows = payload["flows"]
-                    self.assertTrue(flows, "10s 内 /api/globe 应出现目标 flow")
+                    self.assertTrue(flows, "地球应读到已落盘的目标弧")
                     flow = flows[0]
                     self.assertEqual(flow["bind"], f"127.0.0.1:{mock_port}")
                     self.assertEqual(flow["city"], "Ashburn")
@@ -268,34 +287,27 @@ class TargetGeoE2E(unittest.TestCase):
                                      (TARGET_GEO["lat"], TARGET_GEO["lng"]))
                     self.assertEqual([n["bind"] for n in payload["nodes"]],
                                      [f"127.0.0.1:{mock_port}"])
-                    stats = payload["stats"]
-                    self.assertTrue(stats["active"], "有 /api/globe 请求即处于激活窗口")
-                    self.assertGreaterEqual(stats["probe_ok"], 1, "穿代理 DoH 应至少成功一次")
             finally:
                 await close_server(upstream)
 
         asyncio.run(run())
 
-    def test_no_probe_without_globe_request(self):
-        """只有流量、没有人看地球：target_geo_cache 不得新增行（待激活只记录不探测）"""
+    def test_disabled_probe_records_nothing(self):
+        """[dns_probe].enabled=false：不构造队列，流量不触发任何探测"""
         async def run():
             upstream, mock_port = await start_mock_upstream(body=DOH_BODY)
             holder: dict = {}
             try:
-                async with _serve_running(mock_port, self.store, holder) as (pool, _web_port, proxy):
+                async with _serve_running(mock_port, self.store, holder,
+                                          probe_enabled=False) as (pool, _web_port, proxy):
                     await _wait_until(lambda: standby_list(pool) == [proxy], what="队列补入")
                     await _wait_until(lambda: holder["server"]._handler is not None, what="pproxy 监听")
                     listen_port = holder["server"]._handler.sockets[0].getsockname()[1]
                     await _send_target_request(listen_port)
 
-                    await asyncio.sleep(5.0)  # 覆盖 2+ 轮探测循环
+                    await asyncio.sleep(3.0)
 
-                    conn = sqlite3.connect(self.db_path)
-                    try:
-                        count = conn.execute("SELECT COUNT(*) FROM target_geo_cache").fetchone()[0]
-                    finally:
-                        conn.close()
-                    self.assertEqual(count, 0, "无 /api/globe 请求时不得探测落盘")
+                    self.assertEqual(_probe_rows(self.db_path), [], "探测关闭时不得落盘")
             finally:
                 await close_server(upstream)
 
