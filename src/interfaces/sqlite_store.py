@@ -100,6 +100,10 @@ _INSERT_PROXY = (
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
+# 批量查询的每批 SQL 参数预算：单个 IN / OR 链的参数个数受 SQLite 变量上限约束
+# （旧版本 999、新版 32766），留足余量——不分批时条目数一旦超过上限会**直接报错**，而不是变慢。
+_QUERY_PARAM_BUDGET = 400
+
 
 class SqliteProxyStore:
     """SQLite 持久化（WAL 模式，组级增量 upsert）
@@ -266,26 +270,29 @@ class SqliteProxyStore:
     def get_geo_batch(self, ips: list[str]) -> dict[str, dict]:
         """批量读取归属缓存；返回 {ip: {country, country_code, province, city, lat, lng, cached_at}}
 
-        只返回缓存中有记录的 IP（无记录不包含在返回 dict 中）。
+        只返回缓存中有记录的 IP（无记录不包含在返回 dict 中）。按 _QUERY_PARAM_BUDGET 分批：
+        全池唯一 IP 数量会随池子增长，不分批迟早撞上 SQLite 变量上限。
         """
         if not ips:
             return {}
-        placeholders = ",".join("?" for _ in ips)
-        rows = self._conn.execute(
-            f"SELECT ip, country, country_code, province, city, lat, lng, cached_at "
-            f"FROM ip_geo_cache WHERE ip IN ({placeholders})", ips
-        ).fetchall()
         result: dict[str, dict] = {}
-        for r in rows:
-            result[r["ip"]] = {
-                "country": r["country"],
-                "country_code": r["country_code"],
-                "province": r["province"],
-                "city": r["city"],
-                "lat": r["lat"],
-                "lng": r["lng"],
-                "cached_at": r["cached_at"],
-            }
+        for i in range(0, len(ips), _QUERY_PARAM_BUDGET):
+            part = ips[i:i + _QUERY_PARAM_BUDGET]
+            placeholders = ",".join("?" for _ in part)
+            rows = self._conn.execute(
+                f"SELECT ip, country, country_code, province, city, lat, lng, cached_at "
+                f"FROM ip_geo_cache WHERE ip IN ({placeholders})", part
+            ).fetchall()
+            for r in rows:
+                result[r["ip"]] = {
+                    "country": r["country"],
+                    "country_code": r["country_code"],
+                    "province": r["province"],
+                    "city": r["city"],
+                    "lat": r["lat"],
+                    "lng": r["lng"],
+                    "cached_at": r["cached_at"],
+                }
         return result
 
     def save_geo_batch(self, results: dict[str, dict]) -> None:
@@ -326,12 +333,12 @@ class SqliteProxyStore:
         """批量读取 (bind, host) 目标归属缓存；无记录的不包含在返回 dict 中
 
         返回 {(bind, host): {ip, country, country_code, province, city, lat, lng, cached_at}}。
-        按 400 对一批分查：SQLite 变量上限老版本为 999，一批 800 个参数留足余量。
+        按参数预算分批（每对 (bind, host) 占 2 个参数）。
         """
         if not pairs:
             return {}
         result: dict[tuple[str, str], dict] = {}
-        chunk = 400
+        chunk = _QUERY_PARAM_BUDGET // 2
         for i in range(0, len(pairs), chunk):
             part = pairs[i:i + chunk]
             where = " OR ".join("(bind=? AND host=?)" for _ in part)

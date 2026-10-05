@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.disable(logging.WARNING)
 
 from src.domain.proxy_pool import ProxyPool
-from src.interfaces.sqlite_store import SqliteProxyStore
+from src.interfaces.sqlite_store import _QUERY_PARAM_BUDGET, SqliteProxyStore
 from src.framework.config import (
     MAX_CONSECUTIVE_FAILS,
     TRUSTED_MAX_CONSECUTIVE_FAILS,
@@ -350,6 +350,17 @@ class TestGeoCache(unittest.TestCase):
         self.store.save_geo_batch({"1.2.3.4": {"country": "新", "country_code": "YY", "lat": 1.0, "lng": 1.0}})
         result = self.store.get_geo_batch(["1.2.3.4"])
         assert result["1.2.3.4"]["country"] == "新"
+
+    def test_get_geo_batch_spans_multiple_chunks(self):
+        """查询量超过单批参数预算时按批查询且不丢结果（SQLite 变量上限是硬报错，不是变慢）"""
+        ips = [f"10.{i // 256}.{i % 256}.1" for i in range(_QUERY_PARAM_BUDGET * 2 + 7)]
+        self.store.save_geo_batch({
+            ip: {"country": "美国", "country_code": "US", "lat": 1.0, "lng": 2.0} for ip in ips
+        })
+        result = self.store.get_geo_batch(ips)
+        assert len(result) == len(ips)
+        assert result[ips[0]]["country_code"] == "US"
+        assert result[ips[-1]]["country_code"] == "US"
 
 
 class TestTargetGeoCache(unittest.TestCase):
