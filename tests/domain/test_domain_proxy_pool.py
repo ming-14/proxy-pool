@@ -273,9 +273,11 @@ class TestProxyPool(unittest.TestCase):
         self.assertFalse(self.pool.should_blacklist("http://0.0.0.0:0"))
 
     def test_source_pause_custom_ttl(self):
-        self.pool.pause_source("src.interfaces.sources.freeproxy_world", ttl=SOURCES[4]["pause_ttl"])
-        self.assertIsNotNone(self.pool.source_pause_remaining("src.interfaces.sources.freeproxy_world"))
-        self.assertEqual(self.pool.source_paused["src.interfaces.sources.freeproxy_world"]["ttl"], SOURCES[4]["pause_ttl"])
+        # 源名与 ttl 均按模块名定位：sources.toml 增删条目后下标会错位
+        fpw = next(s for s in SOURCES if s["name"].endswith(".freeproxy_world"))
+        self.pool.pause_source(fpw["name"], ttl=fpw["pause_ttl"])
+        self.assertIsNotNone(self.pool.source_pause_remaining(fpw["name"]))
+        self.assertEqual(self.pool.source_paused[fpw["name"]]["ttl"], fpw["pause_ttl"])
 
     def test_source_pause_default_ttl(self):
         self.pool.pause_source("src.interfaces.sources.ip89")

@@ -48,6 +48,34 @@ group = "default"
 enabled = true
 group_by_protocol = true
 
+# 以下四个为免费代理 JSON/文本 API 源（接入前做过存活率抽检）
+[[sources]]
+name = "src.interfaces.sources.hproxy"
+group = "default"
+enabled = true
+group_by_protocol = true
+
+[[sources]]
+name = "src.interfaces.sources.proxyscrape"
+group = "default"
+enabled = true
+group_by_protocol = true
+
+[[sources]]
+name = "src.interfaces.sources.proxylister"
+group = "default"
+enabled = true
+group_by_protocol = true
+
+# imtaqin 响应约 9MB/5 万条且与其它源高度重合：固定 1 天后再拉，
+# 否则默认「去重率过高暂停 20 分钟」会反复下载 9MB
+[[sources]]
+name = "src.interfaces.sources.imtaqin"
+group = "default"
+enabled = true
+pause_ttl = 86400
+group_by_protocol = true
+
 [[sources]]
 name = "src.interfaces.sources.freeproxy_world"
 group = "freeproxy-world"
@@ -55,7 +83,8 @@ enabled = true
 pause_ttl = 1800000
 group_by_protocol = true
 
-# GitHub 静态列表：8 条列表合并为一个源，条目自带 scheme 或按列表协议补全
+# GitHub 静态列表：90 条列表合并为一个源（http 55 / https 9 / socks5 26），
+# 条目自带 scheme 或按列表协议补全
 [[sources]]
 name = "src.interfaces.sources.github_lists"
 group = "github"

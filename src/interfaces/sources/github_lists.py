@@ -1,8 +1,15 @@
-"""GitHub 静态代理列表源（proxifly / monosans / clarketm / ALIILAPRO / hookzof）
+"""GitHub 静态代理列表源（多仓库纯文本列表，按协议分组）
 
 这些仓库只提供纯文本列表（每行一个代理），没有 base_url/params 语义，故不套用
 HttpSourceFetcher，只复用其重试策略 retry_fetch。一次拉取多条列表并合并，由拉取
 用例按 scheme 分拣入 github-http / github-https / github-socks5 组。
+
+列表准入口径（每条都经抽样存活检测 + 实链路复测）：
+    - 抽样存活率 >= 10% 且可解析条目 >= 100
+    - 协议必须可判定：路径（目录/文件名）给出唯一协议，或全部条目自带 scheme
+      由 parse_line 逐行归组——裸 ip:port 混合的 all 类列表一律不收，避免错分组
+    - socks4 不在 SUPPORTED_SCHEMES 内（工程只做入站），不收
+    - 内容 md5 相同的镜像仓库只留一处
 
 raw.githubusercontent.com 在部分网络直连被 SSL 中断，镜像前缀由环境变量
 GITHUB_LISTS_MIRROR 提供（未设置或为空即直连，代码不内嵌任何镜像地址）。
@@ -13,12 +20,10 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 
-from src.domain.models import SUPPORTED_SCHEMES
 from src.domain.ports import ProxySource
 from src.interfaces import http_client
-from src.interfaces.sources.base import retry_fetch
+from src.interfaces.sources.base import parse_line, retry_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -26,44 +31,108 @@ MIRROR_ENV = "GITHUB_LISTS_MIRROR"
 _RAW_ROOT = "https://raw.githubusercontent.com/"
 
 # (raw 路径, 列表协议)：条目自带 scheme 时以条目为准，裸 ip:port 用列表协议补全。
-# clarketm 的列表无协议字段（实测存活的均为 HTTP），按 http 处理；
-# proxifly 的 socks5 与 hookzof 的列表同源同内容，只保留后者避免重复下载。
+# 协议取自文件路径（目录/文件名），与各仓库自身的分文件口径一致；分组计数见各段注释。
 LISTS: tuple[tuple[str, str], ...] = (
-    (f"{_RAW_ROOT}proxifly/free-proxy-list/main/proxies/protocols/http/data.txt", "http"),
-    (f"{_RAW_ROOT}proxifly/free-proxy-list/main/proxies/protocols/https/data.txt", "https"),
-    (f"{_RAW_ROOT}monosans/proxy-list/main/proxies/http.txt", "http"),
-    (f"{_RAW_ROOT}monosans/proxy-list/main/proxies/socks5.txt", "socks5"),
-    (f"{_RAW_ROOT}clarketm/proxy-list/master/proxy-list-raw.txt", "http"),
+    # ---- http (55) ----
+    (f"{_RAW_ROOT}398001/ProxysList/main/all_working.txt", "http"),
+    (f"{_RAW_ROOT}6yyn/free-proxy-list/main/free_http_proxies.txt", "http"),
     (f"{_RAW_ROOT}ALIILAPRO/Proxy/main/http.txt", "http"),
+    (f"{_RAW_ROOT}Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt", "http"),
+    (f"{_RAW_ROOT}anutmagang/Free-HighQuality-Proxy-Socks/main/results/http.txt", "http"),
+    (f"{_RAW_ROOT}azestkingscrown/Free_Proxy_List/main/working_proxies.txt", "http"),
+    (f"{_RAW_ROOT}B4RC0DE-TM/proxy-list/main/HTTP.txt", "http"),
+    (f"{_RAW_ROOT}Bes-js/public-proxy-list/main/proxies.txt", "http"),
+    (f"{_RAW_ROOT}BlacKSnowDot0/Proxy-Pulse/main/all.txt", "http"),
+    (f"{_RAW_ROOT}Ch4120N/Ch4120N-Proxy-List/master/proxies/all.txt", "http"),
+    (f"{_RAW_ROOT}Denisyoya/Proxy-List-Gamt/main/proxy/http.txt", "http"),
+    (f"{_RAW_ROOT}dpangestuw/Free-Proxy/main/All_proxies.txt", "http"),
+    (f"{_RAW_ROOT}ebrasha/abdal-proxy-hub/main/http-proxy-list-by-EbraSha.txt", "http"),
+    (f"{_RAW_ROOT}elliottophellia/proxylist/master/results/pmix_checked.txt", "http"),
+    (f"{_RAW_ROOT}ErcinDedeoglu/proxies/main/proxies/http.txt", "http"),
+    (f"{_RAW_ROOT}fmw86/free-proxy-pool/main/http_fast.txt", "http"),
+    (f"{_RAW_ROOT}hproxy-com/free-proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}i-am-unbekannt/BLITZPROXY/main/out-files/http.txt", "http"),
+    (f"{_RAW_ROOT}iplocate/free-proxy-list/main/all-proxies.txt", "http"),
+    (f"{_RAW_ROOT}IPParrot/proxy_ips/main/proxies/http.txt", "http"),
+    (f"{_RAW_ROOT}komutan234/Proxy-List-Free/main/proxies/http.txt", "http"),
+    (f"{_RAW_ROOT}krokmazagaga/http-proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}litportnet/free-proxy-list/main/proxies/all.txt", "http"),
+    (f"{_RAW_ROOT}maximilianfeix/free-proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}mmpx12/proxy-list/master/http.txt", "http"),
+    (f"{_RAW_ROOT}Moleway/Free-Proxy-List/main/all.txt", "http"),
+    (f"{_RAW_ROOT}monosans/proxy-list/main/proxies/all.txt", "http"),
+    (f"{_RAW_ROOT}monosans/proxy-list/main/proxies/http.txt", "http"),
+    (f"{_RAW_ROOT}mzyui/proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}NikolaiT/free-proxy-list/main/proxies/http_working.txt", "http"),
+    (f"{_RAW_ROOT}officialputuid/KangProxy/main/xResults/RAW.txt", "http"),
+    (f"{_RAW_ROOT}proxifly/free-proxy-list/main/proxies/protocols/http/data.txt", "http"),
+    (f"{_RAW_ROOT}proxio-io/proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}proxmint/free-proxy-list/main/proxies/all.txt", "http"),
+    (f"{_RAW_ROOT}proxy-free/free-proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}proxylist-to/proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}ProxyScrape/free-proxy-list/main/proxies/protocols/http/data.txt", "http"),
+    (f"{_RAW_ROOT}pwnx0/proxy/main/proxies/http.txt", "http"),
+    (f"{_RAW_ROOT}Pxys-io/DailyProxyList/master/working_proxies.txt", "http"),
+    (f"{_RAW_ROOT}rdavydov/proxy-list/main/proxies/http.txt", "http"),
+    (f"{_RAW_ROOT}relayglass/free-proxy-list/main/protocol/http/http.txt", "http"),
+    (f"{_RAW_ROOT}rianilham28/proxian/main/out/proxies.txt", "http"),
+    (f"{_RAW_ROOT}RioMMO/ProxyFree/main/HTTP.txt", "http"),
+    (f"{_RAW_ROOT}Riyoway/Proxies/master/all.txt", "http"),
+    (f"{_RAW_ROOT}stormsia/proxy-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}sunny9577/proxy-scraper/master/generated/http_proxies.txt", "http"),
+    (f"{_RAW_ROOT}TheSpeedX/PROXY-List/master/http.txt", "http"),
+    (f"{_RAW_ROOT}trio666/proxy-checker/main/all.txt", "http"),
+    (f"{_RAW_ROOT}vakhov/fresh-proxy-list/master/http.txt", "http"),
+    (f"{_RAW_ROOT}Vann-Dev/proxy-list/main/proxies/http.txt", "http"),
+    (f"{_RAW_ROOT}vmheaven/VMHeaven.io-Free-Proxy-List/main/http.txt", "http"),
+    (f"{_RAW_ROOT}VPSLabCloud/VPSLab-Free-Proxy-List/main/http_all.txt", "http"),
+    (f"{_RAW_ROOT}xyzs996/free-proxy-health-list/main/http.txt", "http"),
+    (f"{_RAW_ROOT}z3a4/free-proxy-list/main/proxies/unchecked/http-proxies.txt", "http"),
+    (f"{_RAW_ROOT}Zaeem20/FREE_PROXIES_LIST/master/http.txt", "http"),
+
+    # ---- https (9) ----
+    (f"{_RAW_ROOT}ErcinDedeoglu/proxies/main/proxies/https.txt", "https"),
+    (f"{_RAW_ROOT}hproxy-com/free-proxy-list/main/https.txt", "https"),
+    (f"{_RAW_ROOT}maximilianfeix/free-proxy-list/main/https.txt", "https"),
+    (f"{_RAW_ROOT}mmpx12/proxy-list/master/https.txt", "https"),
+    (f"{_RAW_ROOT}proxifly/free-proxy-list/main/proxies/protocols/https/data.txt", "https"),
+    (f"{_RAW_ROOT}ProxyScrape/free-proxy-list/main/proxies/protocols/https/data.txt", "https"),
+    (f"{_RAW_ROOT}vmheaven/VMHeaven.io-Free-Proxy-List/main/https.txt", "https"),
+    (f"{_RAW_ROOT}xyzs996/free-proxy-health-list/main/https.txt", "https"),
+    (f"{_RAW_ROOT}Zaeem20/FREE_PROXIES_LIST/master/https.txt", "https"),
+
+    # ---- socks5 (26) ----
     (f"{_RAW_ROOT}ALIILAPRO/Proxy/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}Anonym0usWork1221/Free-Proxies/main/proxy_files/socks5_proxies.txt", "socks5"),
+    (f"{_RAW_ROOT}databay-labs/free-proxy-list/master/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}dpangestuw/Free-Proxy/main/socks5_proxies.txt", "socks5"),
+    (f"{_RAW_ROOT}elliottophellia/proxylist/master/results/socks5/global/socks5_checked.txt", "socks5"),
+    (f"{_RAW_ROOT}ErcinDedeoglu/proxies/main/proxies/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}gnxD3RfTT2WE/proxy-list-plain-text/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}HankNovic/ProxyClean/main/SOCKS5.txt", "socks5"),
     (f"{_RAW_ROOT}hookzof/socks5_list/master/proxy.txt", "socks5"),
+    (f"{_RAW_ROOT}hproxy-com/free-proxy-list/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}iplocate/free-proxy-list/main/protocols/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}litportnet/free-proxy-list/main/proxies/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}maximilianfeix/free-proxy-list/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}mmpx12/proxy-list/master/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}monosans/proxy-list/main/proxies/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}mzyui/proxy-list/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}proxio-io/proxy-list/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}proxmint/free-proxy-list/main/proxies/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}proxy-free/free-proxy-list/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}ProxyScrape/free-proxy-list/main/proxies/protocols/socks5/data.txt", "socks5"),
+    (f"{_RAW_ROOT}rdavydov/proxy-list/main/proxies/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}TheSpeedX/PROXY-List/master/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}VPSLabCloud/VPSLab-Free-Proxy-List/main/socks5_all.txt", "socks5"),
+    (f"{_RAW_ROOT}xyzs996/free-proxy-health-list/main/socks5.txt", "socks5"),
+    (f"{_RAW_ROOT}z3a4/free-proxy-list/main/proxies/unchecked/socks5-proxies.txt", "socks5"),
+    (f"{_RAW_ROOT}Zaeem20/FREE_PROXIES_LIST/master/socks5.txt", "socks5"),
 )
-
-# 裸地址：IPv4/域名 + 端口，或 [IPv6]:端口
-_BIND_RE = re.compile(r"^(?:\[[0-9A-Fa-f:]+\]|[0-9A-Za-z][0-9A-Za-z.\-]*):\d{1,5}$")
-
 
 def _mirror_prefix() -> str:
     """镜像前缀；未设置或为空串时直连"""
     return (os.environ.get(MIRROR_ENV) or "").strip()
-
-
-def parse_line(line: str, protocol: str) -> str | None:
-    """把一行文本规范化为代理 URL；空行/注释/格式非法返回 None
-
-    条目自带受支持的 scheme 时以条目为准（列表可能混入其它协议），
-    裸 ip:port 用列表协议补全。
-    """
-    entry = line.strip()
-    if not entry or entry.startswith("#"):
-        return None
-    scheme, sep, bind = entry.partition("://")
-    if not sep:
-        scheme, bind = protocol, entry
-    scheme = scheme.lower()
-    if scheme not in SUPPORTED_SCHEMES or not _BIND_RE.match(bind):
-        return None
-    return f"{scheme}://{bind}"
 
 
 class GithubListsFetcher:

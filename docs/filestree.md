@@ -53,11 +53,15 @@ proxy-pool/
 │   │   │   └── ipok.py            # ipok.io 源（同契约，无需密钥）
 │   │   └── sources/               # 代理源适配器
 │   │       ├── __init__.py
-│   │       ├── base.py            # HttpSourceFetcher 基类 + retry_fetch/retry_fetch_async 共用重试策略
+│   │       ├── base.py            # HttpSourceFetcher 基类 + retry_fetch/retry_fetch_async 共用重试 + parse_line 纯文本行解析
 │   │       ├── ip89.py            # 89IP 源（纯文本响应，正则提取）
 │   │       ├── goodips.py         # Goodips 源（JSON 接口）
 │   │       ├── proxy_scdn.py      # ProxyScdn 源（JSON 接口）
 │   │       ├── geonode.py         # Geonode 源（JSON 分页接口）
+│   │       ├── hproxy.py          # HProxy 源（JSON，多协议条目按 SCHEME_PRIORITY 取一个）
+│   │       ├── proxyscrape.py     # ProxyScrape 源（纯文本，条目自带 scheme）
+│   │       ├── proxylister.py     # Proxylister 源（JSON，protocols 字段大写）
+│   │       ├── imtaqin.py         # imtaqin 源（JSON 单协议条目，5 万条，靠 pause_ttl 降频）
 │   │       ├── freeproxy_world.py # FreeProxy.World 源（多阶段爬取，异步实现）
 │   │       └── github_lists.py    # GitHub 静态列表源（多仓库列表合并，镜像前缀经 GITHUB_LISTS_MIRROR）
 │   └── framework/                 # 框架与驱动层：具体技术实现

@@ -42,9 +42,9 @@ from src.framework.config import (
 SOURCES = [{**s, "enabled": True} for s in _SOURCES]
 SOURCE_SPECS = [SourceSpec(**s) for s in SOURCES]
 
-# freeproxy-world 与 proxy-scdn 源在 config.SOURCES 中的实际位置（源名由 config 决定）
-FPW_SOURCE = SOURCES[4]["name"]
-SCDN_SOURCE = SOURCES[0]["name"]
+# 源名由 config 决定：按模块名定位，不依赖 sources.toml 里的条目顺序（增删源不会错位）
+FPW_SOURCE = next(s["name"] for s in SOURCES if s["name"].endswith(".freeproxy_world"))
+SCDN_SOURCE = next(s["name"] for s in SOURCES if s["name"].endswith(".proxy_scdn"))
 
 
 def make_pool():
@@ -334,7 +334,8 @@ class TestFetchProxiesUseCase(unittest.TestCase):
         with patch("src.interfaces.http_client.get", return_value=mock_proxy_response(["http://5.6.7.8:3128"])):
             make_fetch(self.pool).execute()
         self.assertIsNotNone(self.pool.source_pause_remaining(FPW_SOURCE))
-        self.assertEqual(self.pool.source_paused[FPW_SOURCE]["ttl"], SOURCES[4]["pause_ttl"])
+        self.assertEqual(self.pool.source_paused[FPW_SOURCE]["ttl"],
+                         next(s["pause_ttl"] for s in SOURCES if s["name"] == FPW_SOURCE))
 
     def test_freeproxy_world_paused_even_on_failure(self):
         with patch("src.interfaces.http_client.get", side_effect=Exception("fail")):

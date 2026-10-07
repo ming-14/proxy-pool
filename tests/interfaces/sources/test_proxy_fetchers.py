@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -8,7 +9,8 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
-from src.interfaces.sources.base import retry_fetch, retry_fetch_async
+from src.domain.models import SUPPORTED_SCHEMES
+from src.interfaces.sources.base import parse_line, retry_fetch, retry_fetch_async
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.disable(logging.WARNING)
@@ -328,6 +330,27 @@ class TestProxyScdnFetcher(unittest.TestCase):
         self.assertEqual(fetcher.base_url, "http://custom.api/proxy")
 
 
+class TestParseLine(unittest.TestCase):
+    """纯文本单行规范化（base.parse_line，github_lists / proxyscrape 共用）"""
+
+    def test_normalizes_supported_entries(self):
+        self.assertEqual(parse_line("1.2.3.4:8080", "http"), "http://1.2.3.4:8080")
+        self.assertEqual(parse_line("socks5://1.2.3.4:1080", "http"), "socks5://1.2.3.4:1080")
+        self.assertEqual(parse_line(" 1.2.3.4:8080 ", "http"), "http://1.2.3.4:8080")
+        self.assertEqual(parse_line("[::1]:1080", "socks5"), "socks5://[::1]:1080")
+
+    def test_invalid_lines_dropped(self):
+        self.assertIsNone(parse_line("", "http"))
+        self.assertIsNone(parse_line("# comment", "http"))
+        self.assertIsNone(parse_line("1.2.3.4", "http"))
+        self.assertIsNone(parse_line("socks4://1.2.3.4:1080", "http"))  # 不受支持协议
+
+    def test_inline_comment_stripped(self):
+        """行内注释同整行注释口径剥离（`socks5://ip:port #hk` 靠这个才不为 0 条）"""
+        self.assertEqual(parse_line("socks5://1.2.3.4:1080 #hk", "http"), "socks5://1.2.3.4:1080")
+        self.assertEqual(parse_line("1.2.3.4:8080 # HTTP [TH]", "http"), "http://1.2.3.4:8080")
+
+
 class TestGithubListsFetcher(unittest.TestCase):
     """GitHub 静态列表源：多列表拉取、按列表协议补 scheme、镜像前缀"""
 
@@ -335,7 +358,6 @@ class TestGithubListsFetcher(unittest.TestCase):
     LIST_SOCKS = ("https://raw.example/socks5.txt", "socks5")
 
     def setUp(self):
-        import importlib
         self._mod = importlib.import_module("src.interfaces.sources.github_lists")
         self.Fetcher = self._mod.GithubListsFetcher
 
@@ -419,23 +441,101 @@ class TestGithubListsFetcher(unittest.TestCase):
         self.assertEqual(proxies, ["http://1.2.3.4:8080"])
         self.assertEqual(len(calls), 2)
 
-    def test_parse_line(self):
-        parse = self._mod.parse_line
-        self.assertEqual(parse("1.2.3.4:8080", "http"), "http://1.2.3.4:8080")
-        self.assertEqual(parse("socks5://1.2.3.4:1080", "http"), "socks5://1.2.3.4:1080")
-        self.assertEqual(parse(" 1.2.3.4:8080 ", "http"), "http://1.2.3.4:8080")
-        self.assertEqual(parse("[::1]:1080", "socks5"), "socks5://[::1]:1080")
-        self.assertIsNone(parse("", "http"))
-        self.assertIsNone(parse("# comment", "http"))
-        self.assertIsNone(parse("1.2.3.4", "http"))
-
     def test_default_lists_cover_all_protocols(self):
         """默认列表须覆盖三种协议，否则对应分组永远为空"""
         self.assertEqual({p for _, p in self._mod.LISTS}, {"http", "https", "socks5"})
 
+    def test_default_lists_well_formed(self):
+        """列表准入约束：协议受支持、无 socks4、路径唯一（重复会白拉一遍）"""
+        for path, proto in self._mod.LISTS:
+            self.assertIn(proto, SUPPORTED_SCHEMES, path)
+        rels = [path[len(self._mod._RAW_ROOT):] for path, _ in self._mod.LISTS]
+        self.assertEqual(len(rels), len(set(rels)), "存在重复列表路径")
+
     def test_create_source(self):
         source = self._mod.create_source()
         self.assertTrue(callable(source.fetch_proxies))
+
+
+class TestFreeApiSources(unittest.TestCase):
+    """四个免费代理 API 源的 _parse：协议归类、socks4 丢弃、畸形条目丢弃"""
+
+    @staticmethod
+    def _json_resp(payload):
+        mock = MagicMock()
+        mock.json.return_value = payload
+        mock.raise_for_status = MagicMock()
+        return mock
+
+    @staticmethod
+    def _text_resp(text):
+        mock = MagicMock()
+        mock.text = text
+        mock.raise_for_status = MagicMock()
+        return mock
+
+    def test_hproxy_multi_protocol_picks_one(self):
+        """protocols 混入 socks4/多协议时只取一个受支持 scheme，纯 socks4 与缺字段丢弃"""
+        from src.interfaces.sources.hproxy import HproxyFetcher
+        data = [
+            {"ip": "1.2.3.4", "port": 8080, "protocols": ["http"]},
+            {"ip": "5.6.7.8", "port": 1080, "protocols": ["socks4", "socks5"]},
+            {"ip": "9.9.9.9", "port": 1080, "protocols": ["socks4"]},
+            {"ip": "8.8.8.8", "port": 80, "protocols": ["HTTP", "HTTPS"]},
+            {"ip": "7.7.7.7", "port": 0, "protocols": ["http"]},
+            {"port": 8080, "protocols": ["http"]},
+        ]
+        self.assertEqual(HproxyFetcher()._parse(self._json_resp(data)), [
+            "http://1.2.3.4:8080",
+            "socks5://5.6.7.8:1080",
+            "http://8.8.8.8:80",
+        ])
+
+    def test_proxyscrape_keeps_schemed_lines_only(self):
+        """自带 scheme 的行按条目协议归组；socks4 与畸形行丢弃"""
+        from src.interfaces.sources.proxyscrape import ProxyScrapeFetcher
+        text = ("http://1.2.3.4:8080\nsocks5://5.6.7.8:1080\nsocks4://9.9.9.9:1080\n"
+                "not-a-proxy\n1.2.3.4\n\n")
+        self.assertEqual(ProxyScrapeFetcher()._parse(self._text_resp(text)), [
+            "http://1.2.3.4:8080",
+            "socks5://5.6.7.8:1080",
+        ])
+
+    def test_proxylister_uses_ip_address_field(self):
+        """proxylister 字段名是 ip_address，且 protocols 大写、常含 SOCKS4"""
+        from src.interfaces.sources.proxylister import ProxylisterFetcher
+        data = {"results": [
+            {"ip_address": "1.2.3.4", "port": 8080, "protocols": ["HTTP"]},
+            {"ip_address": "5.6.7.8", "port": 1080, "protocols": ["SOCKS4", "HTTP", "SOCKS5"]},
+            {"ip_address": "9.9.9.9", "port": 1080, "protocols": ["SOCKS4"]},
+            {"ip_address": "8.8.8.8", "port": None, "protocols": ["HTTP"]},
+        ], "next": None}
+        self.assertEqual(ProxylisterFetcher()._parse(self._json_resp(data)), [
+            "http://1.2.3.4:8080",
+            "http://5.6.7.8:1080",
+        ])
+
+    def test_imtaqin_single_uppercase_protocol(self):
+        """imtaqin 单协议条目且协议名大写；SOCKS4 丢弃"""
+        from src.interfaces.sources.imtaqin import ImtaqinFetcher
+        data = {"count": 4, "proxies": [
+            {"ip": "1.2.3.4", "port": 8080, "protocol": "HTTP"},
+            {"ip": "5.6.7.8", "port": 1080, "protocol": "SOCKS5"},
+            {"ip": "9.9.9.9", "port": 4145, "protocol": "SOCKS4"},
+            {"ip": "8.8.8.8", "port": 443, "protocol": "HTTPS"},
+        ]}
+        self.assertEqual(ImtaqinFetcher()._parse(self._json_resp(data)), [
+            "http://1.2.3.4:8080",
+            "socks5://5.6.7.8:1080",
+            "https://8.8.8.8:443",
+        ])
+
+    def test_create_source_entrypoints(self):
+        """加载器入口可调用且符合 ProxySource 契约（container._source_loader 依赖它）"""
+        for mod in ("hproxy", "proxyscrape", "proxylister", "imtaqin"):
+            with self.subTest(mod=mod):
+                source = importlib.import_module(f"src.interfaces.sources.{mod}").create_source(config=None)
+                self.assertTrue(callable(source.fetch_proxies))
 
 
 if __name__ == "__main__":

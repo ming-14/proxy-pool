@@ -39,6 +39,21 @@ def is_supported_proxy(proxy: str) -> bool:
     return proxy_type(proxy) in SUPPORTED_SCHEMES
 
 
+# 上游给出多协议条目时的取舍顺序（一个代理只入池一条，必须选一个 scheme）：
+# http 优先——http 代理经 CONNECT 同时可访问 http/https 目标，兼容面最广；
+# 其次 https（TLS 到代理，客户端支持面窄）、socks5。socks4 不在集合内，天然被跳过。
+SCHEME_PRIORITY: tuple[str, ...] = ("http", "https", "socks5")
+
+
+def pick_supported_scheme(protocols) -> str | None:
+    """从上游协议列表选一个受支持 scheme；无受支持项返回 None（调用方据此丢弃该条目）
+
+    大小写/空白不敏感（hproxy 给 "http"、proxylister 给 "HTTP"、imtaqin 给 "SOCKS5"）。
+    """
+    available = {str(p).strip().lower() for p in protocols}
+    return next((s for s in SCHEME_PRIORITY if s in available), None)
+
+
 def to_proxy_dict(proxy: str) -> dict[str, str]:
     """构造 HTTP 客户端代理字典 {http, https}
 
