@@ -211,7 +211,7 @@ for attempt in range(max_retries):
 | `sources/proxylister.py` | Proxylister，JSON `{results: [{ip_address, port, protocols[]}]}` 单页 50 条 |
 | `sources/imtaqin.py` | imtaqin，JSON 单协议条目（协议名大写归一），约 5 万条 / 9MB，靠 `pause_ttl` 降频 |
 | `sources/freeproxy_world.py` | 见下（多阶段爬取） |
-| `sources/github_lists.py` | 见下（GitHub 静态列表，多仓库 90 条列表合并：http 55 / https 9 / socks5 26） |
+| `sources/github_lists.py` | 见下（GitHub 静态列表，多仓库 96 条列表合并：http 59 / https 11 / socks5 26） |
 
 ### FreeProxy.World 多阶段爬取
 
@@ -230,7 +230,7 @@ for attempt in range(max_retries):
 
 ### GitHub 静态列表（github_lists）
 
-把各仓库的纯文本列表合并为**一个源**（90 条列表按协议分组：http 55 / https 9 / socks5 26）。准入与去重口径写在 `github_lists.py` 模块头——协议必须可判定（路径给协议，或条目全带 scheme 由 `parse_line` 逐行归组）、抽样存活率 ≥10%、可解析条目 ≥100、socks4 不收、内容 md5 相同的镜像仓库只留一处：
+把各仓库的纯文本列表合并为**一个源**（96 条列表按协议分组：http 59 / https 11 / socks5 26）。准入与去重口径写在 `github_lists.py` 模块头——协议必须可判定（路径给协议，或条目全带 scheme 由 `parse_line` 逐行归组）、抽样存活率 ≥10%（条目数不设硬阈值）、socks4 不收、内容 md5 相同的镜像仓库只留一处：
 
 1. 逐条列表拉取（每条重试到非空，单条失败只记日志并跳过，不影响其它列表）；
 2. 按行解析 `parse_line`：**条目自带 scheme 优先**（proxifly 自带 `http://` / `https://` / `socks5://`），裸 `ip:port` 按所在列表的协议补全；`#` 及其后视为注释（整行与行内同口径）；格式非法的行（表头、无端口、不受支持的 scheme）直接丢弃；

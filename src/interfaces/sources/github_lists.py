@@ -5,7 +5,7 @@ HttpSourceFetcher，只复用其重试策略 retry_fetch。一次拉取多条列
 用例按 scheme 分拣入 github-http / github-https / github-socks5 组。
 
 列表准入口径（每条都经抽样存活检测 + 实链路复测）：
-    - 抽样存活率 >= 10% 且可解析条目 >= 100
+    - 抽样存活率 >= 10%；条目数不设硬阈值——小而准的列表（32~115 条）同样接入
     - 协议必须可判定：路径（目录/文件名）给出唯一协议，或全部条目自带 scheme
       由 parse_line 逐行归组——裸 ip:port 混合的 all 类列表一律不收，避免错分组
     - socks4 不在 SUPPORTED_SCHEMES 内（工程只做入站），不收
@@ -33,17 +33,19 @@ _RAW_ROOT = "https://raw.githubusercontent.com/"
 # (raw 路径, 列表协议)：条目自带 scheme 时以条目为准，裸 ip:port 用列表协议补全。
 # 协议取自文件路径（目录/文件名），与各仓库自身的分文件口径一致；分组计数见各段注释。
 LISTS: tuple[tuple[str, str], ...] = (
-    # ---- http (55) ----
+    # ---- http (59) ----
     (f"{_RAW_ROOT}398001/ProxysList/main/all_working.txt", "http"),
     (f"{_RAW_ROOT}6yyn/free-proxy-list/main/free_http_proxies.txt", "http"),
     (f"{_RAW_ROOT}ALIILAPRO/Proxy/main/http.txt", "http"),
     (f"{_RAW_ROOT}Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt", "http"),
     (f"{_RAW_ROOT}anutmagang/Free-HighQuality-Proxy-Socks/main/results/http.txt", "http"),
     (f"{_RAW_ROOT}azestkingscrown/Free_Proxy_List/main/working_proxies.txt", "http"),
+    (f"{_RAW_ROOT}b4mbo-o/Check-Free-Proxy/main/alive_http.txt", "http"),
     (f"{_RAW_ROOT}B4RC0DE-TM/proxy-list/main/HTTP.txt", "http"),
     (f"{_RAW_ROOT}Bes-js/public-proxy-list/main/proxies.txt", "http"),
     (f"{_RAW_ROOT}BlacKSnowDot0/Proxy-Pulse/main/all.txt", "http"),
     (f"{_RAW_ROOT}Ch4120N/Ch4120N-Proxy-List/master/proxies/all.txt", "http"),
+    (f"{_RAW_ROOT}Ciara-12/PROXY-free/main/http.txt", "http"),
     (f"{_RAW_ROOT}Denisyoya/Proxy-List-Gamt/main/proxy/http.txt", "http"),
     (f"{_RAW_ROOT}dpangestuw/Free-Proxy/main/All_proxies.txt", "http"),
     (f"{_RAW_ROOT}ebrasha/abdal-proxy-hub/main/http-proxy-list-by-EbraSha.txt", "http"),
@@ -57,6 +59,7 @@ LISTS: tuple[tuple[str, str], ...] = (
     (f"{_RAW_ROOT}komutan234/Proxy-List-Free/main/proxies/http.txt", "http"),
     (f"{_RAW_ROOT}krokmazagaga/http-proxy-list/main/http.txt", "http"),
     (f"{_RAW_ROOT}litportnet/free-proxy-list/main/proxies/all.txt", "http"),
+    (f"{_RAW_ROOT}lucasjustinudin/Free-HighQuality-Proxy-Socks/main/output/by_protocol/http.txt", "http"),
     (f"{_RAW_ROOT}maximilianfeix/free-proxy-list/main/http.txt", "http"),
     (f"{_RAW_ROOT}mmpx12/proxy-list/master/http.txt", "http"),
     (f"{_RAW_ROOT}Moleway/Free-Proxy-List/main/all.txt", "http"),
@@ -78,6 +81,7 @@ LISTS: tuple[tuple[str, str], ...] = (
     (f"{_RAW_ROOT}rianilham28/proxian/main/out/proxies.txt", "http"),
     (f"{_RAW_ROOT}RioMMO/ProxyFree/main/HTTP.txt", "http"),
     (f"{_RAW_ROOT}Riyoway/Proxies/master/all.txt", "http"),
+    (f"{_RAW_ROOT}ShiftyTR/Proxy-List/master/http.txt", "http"),
     (f"{_RAW_ROOT}stormsia/proxy-list/main/http.txt", "http"),
     (f"{_RAW_ROOT}sunny9577/proxy-scraper/master/generated/http_proxies.txt", "http"),
     (f"{_RAW_ROOT}TheSpeedX/PROXY-List/master/http.txt", "http"),
@@ -90,13 +94,15 @@ LISTS: tuple[tuple[str, str], ...] = (
     (f"{_RAW_ROOT}z3a4/free-proxy-list/main/proxies/unchecked/http-proxies.txt", "http"),
     (f"{_RAW_ROOT}Zaeem20/FREE_PROXIES_LIST/master/http.txt", "http"),
 
-    # ---- https (9) ----
+    # ---- https (11) ----
     (f"{_RAW_ROOT}ErcinDedeoglu/proxies/main/proxies/https.txt", "https"),
     (f"{_RAW_ROOT}hproxy-com/free-proxy-list/main/https.txt", "https"),
     (f"{_RAW_ROOT}maximilianfeix/free-proxy-list/main/https.txt", "https"),
     (f"{_RAW_ROOT}mmpx12/proxy-list/master/https.txt", "https"),
     (f"{_RAW_ROOT}proxifly/free-proxy-list/main/proxies/protocols/https/data.txt", "https"),
     (f"{_RAW_ROOT}ProxyScrape/free-proxy-list/main/proxies/protocols/https/data.txt", "https"),
+    (f"{_RAW_ROOT}roosterkid/openproxylist/main/HTTPS_RAW.txt", "https"),
+    (f"{_RAW_ROOT}Thordata/awesome-free-proxy-list/main/proxies/https.txt", "https"),
     (f"{_RAW_ROOT}vmheaven/VMHeaven.io-Free-Proxy-List/main/https.txt", "https"),
     (f"{_RAW_ROOT}xyzs996/free-proxy-health-list/main/https.txt", "https"),
     (f"{_RAW_ROOT}Zaeem20/FREE_PROXIES_LIST/master/https.txt", "https"),

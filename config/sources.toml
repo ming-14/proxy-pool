@@ -83,7 +83,7 @@ enabled = true
 pause_ttl = 1800000
 group_by_protocol = true
 
-# GitHub 静态列表：90 条列表合并为一个源（http 55 / https 9 / socks5 26），
+# GitHub 静态列表：96 条列表合并为一个源（http 59 / https 11 / socks5 26），
 # 条目自带 scheme 或按列表协议补全
 [[sources]]
 name = "src.interfaces.sources.github_lists"
