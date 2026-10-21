@@ -1,13 +1,3 @@
-项目更新时，**必须同步更新此文档**、`docs/`（cli / architecture / filestree）、`src/GUIDE.md`（测试目录树）和 web 端（`frontend/`）
-请检查：
-- [ ] `README.md`更新了吗
-- [ ] `docs/cli.md` / `docs/architecture.md` / `docs/filestree.md` 更新了吗
-- [ ] `src/GUIDE.md`（测试树）更新了吗
-- [ ] web 端（`frontend/` 源码 + `npm run build` 产物）更新了吗
-
-
----
-
 # proxy-pool
 
 代理池管理工具。自动从多个免费代理源拉取代理，支持分组管理、TTL 过期、成功/失败追踪、黑名单淘汰、源暂停、多线程并发调度，并提供本地 HTTP/SOCKS4（含 4a）/SOCKS5 正向代理服务器（TCP only：SOCKS5 UDP ASSOCIATE 回 REP `0x07`，不做 UDP 直连；自动心跳 + 无缝切换；**上游不可用时拒绝请求而不回退直连**，避免泄漏本机真实 IP）。
@@ -128,22 +118,3 @@ python -m playwright install chromium
 ```
 
 未安装 playwright 时相关用例自动跳过（不影响其余测试）。前端单测：`cd frontend && npm run test`。
-
-## 作为库使用
-
-```python
-from src.framework.container import build_container
-
-c = build_container()
-
-# 用代理请求 URL，自动重试
-proxy, resp = c.request_with_retry.execute("https://example.com", max_retries=5)
-print(f"使用 {proxy}，状态码 {resp.status_code}")
-
-# 并发测试代理
-results = c.check_proxies.execute(["1.1.1.1:8080", "2.2.2.2:3128"], "https://example.com")
-for proxy, info in results.items():
-    print(f"{proxy}: {'成功' if info['success'] else '失败'}")
-
-c.save_full()  # 持久化到 .cache.db
-```
