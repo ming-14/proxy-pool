@@ -1,5 +1,5 @@
 ﻿# 编译启动器 -> desktop\dist\rikka.exe（GUI 子系统，无控制台窗口）
-# 依赖：MinGW-w64 g++ 与 windres（本机路径 C:\UserProgram\mingw64\bin）
+# 依赖：MinGW-w64 g++ 与 windres（需在 PATH 中）
 $ErrorActionPreference = 'Stop'
 
 $here   = Split-Path -Parent $MyInvocation.MyCommand.Path
